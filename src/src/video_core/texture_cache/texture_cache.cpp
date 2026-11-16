@@ -671,7 +671,7 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
                     TrackImage(merged_image_id);
                 }
                 auto& merged_image = slot_images[merged_image_id];
-                merged_image.CopyMip(cache_image, mip, slice);
+                merged_image.CopyMip(slot_images[cache_image_id], mip, slice);
                 FreeImage(cache_image_id);
             }
         }
