@@ -1087,3 +1087,32 @@ gtest_discover_tests(shadps4_image_subresource_test
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     DISCOVERY_TIMEOUT 60
 )
+
+# ===========================================================================
+# Unreal guest memory snapshots (ps4-unreal-dumper layout)
+# ===========================================================================
+
+add_executable(shadps4_unreal_snapshot_test
+    core/test_unreal_snapshot.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/unreal/snapshot.cpp
+)
+
+target_include_directories(shadps4_unreal_snapshot_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/tests
+)
+target_compile_features(shadps4_unreal_snapshot_test PRIVATE cxx_std_23)
+target_compile_definitions(shadps4_unreal_snapshot_test PRIVATE NOMINMAX)
+
+target_link_libraries(shadps4_unreal_snapshot_test PRIVATE
+    GTest::gtest_main
+    nlohmann_json::nlohmann_json
+)
+
+list(APPEND TEST_TARGETS shadps4_unreal_snapshot_test)
+
+gtest_discover_tests(shadps4_unreal_snapshot_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)

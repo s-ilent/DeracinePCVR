@@ -91,6 +91,18 @@ void MemoryManager::SetupMemoryRegions(u64 flexible_size, bool use_extended_mem1
              total_flexible_size, total_direct_size);
 }
 
+std::vector<MemoryManager::MappedRegionInfo> MemoryManager::EnumerateMappedRegions() {
+    std::shared_lock lk{mutex};
+    std::vector<MappedRegionInfo> regions;
+    regions.reserve(vma_map.size());
+    for (const auto& [base, vma] : vma_map) {
+        if (!vma.IsMapped() || vma.size == 0) {
+            continue;
+        }
+        regions.push_back({vma.base, vma.size, vma.prot, vma.name});
+    }
+    return regions;
+}
 u64 MemoryManager::ClampRangeSize(VAddr virtual_addr, u64 size) {
     if (size == 0) {
         return 0;
