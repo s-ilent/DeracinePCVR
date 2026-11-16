@@ -25,4 +25,9 @@ s32 PS4_SYSV_ABI sceKernelGetCompiledSdkVersion(s32* ver) {
     return 0;
 }
 
+// Tests never take the Neo-specific paths; the base-machine answer is enough.
+s32 PS4_SYSV_ABI sceKernelIsNeoMode() {
+    return 0;
+}
+
 } // namespace Libraries::Kernel
