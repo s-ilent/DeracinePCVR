@@ -63,6 +63,12 @@ struct DiscoveryResult {
     u32 object_count = 0;
     u32 object_capacity = 0;
     u32 object_chunks = 0;
+    u32 object_max_chunks = 0;
+    u32 object_items_per_chunk = 0;
+    u32 object_item_size = 0;
+    u64 object_item_offset = 0;
+    // Field offsets of the array layout that was recognised, hex formatted.
+    std::string object_layout;
     std::string name_table_kind;
     std::string object_array_kind;
     std::string error;

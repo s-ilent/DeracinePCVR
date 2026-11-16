@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -461,6 +462,7 @@ public:
         u32 item_size = 16;
         u64 item_offset = 0;
         u32 per_chunk = 0;
+        std::array<u64, 5> layout{};
     } objects;
 
     bool ReadObjectPointer(u32 index, VAddr& out) const {
@@ -572,6 +574,7 @@ public:
         objects.per_chunk = per_chunk;
         objects.item_size = item_size;
         objects.item_offset = item_offset;
+        objects.layout = layout;
         return true;
     }
 
@@ -717,6 +720,21 @@ const DiscoveryResult& Inspector::Discover() {
     result.object_count = impl->objects.count;
     result.object_capacity = impl->objects.capacity;
     result.object_chunks = impl->objects.chunks;
+    result.object_max_chunks = impl->objects.max_chunks;
+    result.object_items_per_chunk = impl->objects.per_chunk;
+    result.object_item_size = impl->objects.item_size;
+    result.object_item_offset = impl->objects.item_offset;
+    if (impl->objects.kind == Impl::ArrayKind::Flat) {
+        result.object_layout = "0x00,0x08,0x0c";
+    } else {
+        char text[96];
+        const auto& layout = impl->objects.layout;
+        std::snprintf(text, sizeof(text), "0x%02x,0x%02x,0x%02x,0x%02x,0x%02x",
+                      static_cast<unsigned>(layout[0]), static_cast<unsigned>(layout[1]),
+                      static_cast<unsigned>(layout[2]), static_cast<unsigned>(layout[3]),
+                      static_cast<unsigned>(layout[4]));
+        result.object_layout = text;
+    }
     result.object_array_kind =
         impl->objects.kind == Impl::ArrayKind::Flat ? "FFixedUObjectArray" : "FChunkedFixedUObjectArray";
     return result;

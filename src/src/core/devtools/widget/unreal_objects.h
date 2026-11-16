@@ -24,6 +24,7 @@ public:
 private:
     void Discover();
     void Capture();
+    void ExportReport();
     void DrawDiscovery();
     void DrawObjectList();
 
@@ -34,6 +35,8 @@ private:
     std::string last_error;
     std::string snapshot_path;
     std::string snapshot_status;
+    std::string report_path;
+    std::string report_status;
 
     char search[128]{};
     std::vector<Unreal::ObjectInfo> results;
