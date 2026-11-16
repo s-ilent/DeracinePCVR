@@ -10,6 +10,7 @@
 #include "common/logging/log.h"
 #include "common/scope_exit.h"
 #include "common/singleton.h"
+#include "common/staged_file_read.h"
 #include "core/file_sys/devices/console_device.h"
 #include "core/file_sys/devices/deci_tty6_device.h"
 #include "core/file_sys/devices/logger.h"
@@ -355,10 +356,23 @@ s64 PS4_SYSV_ABI sceKernelWrite(s32 fd, const void* buf, u64 nbytes) {
 s64 ReadFile(Common::FS::IOFile& file, void* buf, u64 nbytes) {
     const auto* memory = Core::Memory::Instance();
     // Invalidate up to the actual number of bytes that could be read.
-    const auto remaining = file.GetSize() - file.Tell();
-    memory->InvalidateMemory(reinterpret_cast<VAddr>(buf), std::min<u64>(nbytes, remaining));
+    const auto position = file.Tell();
+    const u64 invalidate_size =
+        position >= 0
+            ? Common::FS::ReadableBytes(static_cast<u64>(position), file.GetSize(), nbytes)
+            : 0;
+    memory->InvalidateMemory(reinterpret_cast<VAddr>(buf), invalidate_size);
 
+#ifdef _WIN32
+    // A Windows read into a still-tracked guest page fails with ERROR_INVALID_USER_BUFFER
+    // because the kernel copy never reaches the page handler. Staging reads into host memory
+    // first makes the guest stores ordinary CPU stores, which do reach it.
+    return static_cast<s64>(Common::FS::ReadStaged(buf, nbytes, [&](void* staging, size_t size) {
+        return file.ReadRaw<u8>(staging, size);
+    }));
+#else
     return file.ReadRaw<u8>(buf, nbytes);
+#endif
 }
 
 s64 PS4_SYSV_ABI readv(s32 fd, const OrbisKernelIovec* iov, s32 iovcnt) {
