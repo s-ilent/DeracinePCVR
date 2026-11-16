@@ -210,6 +210,29 @@ TEST_F(HandRetargetTest, BlendInterpolatesBetweenAnimationAndTracking) {
     EXPECT_NEAR(DegreesBetween(out[14], animated[14]), full * 0.5f, 1.0f);
 }
 
+TEST_F(HandRetargetTest, FingersFollowTheAnimatedWrist) {
+    // The game owns the wrist: rotating the hand bone must move the whole finger pose with it
+    // (local rotations unchanged), which is what makes hand-frame calibration necessary.
+    const auto wrist = AxisAngle(0.0f, 0.0f, 1.0f, 40.0f);
+    std::vector<Quat> at_rest(rig.joints.size());
+    std::vector<Quat> at_wrist(rig.joints.size());
+    retargeter.Retarget(rest, Quat{}, at_rest);
+    retargeter.Retarget(rest, wrist, at_wrist);
+    for (auto i = 0u; i < rig.joints.size(); i++) {
+        EXPECT_NEAR(DegreesBetween(at_rest[i], at_wrist[i]), 0.0f, 0.01f) << "joint " << i;
+        EXPECT_NEAR(DegreesBetween(at_wrist[i], rig.joints[i].reference_local), 0.0f, kEpsDeg);
+    }
+
+    // A real finger bending must still differ from the reference while the wrist moves.
+    auto live = IdentityJoints();
+    live[static_cast<u32>(OpenXrJoint::RingProximal)] = AxisAngle(1.0f, 0.0f, 0.0f, 50.0f);
+    std::vector<Quat> bent(rig.joints.size());
+    retargeter.Retarget(live, wrist, bent);
+    // Mapping places INDEX at 3, MIDDLE at 6, RING at 9 and LITTLE at 12.
+    EXPECT_GT(DegreesBetween(bent[9], rig.joints[9].reference_local), 20.0f);
+    EXPECT_LT(DegreesBetween(bent[12], rig.joints[12].reference_local), 0.01f);
+}
+
 TEST_F(HandRetargetTest, LeftAndRightRigsProduceMirroredMagnitudes) {
     auto left = HandRetargeter(BuildRig(HandSide::Left), mapping);
     left.Calibrate(rest);

@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 
+#include "core/unreal/component_probe.h"
 #include "core/unreal/guest_memory.h"
 #include "core/unreal/inspector.h"
 
@@ -27,6 +28,8 @@ private:
     void ExportReport();
     void DrawDiscovery();
     void DrawObjectList();
+    void DrawHandComponents();
+    void ProbeHandComponents();
 
     Unreal::LiveGuestMemory live_memory;
     std::unique_ptr<Unreal::Inspector> inspector;
@@ -37,6 +40,8 @@ private:
     std::string snapshot_status;
     std::string report_path;
     std::string report_status;
+    std::vector<Unreal::ComponentProbeResult> probes;
+    std::string probe_status;
 
     char search[128]{};
     std::vector<Unreal::ObjectInfo> results;

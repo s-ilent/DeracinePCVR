@@ -1199,3 +1199,33 @@ gtest_discover_tests(shadps4_hand_retarget_test
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     DISCOVERY_TIMEOUT 60
 )
+# ===========================================================================
+# Live hand discovery: transform validation, component probe, override session
+# ===========================================================================
+
+add_executable(shadps4_hand_live_test
+    core/test_hand_live.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/unreal/transform_validation.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/unreal/component_probe.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/unreal/hand_override.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/unreal/hand_retarget.cpp
+)
+
+target_include_directories(shadps4_hand_live_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/tests
+)
+target_compile_features(shadps4_hand_live_test PRIVATE cxx_std_23)
+target_compile_definitions(shadps4_hand_live_test PRIVATE NOMINMAX)
+
+target_link_libraries(shadps4_hand_live_test PRIVATE
+    GTest::gtest_main
+)
+
+list(APPEND TEST_TARGETS shadps4_hand_live_test)
+
+gtest_discover_tests(shadps4_hand_live_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)

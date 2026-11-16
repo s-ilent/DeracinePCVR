@@ -113,6 +113,10 @@ public:
     u32 ObjectCount() const;
     std::optional<ObjectInfo> ObjectAt(u32 index) const;
 
+    // Resolves an arbitrary object address to its name and class, validating both. Used by the
+    // component probe, which walks pointer fields whose offsets the inspector does not know.
+    bool DescribeObject(VAddr address, std::string& name, std::string& class_name) const;
+
 private:
     class Impl;
     std::unique_ptr<Impl> impl;

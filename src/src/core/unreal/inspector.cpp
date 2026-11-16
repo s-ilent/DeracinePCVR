@@ -804,6 +804,16 @@ u32 Inspector::ObjectCount() const {
     return impl->objects.count;
 }
 
+bool Inspector::DescribeObject(VAddr address, std::string& name, std::string& class_name) const {
+    ObjectInfo info;
+    if (!impl->ReadObject(address, info)) {
+        return false;
+    }
+    name = info.name;
+    class_name = info.class_name;
+    return true;
+}
+
 std::optional<ObjectInfo> Inspector::ObjectAt(u32 index) const {
     ObjectInfo info;
     if (!GetObject(index, info)) {
