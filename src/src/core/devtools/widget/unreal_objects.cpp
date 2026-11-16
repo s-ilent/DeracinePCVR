@@ -14,6 +14,7 @@
 #include "common/singleton.h"
 #include "core/memory.h"
 #include "core/unreal/guest_memory.h"
+#include "core/unreal/report.h"
 #include "core/unreal/snapshot.h"
 
 using namespace ImGui;
@@ -109,6 +110,38 @@ void UnrealObjectsViewer::Capture() {
         snapshot_status = text;
     } else {
         snapshot_status = "failed: " + result.error;
+    }
+}
+
+void UnrealObjectsViewer::ExportReport() {
+    if (!inspector || !inspector->Result().ok()) {
+        report_status = "discovery has not found a name table and object array yet";
+        return;
+    }
+    std::string path = report_path;
+    if (path.empty()) {
+        if (snapshot_path.empty()) {
+            report_status = "set a report path (or a snapshot path to derive it from)";
+            return;
+        }
+        path = snapshot_path + "_report.json";
+    }
+
+    Unreal::SnapshotMetadata metadata;
+    metadata.time = Now();
+    metadata.emulator_commit = std::string{Common::g_scm_rev};
+    if (const auto* elf = Common::Singleton<Common::ElfInfo>::Instance();
+        elf != nullptr && elf->Initialized()) {
+        metadata.title_id = std::string{elf->GameSerial()};
+        metadata.title_name = std::string{elf->Title()};
+        metadata.app_version = std::string{elf->AppVer()};
+    }
+
+    std::string error;
+    if (Unreal::WriteDiagnosticReport(path, *inspector, metadata, {}, &error)) {
+        report_status = "wrote " + path;
+    } else {
+        report_status = "failed: " + error;
     }
 }
 
@@ -222,6 +255,29 @@ void UnrealObjectsViewer::Draw() {
     SameLine();
     if (Button("Export snapshot")) {
         Capture();
+    }
+
+    Separator();
+    TextUnformatted("Diagnostic report (discovery, layout, class histogram, hand/anim candidates)");
+    SetNextItemWidth(360.0f);
+    std::array<char, 512> report{};
+    std::snprintf(report.data(), report.size(), "%s", report_path.c_str());
+    if (InputText("##report_path", report.data(), report.size())) {
+        report_path = report.data();
+    }
+    SameLine();
+    const bool can_report = inspector != nullptr && inspector->Result().ok();
+    BeginDisabled(!can_report);
+    if (Button("Export report")) {
+        ExportReport();
+    }
+    EndDisabled();
+    if (!can_report) {
+        SameLine();
+        TextDisabled("needs a successful discovery");
+    }
+    if (!report_status.empty()) {
+        TextWrapped("%s", report_status.c_str());
     }
     if (!snapshot_status.empty()) {
         TextWrapped("%s", snapshot_status.c_str());
