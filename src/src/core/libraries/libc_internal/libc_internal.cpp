@@ -23,6 +23,10 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     RegisterlibSceLibcInternalMemory(sym);
     RegisterlibSceLibcInternalIo(sym);
     RegisterlibSceLibcInternalThreads(sym);
+    // Guest modules (libSceNpToolkit2 among them) import the C++ runtime from
+    // libSceLibcInternal. Left to the common stub, __cxa_guard_acquire answers "already
+    // initialized" and the module's static initializers never run.
+    RegisterFexLibcCxaAliases(sym);
 }
 
 void ForceRegisterLib(Core::Loader::SymbolsResolver* sym) {
@@ -32,7 +36,6 @@ void ForceRegisterLib(Core::Loader::SymbolsResolver* sym) {
     RegisterFexLibcMemoryAliases(sym);
     RegisterFexLibcMathAliases(sym);
     RegisterFexLibcStrAliases(sym);
-    RegisterFexLibcCxaAliases(sym);
 #endif
 }
 } // namespace Libraries::LibcInternal
