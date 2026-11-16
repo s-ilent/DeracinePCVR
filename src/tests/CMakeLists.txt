@@ -979,3 +979,30 @@ gtest_discover_tests(shadps4_unreal_snapshot_test
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     DISCOVERY_TIMEOUT 60
 )
+# ===========================================================================
+# Unreal object inspector (read-only)
+# ===========================================================================
+
+add_executable(shadps4_unreal_inspector_test
+    core/test_unreal_inspector.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/unreal/inspector.cpp
+)
+
+target_include_directories(shadps4_unreal_inspector_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/tests
+)
+target_compile_features(shadps4_unreal_inspector_test PRIVATE cxx_std_23)
+target_compile_definitions(shadps4_unreal_inspector_test PRIVATE NOMINMAX)
+
+target_link_libraries(shadps4_unreal_inspector_test PRIVATE
+    GTest::gtest_main
+)
+
+list(APPEND TEST_TARGETS shadps4_unreal_inspector_test)
+
+gtest_discover_tests(shadps4_unreal_inspector_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)

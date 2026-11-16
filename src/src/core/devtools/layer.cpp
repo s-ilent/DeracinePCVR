@@ -21,6 +21,7 @@
 #include "widget/memory_map.h"
 #include "widget/module_list.h"
 #include "widget/shader_list.h"
+#include "widget/unreal_objects.h"
 
 extern std::unique_ptr<Vulkan::Presenter> presenter;
 
@@ -48,6 +49,7 @@ static bool just_opened_options = false;
 static Widget::MemoryMapViewer memory_map;
 static Widget::ShaderList shader_list;
 static Widget::ModuleList module_list;
+static Widget::UnrealObjectsViewer unreal_objects;
 
 // clang-format off
 static std::string help_text =
@@ -125,6 +127,7 @@ void L::DrawMenuBar() {
         if (BeginMenu("Debug")) {
             MenuItem("Memory map", nullptr, &memory_map.open);
             MenuItem("Module list", nullptr, &module_list.open);
+            MenuItem("Unreal objects", nullptr, &unreal_objects.open);
             ImGui::EndMenu();
         }
 
@@ -268,6 +271,9 @@ void L::DrawAdvanced() {
     }
     if (module_list.open) {
         module_list.Draw();
+    }
+    if (unreal_objects.open) {
+        unreal_objects.Draw();
     }
 }
 
