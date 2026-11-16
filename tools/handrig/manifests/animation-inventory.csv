@@ -1,0 +1,9 @@
+asset,skeleton,frames,compressedTracks,fingerTracks
+GameProject/Content/model/chr/c0000/motion/a000_020200.uasset,c0000_Skeleton,32,42,30
+GameProject/Content/model/chr/c0000/motion/a000_040000.uasset,c0000_Skeleton,36,98,40
+GameProject/Content/model/chr/c0000/motion/a80_0000.uasset,c0000_Skeleton,31,27,15
+GameProject/Content/model/chr/c0000/motion/a80_0010.uasset,c0000_Skeleton,31,27,15
+GameProject/Content/model/chr/c0000/motion/a80_0020.uasset,c0000_Skeleton,132,32,15
+GameProject/Content/model/chr/c0100/motion/a80_0000.uasset,c0100_Skeleton,31,32,15
+GameProject/Content/model/chr/c0100/motion/a80_0010.uasset,c0100_Skeleton,31,32,15
+GameProject/Content/model/chr/c0100/motion/a80_0020.uasset,c0100_Skeleton,132,32,15

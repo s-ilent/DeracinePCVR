@@ -1,0 +1,50 @@
+{
+  "pak_assets": 115707,
+  "skeletons": 167,
+  "skeletal_meshes": 278,
+  "anim_sequences": 1401,
+  "anim_blueprints": 0,
+  "skeletal_mesh_components": 633,
+  "sequences_total": 1401,
+  "sequences_with_finger_tracks": 837,
+  "player_sequences": 8,
+  "player_sequences_with_finger_tracks": 8,
+  "pose_assets": [
+    {
+      "asset": "GameProject/Content/model/chr/c0000/motion/Item_grasp.uasset",
+      "poses": 132,
+      "tracks": 31,
+      "fingerTracks": 15,
+      "articulatedFingers": 15,
+      "maxFingerDegrees": 126.42
+    },
+    {
+      "asset": "GameProject/Content/model/chr/c0000/motion/RightHand.uasset",
+      "poses": 61,
+      "tracks": 26,
+      "fingerTracks": 15,
+      "articulatedFingers": 15,
+      "maxFingerDegrees": 114.48
+    },
+    {
+      "asset": "GameProject/Content/model/chr/c0100/motion/Item_grasp.uasset",
+      "poses": 132,
+      "tracks": 31,
+      "fingerTracks": 15,
+      "articulatedFingers": 15,
+      "maxFingerDegrees": 124.39
+    },
+    {
+      "asset": "GameProject/Content/model/chr/c0100/motion/LeftHand.uasset",
+      "poses": 60,
+      "tracks": 31,
+      "fingerTracks": 15,
+      "articulatedFingers": 15,
+      "maxFingerDegrees": 107.99
+    }
+  ],
+  "hand_rigs": {
+    "c0000": "right hand",
+    "c0100": "left hand"
+  }
+}

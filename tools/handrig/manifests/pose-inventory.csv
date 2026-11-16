@@ -1,0 +1,5 @@
+asset,poses,tracks,fingerTracks,articulatedFingers,maxFingerDegrees
+GameProject/Content/model/chr/c0000/motion/Item_grasp.uasset,132,31,15,15,126.42
+GameProject/Content/model/chr/c0000/motion/RightHand.uasset,61,26,15,15,114.48
+GameProject/Content/model/chr/c0100/motion/Item_grasp.uasset,132,31,15,15,124.39
+GameProject/Content/model/chr/c0100/motion/LeftHand.uasset,60,31,15,15,107.99
