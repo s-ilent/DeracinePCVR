@@ -976,3 +976,29 @@ gtest_discover_tests(shadps4_unique_function_test
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     DISCOVERY_TIMEOUT 60
 )
+# ===========================================================================
+# Staged reads into GPU-tracked guest pages (Windows)
+# ===========================================================================
+
+add_executable(shadps4_staged_file_read_test
+    core/test_staged_file_read.cpp
+)
+
+target_include_directories(shadps4_staged_file_read_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/tests
+)
+target_compile_features(shadps4_staged_file_read_test PRIVATE cxx_std_23)
+target_compile_definitions(shadps4_staged_file_read_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+
+target_link_libraries(shadps4_staged_file_read_test PRIVATE
+    GTest::gtest_main
+)
+
+list(APPEND TEST_TARGETS shadps4_staged_file_read_test)
+
+gtest_discover_tests(shadps4_staged_file_read_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)
