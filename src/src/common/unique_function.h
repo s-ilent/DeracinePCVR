@@ -4,6 +4,7 @@
 #pragma once
 
 #include <memory>
+#include <type_traits>
 #include <utility>
 
 namespace Common {
@@ -22,7 +23,7 @@ class UniqueFunction {
     template <typename Functor>
     class Callable final : public CallableBase {
     public:
-        Callable(Functor&& functor_) : functor{std::move(functor_)} {}
+        Callable(Functor functor_) : functor{std::move(functor_)} {}
         ~Callable() override = default;
 
         ResultType operator()(Args&&... args) override {
@@ -36,9 +37,12 @@ class UniqueFunction {
 public:
     UniqueFunction() = default;
 
+    // A queued functor outlives the scope that queued it, so an lvalue argument must be
+    // copied into owned storage instead of being kept as a reference to the caller's object.
     template <typename Functor>
     UniqueFunction(Functor&& functor)
-        : callable{std::make_unique<Callable<Functor>>(std::move(functor))} {}
+        : callable{std::make_unique<Callable<std::decay_t<Functor>>>(
+              std::forward<Functor>(functor))} {}
 
     UniqueFunction& operator=(UniqueFunction&& rhs) noexcept = default;
     UniqueFunction(UniqueFunction&& rhs) noexcept = default;
