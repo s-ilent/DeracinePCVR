@@ -167,12 +167,23 @@ Quat HandRetargeter::ConvertOrientation(const Quat& xr) {
 
 HandRetargeter::HandRetargeter(HandRig rig_, OpenXrMapping mapping_, RetargetOptions options_)
     : rig{std::move(rig_)}, mapping{mapping_}, options{options_} {
-    joint_offsets.assign(rig.joints.size(), Quat{});
+    hand_frame_reference.assign(rig.joints.size(), Quat{});
+    xr_relative_rest.assign(rig.joints.size(), Quat{});
 }
 
 void HandRetargeter::Calibrate(std::span<const Quat> xr_rest) {
-    joint_offsets.assign(rig.joints.size(), Quat{});
+    // Everything is stored relative to the hand: the reference pose in the hand bone's frame, and
+    // the rest capture relative to the OpenXR hand joint. The runtime delta is then applied in that
+    // same frame, so an animated wrist neither invalidates the offsets nor double-counts.
+    hand_xr_joint = mapping.hand_frame_joints[0];
+    const auto hand_rest = hand_xr_joint < xr_rest.size()
+                               ? ConvertOrientation(xr_rest[hand_xr_joint])
+                               : Quat{};
+    hand_frame_reference.assign(rig.joints.size(), Quat{});
+    xr_relative_rest.assign(rig.joints.size(), Quat{});
     for (auto joint_index = 0u; joint_index < rig.joints.size(); joint_index++) {
+        hand_frame_reference[joint_index] = QuatNormalize(QuatMultiply(
+            QuatInverse(rig.hand_reference_world), rig.joints[joint_index].reference_world));
         u32 xr_index = kUnmappedJoint;
         for (auto i = 0u; i < OpenXrHandJointCount; i++) {
             if (mapping.game_joint[i] == joint_index) {
@@ -183,14 +194,8 @@ void HandRetargeter::Calibrate(std::span<const Quat> xr_rest) {
         if (xr_index == kUnmappedJoint || xr_index >= xr_rest.size()) {
             continue;
         }
-        const auto converted = ConvertOrientation(xr_rest[xr_index]);
-        joint_offsets[joint_index] =
-            QuatNormalize(QuatMultiply(rig.joints[joint_index].reference_world,
-                                       QuatInverse(converted)));
-    }
-    const auto hand_xr = mapping.hand_frame_joints[0];
-    if (hand_xr < xr_rest.size()) {
-        hand_offset = QuatInverse(ConvertOrientation(xr_rest[hand_xr]));
+        xr_relative_rest[joint_index] = QuatNormalize(QuatMultiply(
+            QuatInverse(hand_rest), ConvertOrientation(xr_rest[xr_index])));
     }
     is_calibrated = true;
 }
@@ -219,8 +224,15 @@ void HandRetargeter::Retarget(std::span<const Quat> xr_live, const Quat& hand_wo
             }
         }
         if (is_calibrated && xr_index != kUnmappedJoint && xr_index < xr_live.size()) {
-            const auto target_world = QuatMultiply(ConvertOrientation(xr_live[xr_index]),
-                                                   joint_offsets[index]);
+            const auto hand_live = hand_xr_joint < xr_live.size()
+                                       ? ConvertOrientation(xr_live[hand_xr_joint])
+                                       : Quat{};
+            const auto live_relative = QuatNormalize(QuatMultiply(
+                QuatInverse(hand_live), ConvertOrientation(xr_live[xr_index])));
+            const auto delta =
+                QuatNormalize(QuatMultiply(live_relative, QuatInverse(xr_relative_rest[index])));
+            const auto target_world = QuatMultiply(
+                hand_world, QuatMultiply(delta, hand_frame_reference[index]));
             const Quat parent_world = joint.parent == kHandJoint
                                           ? hand_world
                                           : (joint.parent < world.size() && has_world[joint.parent]

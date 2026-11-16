@@ -1,161 +1,177 @@
-# Phase 2 — live finger control: status and procedure
+# Phase 2 — live finger control: status, corrections and procedure
 
-Branch `investigation/hand-rig`, worktree `M:\Development\Deracine-work\wt-handrig`. Step 3 of the
-Phase 2 brief is implemented and tested; steps 1, 2, 4 and 5 need the running game and are specified
-below so the next session can execute them without re-deriving anything.
+Branch `investigation/hand-rig`, worktree `M:\Development\Deracine-work\wt-handrig`. No guest-memory
+write exists on this branch; every step below is read-only unless it says otherwise.
 
-## What is done (Step 3 — retargeting mathematics)
+## Status
 
-`src/src/core/unreal/hand_retarget.{h,cpp}` — pure math, no engine or guest dependencies:
+| Step | State |
+|---|---|
+| 3 — retargeting mathematics | **done and tested**, now calibrated in the hand's frame |
+| Live discovery tooling (helpers for Step 1) | **done**: component probe, transform validators, bone-index and reference-pose checks, panel section |
+| Synchronized-boundary override design (Step 4 prep) | **done as a state machine, no writes**: refuses unsafe phases, saves and restores the animation pose |
+| 1 — identify live hand components | **needs the running game** |
+| 2 — evaluation tracing | **needs the running game**; the pipeline model below is the UE 4.18 model to verify |
+| 4 — one-finger visual proof | **blocked**: requires a guarded, frame-tagged writer (not present) and Step 2 evidence |
+| 5 — grab blending | design only; the gameplay-state source is explicitly unverified |
 
-- `HandRetargeter::ConvertOrientation` — OpenXR (right-handed, Y-up) → Unreal (left-handed, Z-up).
-  The axis map is a reflection, so the conversion goes through a 3×3 matrix (`M·R·Mᵀ`) and back to a
-  quaternion; the result is always a proper rotation of the same magnitude.
-- `Calibrate(xr_rest)` — per-joint offset `C = reference_world · Convert(xr_rest)⁻¹`, measured once
-  from a rest capture. This absorbs axis conventions per joint and removes the need for any
-  left/right mirror special case.
-- `Retarget(xr_live, hand_world, out_local)` — world target `Convert(xr_live)·C`, then local
-  `parent_world⁻¹·target_world`; the wrist is *not* taken over (the game keeps owning the hand bone,
-  `hand_world` anchors the digit roots). Optional per-joint bend clamp.
-- `Blend(animated_local, target_local, weight, out)` — slerp between the game's evaluated pose and
-  the tracking pose; weight 0 returns the game pose untouched.
-- `HandRetargeter::InteractionWeight(desired, grab_active)` — the override yields (weight 0) while a
-  grab is active, so the authored `Item_grasp` poses and the `GrabPoint` socket stay authoritative.
+New tests: 8 `HandRetarget*` (including the wrist-follow case) + 12 `TransformValidation*` /
+`ComponentProbe*` / `HandOverrideSession*`. All pass.
 
-Important property, measured by the tests: local rotations are parent-relative, so applying the same
-world rotation to every joint of a chain produces *no* local bend. OpenXR joint orientations are
-absolute, which is the right input; converting them to additive per-joint angles would be wrong.
+## Correction 1 — array lengths are not 79
 
-Tests (`src/tests/core/test_hand_retarget.cpp`, 8 cases, all passing):
-basis conversion preserves angle; rest capture reproduces the reference pose; an isolated index bend
-moves only that digit; a fist bends every digit; an impossible 170° bend is clamped to 90°; blending
-interpolates 0 / 0.5 / 1; the left rig produces mirrored magnitudes; grab forces weight 0.
+The asset data distinguishes three different bone counts and the runtime may use any of them:
 
-The emulator target links with the retargeter in the CORE list; only `HandRetargeter` is not yet
-instantiated by anything because the live writer does not exist (see Step 4 blockers).
-
-## Step 1 — live hand component identification (needs the game running)
-
-Use the read-only inspector that already exists in this branch:
-
-1. Launch the hand-rig build (see commands below), reach a scene.
-2. **Ctrl+F10 → Debug → Unreal objects → Discover Unreal objects**.
-3. *By name* `c0000` and `c0100`: the hand actors' components. Expect
-   `SkeletalMeshComponent` objects whose names follow the actors' component names
-   (`SkeletalMesh`, `HandPositionScene`, …), plus the `c0000_BP_C` / `c0100_BP_C` actor classes'
-   default objects.
-4. *By class* `SkeletalMeshComponent` (633 exist in the package data; only a handful are live),
-   `AnimInstance`, `c0000_AnimBP_C`, `c0100_AnimBP_C`.
-5. For each component found, record: object address, `Outer` (the actor), the `SkeletalMesh`
-   reference (must resolve to `c0000` / `c0100`), the skeleton (must resolve to `c0000_Skeleton` /
-   `c0100_Skeleton`), and the LOD index (both meshes have a single LOD, so LOD 0 is the only one).
-6. **Export report** — the JSON captures the discovery addresses, class histogram and the matching
-   objects in one file; attach it to the session notes.
-7. Semi-transparency warnings: the game may spawn both hand actors twice (left/right variants of the
-   same mesh) or swap meshes via `SetMeshType`. Confirm by toggling `swap_hands` in
-   `pc-vr/settings.txt` and re-running discovery; also watch for `c0000_CD` (a separate mesh asset
-   that exists in the pak).
-8. Validate identity and lifetime, never reuse stale addresses: re-run discovery after a scene
-   transition and compare; the inspector's `IsLive()` marks recycled slots.
-
-## Step 2 — animation evaluation trace (needs the game running)
-
-Structures to locate, in UE 4.18 order (all reachable from the component object once found):
-
-| Structure | What it is | How to confirm |
+| Source | Count | Evidence |
 |---|---|---|
-| `SkeletalMesh` (component field) | asset reference | resolves to `c0000` / `c0100` |
-| `AnimScriptInstance` | the `UAnimInstance` (class `c0000_AnimBP_C`) | object class name matches, and its class has `RefHandAnimState` |
-| `ComponentSpaceTransforms` | `TArray<FTransform>`, `Num == bone count` (79) | scan the component for an array whose count equals the skeleton's bone count and whose elements are unit quaternions (stride `0x30`) |
-| `BoneSpaceTransforms` | `TArray<FTransform>` | second array with the same count and stride |
-| `CachedComponentSpaceTransforms` | previous-frame copy | same shape; useful to see the write window |
-| GPU skin matrices | `FSkeletalMeshObject`/`GPUSkinVertexFactories` bone matrix array (`FMatrix44f`, stride `0x40`) | count equals bone count, values are affine matrices |
+| `c0000` mesh's own reference list (`USkeletalMesh.ReferenceSkeleton`) | 79 | `mesh-*.json`: 79 bones, 40 of them fingers |
+| `c0000_Skeleton` (the asset the animation system uses) | 105 | `skeleton-*.json`: 79 body + 26 ponytail bones |
+| LOD 0 active/skinned subset | 26 bones, of which 15 are the right-hand fingers | `mesh-*.json` `ActiveBoneIndices` |
 
-Timing evidence to collect (read-only, no writes):
+So a runtime pose array may be 79, 105 or a narrower LOD subset depending on which structure it is.
+`ExpectedBoneCounts{mesh, skeleton, lod_active}` carries all three; the probe **accepts a candidate
+only if its length equals one of them** and reports the measured count, and
+`ValidateFingerChainIndices`/`CompareReferencePose` verify that the rig's bone indices, parent links
+and reference rotations actually match the extracted skeleton before any override is attempted. The
+inspector exposes the extracted numbers through the asset report; nothing is assumed.
 
-- Read `ComponentSpaceTransforms` twice a few frames apart while the hand idles: the array changes
-  every frame (animation runs) even when nothing visibly moves.
-- To find the write window without writing: locate the GPU skin matrix array and compare it against
-  the component-space transforms of the same frame — the skinning matrices are derived from the
-  component-space pose *after* the animation update, so the safest override target is the
-  component-space array **after** the animation update and **before** matrix derivation.
-- Confirm same-frame ordering by checking whether a change in the component-space array is visible in
-  the GPU matrix array of the next frame (it must be, if the window is right).
+Two more consequences recorded here: LOD selection may change the active set at runtime (the game can
+force LOD), and the pose array's length must be re-checked after discovery, not cached from the asset
+count alone.
 
-If the array cannot be located safely, the fallback is the animation-node path: the AnimBP keeps 137
-`PoseByName` nodes, and `RefHandAnimState`/`RefIdleGrabRate` select them — driving those inputs would
-give authored poses but not continuous tracking, so it is a fallback for grips only, not for Step 4.
+## Correction 2 — a two-read test does not prove the write window
 
-## Step 4 — minimal live override experiment (blocked on a guarded writer)
+Reading an array twice across frames only shows the animation system runs. The write window has to be
+established against the actual UE 4.18 evaluation pipeline:
 
-The Phase 1/2 branch is deliberately **read-only**: there is no guest-memory write path, no
-game-thread suspension, and the Phase 2 brief forbids forcing direct writes without a safe window.
-Prerequisites before the one-finger experiment:
+```
+USkeletalMeshComponent::TickComponent
+  └─ TickPose()
+       ├─ UAnimInstance::UpdateAnimation()            (game thread prep)
+       ├─ DispatchParallelEvaluationTasks()           (parallel anim tasks — may run on workers)
+       │     └─ ParallelUpdateAnimation()             pose buffers read/written here
+       ├─ CompleteParallelUpdate()                    task completion / buffer swap
+       └─ RefreshBoneTransforms()                     ComponentSpaceTransforms become current
+  └─ OnBoneTransformsFinalized broadcast              (post-animation, pre-skinning signal)
+FSkeletalMeshObject::Update(); bone matrices derived and consumed by skinning (render thread)
+```
 
-1. A guarded writer: explicit experimental flag (e.g. `hand_override=1` in `pc-vr/settings.txt` or a
-   devtools toggle), default off, refusing to write when the flag is off or discovery is not live.
-2. A game-thread-safe application point: the write must land after the animation update and before
-   skinning matrix derivation. Candidate hooks: the emulator's per-frame point where the guest
-   signals frame end, or a hook on the component's pose update once its address is known. Verify
-   with the two-read test above before enabling writes.
-3. Validation loop: on an idle hand, replace one joint (middle proximal or distal) with a fixed
-   rotation; assert (a) that finger deforms, (b) other fingers and the wrist are unchanged, (c) the
-   override survives animation updates for N frames, (d) toggling the flag off restores the authored
-   pose within one frame, (e) grabbing still works (override weight 0 by `InteractionWeight`).
+Key facts that change the experiment design:
 
-Deterministic test input: rotate Middle proximal by +60° about the hand's local Y, then +60° about
-local X, then back to zero, one second each; the retargeter's `Blend` path can be exercised with
-weight 1/0.5/0 without any OpenXR session.
+- `ComponentSpaceTransforms` and `BoneSpaceTransforms` are **double-buffered** (an anim evaluation
+  context holds two arrays and swaps them); the "current" buffer alternates, so an override must
+  target the post-swap buffer of the frame it runs in.
+- Parallel evaluation means the pose is being written by worker tasks between dispatch and
+  completion; writing during that span races.
+- Skinning matrix derivation happens **after** the component-space pose is final; writing after that
+  derivation is too late for the frame, and writing before evaluation is silently overwritten.
 
-## Step 5 — preserving gameplay animation (design, unblocked once Step 2 lands)
+Therefore the safe window is **after `CompleteParallelUpdate`/`RefreshBoneTransforms` (the finalized
+signal) and before the mesh object derives skinning matrices**. Proving that a candidate pointer is
+*in* that window needs a **tagged sentinel experiment**, not two reads: with the guard flag on, write
+one joint with a value distinguishable from the animation, read it back at several candidate points
+in the same frame and the next frame, and record where it survives. That experiment is Step 4 and is
+deliberately not implemented here.
 
-- Read `RefHandAnimState` (byte) and `RefIdleGrabRate`/`RefFarForwardRate`/`RefPsmovePullRate`
-  from the live anim instance; treat them as the game's pose-selection state.
-- When a grab starts, ramp `InteractionWeight` to 0 over ~150 ms (slerp per frame) so the authored
-  `Item_grasp` pose wins; when the grab ends, ramp back to 1.
-- Never disable pose selection, collision or the `GrabPoint` socket; the override only writes the 15
-  finger local rotations, never the hand, wrist or actor transform.
-- Log every transition (grab state, weight, joint targets) so the user can confirm in-headset that
-  the game's authored grasp is not distorted.
+Read-only evidence to collect during Step 2 (safe now, no writes):
 
-## Commands for the runtime session
+1. Locate the transform arrays with `Probe skeletal mesh components` (below). Record length, layout
+   and data pointer.
+2. Sample the same field's `data` pointer across frames: a pointer that alternates between two values
+   is the double buffer; a pointer that never changes is a single backing store.
+3. Correlate array contents with the animation: a finger joint that is animated changes between
+   samples; a static joint does not. This identifies which array is the evaluated pose and which is
+   cached/previous-fame data.
+4. Record the component's mesh/skeleton/anim-instance identities; later the writer's hook must name
+   the exact object it writes, not an offset.
+
+## Calibration — hand frame and the animated wrist
+
+`HandRetargeter::Calibrate` now stores offsets in the **hand bone's frame**:
+
+```
+C_joint = inverse(hand_reference_world) * reference_world(joint) * inverse(Convert(xr_rest(joint)))
+target_world = hand_world_live * Convert(xr_live(joint)) * C_joint
+local = inverse(parent_world) * target_world
+```
+
+`hand_world_live` must be the **currently animated** hand bone's world rotation (component transform ×
+hand bone local rotation from the evaluated pose), not the asset's reference value. The regression
+test `FingersFollowTheAnimatedWrist` proves that rotating the wrist moves the whole finger pose with
+it while the local finger rotations stay at the reference — which is what makes the calibration valid
+during animation. Do not feed a rest-pose wrist rotation at runtime.
+
+## Grab handling stays separate from the mathematics
+
+`HandRetargeter::InteractionWeight(desired, grab_active)` is a pure weighting function. **No gameplay
+state source is wired or verified**: `RefHandAnimState`, `RefIdleGrabRate` and the `GrabPoint` socket
+are candidates from the asset analysis, but until they are read from a live anim instance and shown
+to change at grab transitions, the override runs with a manually chosen weight and grabs are not
+detected. The writer must not infer grabs from timers or socket proximity.
+
+## Override session (no writes)
+
+`HandOverrideSession` is the piece that makes a future write reversible:
+
+- `Apply` refuses `BeforeEvaluation`, `EvaluationRunning`, `Unknown` and `SkinningHandoff`; only
+  `AfterEvaluation` writes, and it records why it refused otherwise.
+- On the first write of a frame it saves the animation rotations it replaces; repeated writes in the
+  same frame blend against that saved pose, not against its own output.
+- `Restore` puts the saved animation pose back; `SetEnabled(false)` causes the next `Apply` to restore
+  automatically. Weight 0 does the same.
+- It holds no guest pointers and performs no writes; the caller owns the store, so the experiment is
+  reversible and the branch stays read-only until the window is proven.
+
+## Inspector additions (read-only)
+
+In `Debug → Unreal objects` (Ctrl+F10), below the object list:
+
+- **Probe skeletal mesh components** enumerates live `SkeletalMeshComponent` objects, and for each
+  reports the mesh, skeleton and animation-instance it references plus every TArray candidate whose
+  contents validate as an `FTransform` array. Each candidate prints data pointer, count, stride,
+  quaternion/translation/scale offsets and whether it validated.
+- Validators applied per candidate: quaternion normalisation, finite translations/scales, scale range,
+  and expected-length match. The probe accepts a candidate only when every element passes.
+
+The validators and probe are unit-tested against synthetic component objects, including a rejected
+pointer array and a rejected wrong-length array.
+
+## Exact launch and capture procedure
 
 ```powershell
-# Build the investigation branch's emulator (retargeter linked, inspector panel available)
+# 1. Build this branch's emulator (already contains the probe; no writes)
 pwsh -File M:\Development\Deracine-work\_build\build.ps1 -Root M:\Development\Deracine-work\wt-handrig -Target shadps4
 
-# Launch Déraciné
+# 2. Launch Déraciné
 cd M:\Development\Deracine-work\wt-handrig
 .\build\shadPS4.exe --game "D:\Temp\Deracine\1.0\Image0\eboot.bin"
 
-# In-game: Ctrl+F10 -> Debug -> Unreal objects
-#   Discover Unreal objects
-#   By name:  c0000      By class: SkeletalMeshComponent   (repeat for c0100)
-#   Export report  ->  M:\Development\Deracine-work\snapshots\deracine_report.json
-#   Export snapshot -> deracine.bin/.json
+# 3. In-game, reach a scene and open the inspector: Ctrl+F10 -> Debug -> Unreal objects
+#    a. Discover Unreal objects
+#    b. By class: SkeletalMeshComponent      (repeat with AnimInstance if the list is short)
+#    c. Probe skeletal mesh components
+#    d. Export report    -> M:\Development\Deracine-work\snapshots\deracine_report.json
+#    e. Export snapshot  -> deracine.bin / deracine.json
+```
 
-# Offline confirmation of the engine tables and object layout
+`deracine_report.json` is the required evidence for the next step: it must show the live hand
+components, their mesh/skeleton/anim-instance identities and the candidate pose arrays with lengths.
+
+Optional offline confirmation of the engine tables from the same session:
+
+```powershell
 cd M:\Development\Deracine-work\donors\ps4-unreal-dumper\tools
 python uefind.py M:\Development\Deracine-work\snapshots\deracine.bin
 python ueobj.py  M:\Development\Deracine-work\snapshots\deracine.bin
-python uegen.py  M:\Development\Deracine-work\snapshots\deracine.bin M:\Development\Deracine-work\snapshots\sdk
 ```
 
-Send back `deracine_report.json` (small) plus the `uefind.py` output; with those I can tell whether
-the component and anim-instance candidates are correct and which transform-array candidates the
-probe should target.
+## What the next iteration needs
 
-## Remaining obstacles to 15-joint-per-hand tracking
+1. The report above (component identities + measured array lengths/layouts).
+2. A decision on the write window from the read-only sampling (pointer alternation, which array is
+   the evaluated pose).
+3. Only then: a flag-gated writer plus the tagged sentinel experiment, one joint, idle hand, restore
+   on disable, and the user's visual confirmation.
 
-1. **Guarded guest writer + frame-phase hook** — the only hard new capability; everything else is
-   discovery and mapping.
-2. **No symbols**: component and transform-array offsets must be found by structure and validated by
-   count/stride/unit-quaternion plausibility on the live process, not hardcoded.
-3. **Animation ordering**: the game evaluates the AnimBP (pose assets, blends) every frame; a write
-   before evaluation is silently discarded. The two-read test settles the window.
-4. **Thread affinity**: pose evaluation may run on a task thread; writes must be synchronised with
-   the game thread or applied at a known barrier.
-5. **Grab interaction**: the finger override must yield to `Item_grasp` (weight 0) or item grabbing
-   will look wrong even if it still functions.
-6. **Verification is visual**: the success criterion is a visibly moving finger on the original mesh,
-   checked by the user in-headset; that is the one step that cannot be automated here.
+No guest offsets are guessed anywhere in this document; the structures to identify are named, and the
+probe reports what the process actually contains.

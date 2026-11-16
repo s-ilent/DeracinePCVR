@@ -1027,8 +1027,14 @@ set(CORE src/core/aerolib/stubs.cpp
          src/core/memory.h
          src/core/unreal/guest_memory.cpp
          src/core/unreal/guest_memory.h
+         src/core/unreal/component_probe.cpp
+         src/core/unreal/component_probe.h
+         src/core/unreal/hand_override.cpp
+         src/core/unreal/hand_override.h
          src/core/unreal/hand_retarget.cpp
          src/core/unreal/hand_retarget.h
+         src/core/unreal/transform_validation.cpp
+         src/core/unreal/transform_validation.h
          src/core/unreal/inspector.cpp
          src/core/unreal/inspector.h
          src/core/unreal/report.cpp

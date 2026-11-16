@@ -77,6 +77,7 @@ struct HandRig {
     HandSide side = HandSide::Right;
     u32 hand_bone_index = 0;        // skeleton bone index of <side>-Hand
     Quat hand_reference_local;      // reference-pose local rotation of the hand bone
+    Quat hand_reference_world;      // reference-pose world rotation of the hand bone
     std::vector<HandJoint> joints;  // 15 joints
 };
 
@@ -106,9 +107,11 @@ struct RetargetOptions {
 // Coordinate handling: OpenXR is right-handed Y-up (-Z forward), Unreal is left-handed Z-up
 // (+X forward). The mapping between them is a reflection, which no quaternion can express, so
 // orientations are converted through 3x3 matrices (M * R * M^T) and turned back into quaternions.
-// Any remaining per-joint convention difference is absorbed by a calibrated offset
-// `C = reference_world * inverse(Convert(xr_rest))`, measured once from a rest capture, so the
-// left and right rigs need no mirror-specific code.
+// Any remaining per-joint convention difference is absorbed by a calibrated offset measured once
+// from a rest capture, expressed in the hand bone's frame:
+//     C = inverse(hand_reference_world) * reference_world * inverse(Convert(xr_rest))
+// so the offset is independent of where the animated wrist happens to be, and the left and right
+// rigs need no mirror-specific code.
 class HandRetargeter {
 public:
     HandRetargeter() = default;
@@ -129,7 +132,8 @@ public:
     static Quat ConvertOrientation(const Quat& xr);
 
     // Target local rotations for every rig joint. `hand_world` is the game hand bone's current
-    // world rotation (the animation keeps owning the wrist); it anchors the digit roots.
+    // world rotation, read from the live pose (the animation keeps owning the wrist); the whole
+    // finger pose moves with it, so calibration stays valid while the wrist animates.
     void Retarget(std::span<const Quat> xr_live, const Quat& hand_world,
                   std::span<Quat> out_local) const;
 
@@ -150,8 +154,12 @@ private:
     OpenXrMapping mapping;
     RetargetOptions options;
     bool is_calibrated = false;
-    std::vector<Quat> joint_offsets; // C per rig joint
-    Quat hand_offset;                // C for the hand frame
+    u32 hand_xr_joint = kUnmappedJoint;  // OpenXR joint used as the hand frame (palm)
+    // Per rig joint: reference rotation expressed in the hand bone's frame, and the rest capture's
+    // hand-relative XR rotation. Keeping both hand-relative is what makes the calibration survive
+    // an animated wrist.
+    std::vector<Quat> hand_frame_reference;
+    std::vector<Quat> xr_relative_rest;
 };
 
 // -- quaternion helpers (exposed for the tests and for the live writer) --------------------------

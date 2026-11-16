@@ -233,6 +233,73 @@ void UnrealObjectsViewer::DrawObjectList() {
     }
 }
 
+void UnrealObjectsViewer::ProbeHandComponents() {
+    probes.clear();
+    probe_status.clear();
+    if (!inspector || !inspector->Result().ok()) {
+        probe_status = "run Discover Unreal objects first";
+        return;
+    }
+    const auto components = inspector->SearchByClass("SkeletalMeshComponent", 32);
+    if (components.empty()) {
+        probe_status = "no live SkeletalMeshComponent found";
+        return;
+    }
+    const Unreal::ObjectNamer namer = [this](VAddr address, Unreal::ObjectIdentity& out) {
+        return inspector->DescribeObject(address, out.name, out.class_name);
+    };
+    for (const auto& component : components) {
+        // Counts are unknown until the mesh/skeleton references resolve, so accept any validated
+        // length and report it: the runtime lengths are the evidence this probe exists to collect.
+        probes.push_back(
+            Unreal::ProbeSkeletalMeshComponent(live_memory, component.address, {}, namer));
+    }
+    char text[96];
+    std::snprintf(text, sizeof(text), "probed %zu skeletal mesh components", probes.size());
+    probe_status = text;
+}
+
+void UnrealObjectsViewer::DrawHandComponents() {
+    Separator();
+    TextUnformatted("Skeletal mesh components and candidate pose arrays");
+    if (Button("Probe skeletal mesh components")) {
+        ProbeHandComponents();
+    }
+    if (!probe_status.empty()) {
+        SameLine();
+        TextDisabled("%s", probe_status.c_str());
+    }
+    for (const auto& probe : probes) {
+        char label[256];
+        std::snprintf(label, sizeof(label), "%016llX  mesh=%s  skeleton=%s##probe%016llX",
+                      static_cast<unsigned long long>(probe.component),
+                      probe.mesh.empty() ? "?" : probe.mesh.name.c_str(),
+                      probe.skeleton.empty() ? "?" : probe.skeleton.name.c_str(),
+                      static_cast<unsigned long long>(probe.component));
+        if (!TreeNode(label)) {
+            continue;
+        }
+        Text("anim instance: %s",
+             probe.anim_instance.empty() ? "?" : probe.anim_instance.name.c_str());
+        if (!probe.error.empty()) {
+            TextColored({1.0f, 0.6f, 0.4f, 1.0f}, "probe: %s", probe.error.c_str());
+        }
+        if (probe.candidates.empty()) {
+            TextDisabled("no transform array candidates");
+        }
+        for (const auto& candidate : probe.candidates) {
+            Text("array %016llX  count=%u  stride=0x%llX  rot=0x%llX  trans=0x%llX  scale=0x%llX  valid=%s",
+                 static_cast<unsigned long long>(candidate.data), candidate.count,
+                 static_cast<unsigned long long>(candidate.layout.stride),
+                 static_cast<unsigned long long>(candidate.layout.rotation),
+                 static_cast<unsigned long long>(candidate.layout.translation),
+                 static_cast<unsigned long long>(candidate.layout.scale),
+                 candidate.stats.valid() ? "yes" : "no");
+        }
+        TreePop();
+    }
+}
+
 void UnrealObjectsViewer::Draw() {
     SetNextWindowSize({620.0f, 520.0f}, ImGuiCond_FirstUseEver);
     if (!Begin("Unreal objects", &open)) {
@@ -243,6 +310,7 @@ void UnrealObjectsViewer::Draw() {
     DrawDiscovery();
     Separator();
     DrawObjectList();
+    DrawHandComponents();
 
     Separator();
     TextUnformatted("Memory snapshot (ps4-unreal-dumper format)");
