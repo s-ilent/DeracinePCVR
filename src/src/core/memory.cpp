@@ -3,6 +3,7 @@
 
 #include "common/alignment.h"
 #include "common/assert.h"
+#include "common/backing_write.h"
 #include "common/debug.h"
 #ifndef _WIN32
 #include <unistd.h>
@@ -206,21 +207,22 @@ bool MemoryManager::TryWriteBacking(void* address, const void* data, u64 size) {
         return false;
     }
 
+    std::vector<Common::BackingWriteSegment> segments;
+    u64 remaining = size;
     for (auto& vma : vmas_to_write) {
         auto start_in_vma = std::max<VAddr>(virtual_addr, vma.base) - vma.base;
         auto phys_handle = std::prev(vma.phys_areas.upper_bound(start_in_vma));
-        for (; phys_handle != vma.phys_areas.end(); phys_handle++) {
-            if (!size) {
-                break;
-            }
+        for (; phys_handle != vma.phys_areas.end() && remaining != 0; phys_handle++) {
             const u64 start_in_dma =
                 std::max<u64>(start_in_vma, phys_handle->first) - phys_handle->first;
             u8* backing = impl.BackingBase() + phys_handle->second.base + start_in_dma;
-            u64 copy_size = std::min<u64>(size, phys_handle->second.size - start_in_dma);
-            memcpy(backing, data, copy_size);
-            size -= copy_size;
+            const u64 copy_size = std::min<u64>(remaining, phys_handle->second.size - start_in_dma);
+            segments.push_back({backing, copy_size});
+            remaining -= copy_size;
         }
     }
+
+    Common::WriteBackingSegments(static_cast<const u8*>(data), size, segments);
 
     return true;
 }
