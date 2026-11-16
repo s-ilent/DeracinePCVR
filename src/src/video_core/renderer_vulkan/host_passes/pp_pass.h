@@ -35,6 +35,11 @@ public:
         float sharpen_centre = 0.0f;
         float centre_radius = 0.0f;
         u32 antialias = 1;
+        /// The picture is larger than the target: average the source texels each output
+        /// pixel covers (host_shaders/post_process.frag) instead of reading one point of
+        /// it, which blurs near-Nyquist detail less than it folds it into moire. Only
+        /// where an axis actually shrinks; 0 keeps the previous single tap and FXAA.
+        u32 downsample = 0;
     };
 
     void Create(const Instance& instance, MasterSemaphore* master_semaphore,

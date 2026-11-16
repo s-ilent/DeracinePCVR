@@ -25,6 +25,9 @@ layout (push_constant) uniform settings {
     float sharpen_centre;
     float centre_radius;
     bool antialias;
+    // The picture is larger than the target: average the source texels each output pixel
+    // covers (SampleArea) instead of reading one point of it.
+    bool downsample;
 } pp;
 
 const float cutoff = 0.0031308, a = 1.055, b = 0.055, d = 12.92;
@@ -119,8 +122,46 @@ vec4 SampleFXAA(vec2 at) {
     return centre * weight_centre + other * weight_other;
 }
 
+// Area average of the texels one output pixel covers, for a picture that is larger than the
+// target. The footprint is what the derivatives say it is, so this needs no size uniform; the
+// weights are the overlap of the footprint with each texel, which for a footprint of up to two
+// texels an axis is exactly the box filter (and never rings). Wider footprints are clamped to
+// two: three taps still smooth more than one bilinear tap, but are no longer exact.
+vec4 SampleArea(vec2 at, vec2 foot) {
+    const vec2 size = vec2(textureSize(texSampler, 0));
+    const vec2 centre = at * size - 0.5;
+    const vec2 lo = centre - foot * 0.5;
+    const vec2 hi = centre + foot * 0.5;
+    const vec2 base = floor(lo + 0.5);
+    vec4 sum = vec4(0.0);
+    float weight = 0.0;
+    for (int y = 0; y < 3; ++y) {
+        const float wy = clamp(min(hi.y, base.y + float(y) + 0.5) -
+                                   max(lo.y, base.y + float(y) - 0.5),
+                               0.0, foot.y) / foot.y;
+        for (int x = 0; x < 3; ++x) {
+            const float wx = clamp(min(hi.x, base.x + float(x) + 0.5) -
+                                       max(lo.x, base.x + float(x) - 0.5),
+                                   0.0, foot.x) / foot.x;
+            const ivec2 texel = clamp(ivec2(base) + ivec2(x, y), ivec2(0), ivec2(size) - 1);
+            sum += texelFetch(texSampler, texel, 0) * (wx * wy);
+            weight += wx * wy;
+        }
+    }
+    return sum / weight;
+}
+
+vec4 SampleImage(vec2 at) {
+    const vec2 size = vec2(textureSize(texSampler, 0));
+    const vec2 foot = vec2(abs(dFdx(at).x), abs(dFdy(at).y)) * size;
+    if (pp.downsample && max(foot.x, foot.y) > 1.0) {
+        return SampleArea(at, min(foot, vec2(2.0)));
+    }
+    return pp.antialias ? SampleFXAA(at) : textureLod(texSampler, at, 0.0);
+}
+
 void main() {
-    vec4 color_linear = pp.antialias ? SampleFXAA(uv) : texture(texSampler, uv);
+    vec4 color_linear = SampleImage(uv);
     vec3 here = pp.hdr || pp.encoded_in ? color_linear.rgb : gamma(color_linear.rgb);
     vec2 from_middle = uv * 2.0 - 1.0;
     float sharpen = dot(from_middle, from_middle) < pp.centre_radius * pp.centre_radius
