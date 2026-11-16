@@ -155,6 +155,7 @@ set(GUEST_MEMORY_VALIDATION_TEST_SOURCES
     core/test_flip_label_tracker.cpp
     core/test_fios2_module_choice.cpp
     video_core/test_legacy_vertex_attributes.cpp
+    video_core/test_color_contract.cpp
     video_core/test_readconst_snapshot_diag.cpp
     video_core/test_fma_split_diag.cpp
     video_core/test_recip_refine_fix.cpp

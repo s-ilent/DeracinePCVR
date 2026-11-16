@@ -33,6 +33,8 @@ namespace Vulkan {
 struct Frame {
     u32 width;
     u32 height;
+    /// The format the image, its view and the pass that draws into it were made with.
+    vk::Format format{};
     VmaAllocation allocation;
     vk::Image image;
     vk::ImageView image_view;
