@@ -34,6 +34,24 @@ public:
     /// The runtime had a headset when it was asked at Connect.
     bool HasHeadset() const;
 
+    /// What the runtime asks of one eye's picture and what it will not go past, from
+    /// xrEnumerateViewConfigurationViews and the system's graphics properties. Everything here is
+    /// for one eye except `max_image_*`, which the whole side-by-side image must fit in. The size
+    /// of the title's own picture has nothing to do with any of it.
+    struct ViewSizes {
+        u32 recommended_width{};
+        u32 recommended_height{};
+        u32 max_width{};
+        u32 max_height{};
+        u32 recommended_sample_count{};
+        u32 max_sample_count{};
+        u32 max_image_width{};
+        u32 max_image_height{};
+        /// The runtime has said: before it has, nothing recommends a size.
+        bool known{};
+    };
+    ViewSizes EyeSizes() const;
+
     /// What the runtime wants of the Vulkan instance and device the session is to draw with,
     /// beyond what the renderer enables for itself. Names the driver does not know are for the
     /// renderer to leave out.

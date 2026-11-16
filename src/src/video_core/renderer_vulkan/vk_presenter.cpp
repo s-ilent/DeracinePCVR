@@ -14,6 +14,7 @@
 #include "core/vr/spectator_view.h"
 #ifdef ENABLE_OPENXR_HOST
 #include "core/vr/openxr_host.h"
+#include "core/vr/presentation_size.h"
 #endif
 #include "imgui/notifications_layer.h"
 #include "imgui/renderer/imgui_core.h"
@@ -36,6 +37,7 @@
 #include <chrono>
 #include <cmath>
 #include <csetjmp>
+#include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
@@ -1410,10 +1412,59 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
     const bool crop = spectator && desktop_crop;
     const float desktop_aspect = Core::Vr::DesktopViewAspect(
         desktop_view, fov, static_cast<float>(eye_width) / eye_height);
-    // Compute target resolution for OpenXR swapchain.
-    // When SHADPS4_TITLE_EYE_WIDTH (from settings.txt resolution) or SHADPS4_VR_SCALE is set,
-    // upscale the OpenXR swapchain so modern VR headsets (Quest 2/3, etc.) receive a supersampled
-    // frame with SSAA rather than stretching the low-res 1248x1404 guest render target.
+    // What the headset is shown is not what the title draws. An OpenXR runtime asks an eye to be a
+    // size of its own (a Steam Frame, 3036x3036, square), while the title renders whatever its own
+    // settings say (a PlayStation VR's 960x1080 an eye at 300, 320 or 400 per cent: 2880x3240,
+    // 3072x3456, 3840x4320). SHADPS4_VR_RESOLUTION chooses between the runtime's size, the title's
+    // own, and one given here; SHADPS4_VR_SUPERSAMPLE multiplies the choice.
+    // SHADPS4_TITLE_EYE_WIDTH and SHADPS4_VR_SCALE keep the meaning they always had, for settings
+    // already written that way. None of this touches the projected field of view: the whole eye
+    // image is shown with the frustum the title drew for, whatever size it is sent at.
+    static const auto configured_resolution = [] {
+        struct Choice {
+            bool set{};
+            Core::Vr::PresentationSizeMode mode{Core::Vr::PresentationSizeMode::Recommended};
+            u32 width{};
+            u32 height{};
+        } choice{};
+        const char* value = std::getenv("SHADPS4_VR_RESOLUTION");
+        if (value == nullptr || *value == '\0') {
+            return choice;
+        }
+        choice.set = true;
+        const std::string_view text{value};
+        if (text == "auto" || text == "recommended") {
+            choice.mode = Core::Vr::PresentationSizeMode::Recommended;
+        } else if (text == "guest" || text == "title") {
+            choice.mode = Core::Vr::PresentationSizeMode::Guest;
+        } else {
+            u32 width = 0;
+            u32 height = 0;
+            const int parts = std::sscanf(value, "%ux%u", &width, &height);
+            if (parts >= 1 && width > 0) {
+                choice.mode = Core::Vr::PresentationSizeMode::Explicit;
+                choice.width = width;
+                choice.height = parts == 2 ? height : 0;
+            } else {
+                LOG_WARNING(Render_Vulkan,
+                            "SHADPS4_VR_RESOLUTION={} is neither auto, guest nor a size: the "
+                            "runtime's recommendation is used",
+                            value);
+            }
+        }
+        return choice;
+    }();
+    static const bool configured_supersample_given = [] {
+        const char* value = std::getenv("SHADPS4_VR_SUPERSAMPLE");
+        return value != nullptr && *value != '\0';
+    }();
+    static const float configured_supersample = [] {
+        const char* value = std::getenv("SHADPS4_VR_SUPERSAMPLE");
+        if (value == nullptr || *value == '\0') {
+            return 1.0f;
+        }
+        return std::clamp(static_cast<float>(std::atof(value)), 0.1f, 8.0f);
+    }();
     static const u32 configured_eye_width = [] {
         const char* val = std::getenv("SHADPS4_TITLE_EYE_WIDTH");
         return val != nullptr ? static_cast<u32>(std::max(0, std::atoi(val))) : 0u;
@@ -1423,31 +1474,69 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
         return val != nullptr ? std::max(0.5f, static_cast<float>(std::atof(val))) : 0.0f;
     }();
 
-    u32 target_eye_width = eye_width;
-    u32 target_eye_height = eye_height;
-    if (configured_scale > 0.0f) {
-        target_eye_width = static_cast<u32>(std::round(eye_width * configured_scale));
-        target_eye_height = static_cast<u32>(std::round(eye_height * configured_scale));
-    } else if (configured_eye_width > eye_width) {
-        target_eye_width = configured_eye_width;
-        const float scale = static_cast<float>(target_eye_width) / static_cast<float>(eye_width);
-        target_eye_height = static_cast<u32>(std::round(eye_height * scale));
+    const Core::Vr::OpenXrHost::ViewSizes view_sizes = Core::Vr::OpenXrHost::Instance().EyeSizes();
+    Core::Vr::PresentationSizeRequest request{};
+    request.supersample = configured_supersample;
+    if (configured_resolution.set) {
+        request.mode = configured_resolution.mode;
+        request.explicit_width = configured_resolution.width;
+        request.explicit_height = configured_resolution.height;
+    } else if (configured_scale > 0.0f) {
+        // The old scale factor: the title's own picture, multiplied and clamped as it always was.
+        request.mode = Core::Vr::PresentationSizeMode::Guest;
+        if (!configured_supersample_given) {
+            request.supersample = configured_scale;
+        }
+    } else if (configured_eye_width > 0) {
+        // The old width: it only ever enlarged the picture, so asking for less leaves it alone.
+        request.mode = Core::Vr::PresentationSizeMode::Explicit;
+        request.explicit_width = std::max(configured_eye_width, eye_width);
+    } else {
+        request.mode = Core::Vr::PresentationSizeMode::Recommended;
     }
-    // Align dimensions to 16 for optimal Vulkan memory and OpenXR encoder performance
-    target_eye_width = (target_eye_width + 15u) & ~15u;
-    target_eye_height = (target_eye_height + 15u) & ~15u;
-
+    const Core::Vr::PresentationSize presentation = Core::Vr::PlanPresentationSize(
+        eye_width, eye_height, view_sizes.recommended_width, view_sizes.recommended_height,
+        Core::Vr::PresentationSizeLimits{
+            .max_eye_width = view_sizes.max_width,
+            .max_eye_height = view_sizes.max_height,
+            .max_image_width = view_sizes.max_image_width,
+            .max_image_height = view_sizes.max_image_height,
+        },
+        request);
+    const u32 target_eye_width = presentation.eye_width;
+    const u32 target_eye_height = presentation.eye_height;
     const u32 target_swapchain_width = target_eye_width * 2;
     const u32 target_swapchain_height = target_eye_height;
 
-    static bool logged_target_res = false;
-    if (!logged_target_res) {
+    static u32 logged_guest_width{};
+    static u32 logged_guest_height{};
+    static u32 logged_target_width{};
+    static u32 logged_target_height{};
+    static bool logged_target_res{};
+    if (!logged_target_res || logged_guest_width != eye_width ||
+        logged_guest_height != eye_height || logged_target_width != target_eye_width ||
+        logged_target_height != target_eye_height) {
         logged_target_res = true;
+        logged_guest_width = eye_width;
+        logged_guest_height = eye_height;
+        logged_target_width = target_eye_width;
+        logged_target_height = target_eye_height;
+        std::string note = presentation.mode == Core::Vr::PresentationSizeMode::Recommended
+                               ? "the runtime's size"
+                           : presentation.mode == Core::Vr::PresentationSizeMode::Explicit
+                               ? "the size asked for"
+                               : "the title's own size";
+        if (request.supersample != 1.0f) {
+            note += fmt::format(", {:.2f}x", request.supersample);
+        }
+        if (presentation.clamped) {
+            note += ", cut to the runtime's maximum";
+        }
         LOG_INFO(Render_Vulkan,
-                 "VR HMD OpenXR swapchain target: {}x{} [per eye: {}x{}, base eye: {}x{}, scale: {:.2f}x]",
-                 target_swapchain_width, target_swapchain_height,
-                 target_eye_width, target_eye_height, eye_width, eye_height,
-                 static_cast<float>(target_eye_width) / static_cast<float>(eye_width));
+                 "VR: the title draws {}x{} an eye; the headset is shown {}x{} an eye ({}), {}x{} "
+                 "for both",
+                 eye_width, eye_height, target_eye_width, target_eye_height, note,
+                 target_swapchain_width, target_swapchain_height);
     }
 
     Frame* const local = exported ? nullptr : vr_exporter->AcquireLocal(target_swapchain_width, target_swapchain_height);
