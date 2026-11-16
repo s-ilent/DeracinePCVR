@@ -1087,3 +1087,60 @@ gtest_discover_tests(shadps4_image_subresource_test
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     DISCOVERY_TIMEOUT 60
 )
+
+# ===========================================================================
+# C++ runtime hooks for libSceLibcInternal (guest static initialization)
+# ===========================================================================
+
+add_executable(shadps4_libc_cxa_test
+    core/test_libc_cxa_hooks.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/libraries/libc_internal/libc_internal.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/libraries/libc_internal/libc_internal_cxa.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/loader/symbols_resolver.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/aerolib/aerolib.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/assert.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/error.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/string_util.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/logging/log.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/path_util.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/io_file.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/ntapi.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/emulator_settings.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/emulator_state.cpp
+    stubs/core_stub.cpp
+    stubs/common_stub.cpp
+    stubs/kernel_stub.cpp
+    stubs/sdl_stub.cpp
+    stubs/scm_rev_stub.cpp
+    stubs/libc_internal_stub.cpp
+)
+
+target_include_directories(shadps4_libc_cxa_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/tests
+)
+target_compile_features(shadps4_libc_cxa_test PRIVATE cxx_std_23)
+target_compile_definitions(shadps4_libc_cxa_test PRIVATE
+    NOMINMAX
+    WIN32_LEAN_AND_MEAN
+    NTDDI_VERSION=0x0A000006
+    _WIN32_WINNT=0x0A00
+    WINVER=0x0A00
+)
+
+target_link_libraries(shadps4_libc_cxa_test PRIVATE
+    GTest::gtest_main
+    fmt::fmt
+    spdlog::spdlog
+    nlohmann_json::nlohmann_json
+    toml11::toml11
+    SDL3::SDL3
+)
+
+list(APPEND TEST_TARGETS shadps4_libc_cxa_test)
+
+gtest_discover_tests(shadps4_libc_cxa_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)
