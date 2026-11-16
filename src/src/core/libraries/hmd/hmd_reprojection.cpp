@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <chrono>
+#include <cmath>
 #include <mutex>
 
 #include "common/logging/log.h"
@@ -47,18 +48,39 @@ struct Reprojection {
 
 Reprojection g_reprojection;
 
-Core::Vr::Fov FovFromUv(const OrbisHmdReprojectionEyeUv& left_eye) {
-    // uv = tan * scale + offset, so the image edges (uv 0 and 1) give the half angles back.
-    // On the left eye the left edge is the temple side.
-    // For Side-by-Side stereo images (left eye in [0, 0.5]), the nasal edge is at U = 0.5,
-    // not U = 1.0. This prevents the right eye image from bleeding into the left eye.
-    const float right_edge = (left_eye.offset_x < 0.5f && left_eye.scale_x < 0.35f) ? 0.5f : 1.0f;
+/// Whether the two eyes are the halves of one side-by-side picture: they sample the same image
+/// and their UV mappings sit on opposite halves of it, so the right eye's offset mirrors the left
+/// eye's around the middle. Then each eye's own right edge is that middle, not the image's edge,
+/// which is what keeps one eye from being described with the other's picture in view.
+bool EyesAreHalvesOfOnePicture(const AmdGpu::Image& left, const AmdGpu::Image& right,
+                               const OrbisHmdReprojectionEyeUv& left_eye,
+                               const OrbisHmdReprojectionEyeUv& right_eye) {
+    if (left.Address() != right.Address()) {
+        return false;
+    }
+    const float mirrored = std::abs(right_eye.offset_x - (1.0f - left_eye.offset_x));
+    return mirrored < std::abs(right_eye.offset_x - left_eye.offset_x);
+}
+
+Core::Vr::Fov FovFromUv(const OrbisHmdReprojectionEyeUv& left_eye, bool halves) {
+    // uv = tan * scale + offset, so the edges of the eye's own picture give the half angles back.
+    // On the left eye the left edge is the temple side and the far edge the nose side.
+    const float nose_edge = halves ? 0.5f : 1.0f;
     return {
         .tan_out = left_eye.offset_x / left_eye.scale_x,
-        .tan_in = (right_edge - left_eye.offset_x) / left_eye.scale_x,
+        .tan_in = (nose_edge - left_eye.offset_x) / left_eye.scale_x,
         .tan_top = left_eye.offset_y / left_eye.scale_y,
         .tan_bottom = (1.0f - left_eye.offset_y) / left_eye.scale_y,
     };
+}
+
+bool UsableFov(const Core::Vr::Fov& fov) {
+    for (const float tangent : {fov.tan_out, fov.tan_in, fov.tan_top, fov.tan_bottom}) {
+        if (!std::isfinite(tangent) || tangent <= 1e-3f) {
+            return false;
+        }
+    }
+    return true;
 }
 
 } // namespace
@@ -226,10 +248,17 @@ static s32 sceHmdReprojectionStartInternal(const OrbisHmdReprojectionParam* para
             frame.overlay_uv[0] = {ov->uv[0].scale_x, ov->uv[0].scale_y, ov->uv[0].offset_x,
                                   ov->uv[0].offset_y};
             frame.overlay_uv[1] = {ov->uv[1].scale_x, ov->uv[1].scale_y, ov->uv[1].offset_x,
-                                  ov->uv[1].offset_y};
+                                   ov->uv[1].offset_y};
         }
     }
-    frame.fov = FovFromUv(param->uv[0]);
+    frame.fov = FovFromUv(param->uv[0],
+                          EyesAreHalvesOfOnePicture(frame.eye_textures[0], frame.eye_textures[1],
+                                                    param->uv[0], param->uv[1]));
+    if (!UsableFov(frame.fov)) {
+        // A frustum that is inside out or empty is one no compositor can be told of: what the title
+        // was told to draw for is the next best thing.
+        frame.fov = Core::Vr::Runtime::Instance().GetConfig().fov;
+    }
     frame.render_pose = {
         .position{tracker_state->position[0], tracker_state->position[1],
                   tracker_state->position[2]},
@@ -325,7 +354,8 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStart2dVr(const OrbisHmdReprojection2dVrParam
     } else if (param->uv.scale_x > 0.01f && std::isfinite(param->uv.scale_x) &&
                param->uv.scale_y > 0.01f && std::isfinite(param->uv.scale_y) &&
                param->uv.offset_x > 0.01f && std::isfinite(param->uv.offset_x)) {
-        frame.fov = FovFromUv(param->uv);
+        // The one picture both eyes are given here holds an eye in each half.
+        frame.fov = FovFromUv(param->uv, true);
     } else {
         frame.fov = Core::Vr::Runtime::Instance().GetConfig().fov;
     }
