@@ -934,12 +934,19 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
                     return {merged_image_id, -1, -1};
                 }
 
-                // We need to have a larger, already allocated image to copy this one into
-                if (merged_image_id) {
-                    auto& merged_image = slot_images[merged_image_id];
-                    merged_image.CopyMip(cache_image, mip, slice);
-                    FreeImage(cache_image_id);
+                // If we don't have an allocated image, create one here. Otherwise it is created
+                // later from guest memory, the GPU data of this subresource is lost, and reads
+                // and writes end up in different images.
+                if (!merged_image_id) {
+                    merged_image_id = slot_images.insert(instance, scheduler, blit_helper,
+                                                         slot_image_views, image_info);
+                    RegisterImage(merged_image_id);
+                    RefreshImage(slot_images[merged_image_id]);
+                    TrackImage(merged_image_id);
                 }
+                auto& merged_image = slot_images[merged_image_id];
+                merged_image.CopyMip(cache_image, mip, slice);
+                FreeImage(cache_image_id);
             }
         }
     }
