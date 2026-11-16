@@ -1027,6 +1027,8 @@ set(CORE src/core/aerolib/stubs.cpp
          src/core/memory.h
          src/core/unreal/guest_memory.cpp
          src/core/unreal/guest_memory.h
+         src/core/unreal/hand_retarget.cpp
+         src/core/unreal/hand_retarget.h
          src/core/unreal/inspector.cpp
          src/core/unreal/inspector.h
          src/core/unreal/report.cpp
