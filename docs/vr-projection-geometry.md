@@ -204,8 +204,12 @@ stretched with it. Test
 
 The live session sits comfortably above the cliff (100.12°), which is why Déraciné is correct
 today; nothing in the code guarantees it stays there. `SHADPS4_VR_FOV` reaches 50 %, and it is
-exactly the mode in which the FOV is no longer the PSVR default. The fix ( §6) replaces the guess
-with the layout fact and cannot change Déraciné's numbers.
+exactly the mode in which the FOV is no longer the PSVR default. Measured on a build of this branch
+with `fov=55` (§5.2): the title returned `scale_x = 0.380568`, above 0.35, so the old rule would have
+declared 63.0° of nose-side field of view where the title drew for 33.0° — a 30° error and a
+threefold nasal tangent, i.e. a picture visibly stretched across its nasal half. The fixed build
+declares 33.0°. The fix (§6) replaces the guess with the layout fact and does not change Déraciné's
+numbers at 100 %.
 
 ### C2. The runtime's recommended per-eye size is fetched, logged, and discarded
 
@@ -250,24 +254,23 @@ with its own rect.
 
 ## 4. Suspected issues, each with the experiment that settles it
 
-### S1. Does the title's UV follow the FOV it was told?
+### S1. Does the title's UV follow the FOV it was told? — resolved, it does
 
-The round trip is exact today, but the title was told the PSVR default, so “UE4 derives its UV from
-the frustum it queried” and “UE4 hardcodes the PSVR UV” predict the same numbers. They differ in
-consequence: in the second case, `fov=70` would make the title render a narrower frustum while the
-layer declares the wider one recovered from the UV — a mismatch of the size quantified in §2.3.
-**Test:** run once with `fov=70` and read the `eye UV:` line the 3-D path already prints
-(`hmd_reprojection.cpp:262-267`). If `scale_x` rises to ≈0.299 the UV follows the query and the
-round trip is self-correcting; if it stays 0.209312 the title hardcodes it (and this is a live
-distortion at any `fov` other than 100).
+The round trip was exact on the PSVR default, where "UE4 derives its UV from the frustum it queried"
+and "UE4 hardcodes the PSVR UV" predict the same numbers. Measured at 70 % and 55 % of the PSVR
+field of view (§5.2): the returned `scale_x` moves to 0.299017 and 0.380568, which is
+`0.5/(tan_out+tan_in)` for the frustum the title was told, to 0.01 %. The UV follows the query, so
+the round trip is self-correcting and changing the reported field of view cannot open a mismatch on
+this path.
 
-### S2. Does the vertical axis point the way the reconstruction assumes?
+### S2. Does the vertical axis point the way the reconstruction assumes? — resolved, it does
 
-`FovFromUv` makes `v = 0` the top edge and `tan_top` the up half-angle, which is self-consistent
-with the guest's `uv = tan · scale + offset` inverse but undocumented and untested. It cannot be
-observed with PSVR numbers because `tan_top == tan_bottom`. **Test:** set
-`SHADPS4_VR_HEADSET_FOV_TAN="1.207,1.181,0.83,1.72"` (asymmetric 39.7° up / 59.8° down) and look at
-the horizon: a vertical shift means the top/bottom assignment is wrong.
+`FovFromUv` makes `v = 0` the top edge and `tan_top` the up half-angle. The PSVR numbers cannot show
+it (`tan_top == tan_bottom`), so the test was the headset's own asymmetric frustum: told
+49.8° up / 59.9° down, the title returned UVs that put 49.8° at `v = 0`, and the reconstruction gives
+`tan_top = 1.1847` / `tan_bottom = 1.7219` back — up = +49.8°, down = −59.9° (§5.2). A flipped axis
+on either side would have returned the pair swapped. There is no host-side convention error here, and
+no guest-side limitation either: the title follows the vertical asymmetry it is told.
 
 ### S3. What does the 2-D VR branch actually declare?
 
@@ -306,22 +309,23 @@ in this repository and cannot be checked here; the OpenXR path in-process does n
 
 ---
 
-## 5. Automated validation
+## 5. Validation
 
-`shadps4_vr_projection_math_test` — 23 cases, pure math, no emulator, Vulkan or OpenXR headers
-(`src/tests/vr_projection_math.h`, `src/tests/test_vr_projection_math.cpp`, target added in
-`src/tests/CMakeLists.txt`).
+### 5.1 Automated: `shadps4_vr_projection_math_test`, 25 cases
+
+Pure math, no emulator, Vulkan or OpenXR headers (`src/tests/vr_projection_math.h`,
+`src/tests/test_vr_projection_math.cpp`, target added in `src/tests/CMakeLists.txt`). The full
+emulator build is clean with it in the tree (§5.3).
 
 The work is on branch `investigation/psvr-projection-geometry`, checked out in
 `M:\Development\Deracine-work\wt-projection` so the main worktree stays as it was. That worktree
 needs the external sources once before it can configure (`python tools/fetch-submodules.py` from
-its root); the results below were produced both by the CMake target and by a direct `clang-cl`
-build of the same two files against the gtest already built in the main tree.
+its root).
 
 ```
 pwsh M:\Development\Deracine-work\_build\build.ps1 -Tests -Root M:\Development\Deracine-work\wt-projection -Target shadps4_vr_projection_math_test
-M:\Development\Deracine-work\wt-projection\build-tests\tests\shadps4_vr_projection_math_test.exe   # 23 passed
-ctest -R VrProjectionMath --output-on-failure                                                      # 23/23
+M:\Development\Deracine-work\wt-projection\build-tests\tests\shadps4_vr_projection_math_test.exe   # 25 passed
+ctest -R VrProjectionMath --output-on-failure                                                      # 25/25
 ```
 
 What each group proves:
@@ -335,51 +339,113 @@ What each group proves:
 | rects & crops | `RectOffsetDoesNotChangeWhichRayAPixelRepresents`, `NaiveResampleOfCroppedSourceShiftsTheFanHorizontally` | a pixel's ray is invariant under window moves; a 5 % crop per eye is 159.789 px of spurious disparity |
 | stereo | `Stereo_PointsAtInfinityHaveZeroDisparity`, `…_FiniteDepthDisparityMatchesClosedForm`, `…_AngularCircleBecomesAnEllipse`, `…_BinocularOverlapUsesEachEyesOwnFov` | 0 px at infinity; −81.520 px at 1 m against closed form; 1.420277:1 ellipse; overlap from tangent intervals, mirrored UVs 24.0596° wrong |
 | rays & shapes | `GridOfRaysRoundTripsExactly`, `StraightLinesInAngleSpaceMapToStraightLinesInUv`, `MatchedObjectsAtSeveralDepths` | 17×17 UV round trip < 1e‑13; straight lines stay straight in tangent space and do not in angle space |
-| guest UV recovery | `GuestUv_*` (4 cases) | the live UV round-trips to 2e‑6; the magnitude heuristic agrees above 71° and doubles the nose side below it; a whole-texture eye must end at U = 1; the two layouts are decided by the two offsets, half a texture apart |
+| guest UV recovery | `GuestUv_*` (6 cases) | the live UV round-trips to 2e‑6; the magnitude heuristic agrees above 71° and triples the nose side below it; a whole-texture eye must end at U = 1; the layout decision table covers one shared image, a texture each, contradictory offsets and offsets that fit neither reading |
 
 The harness header is reusable by the emulator: `PlanCrop` is the function a future
 “declare the runtime's FOV” mode would need, and `Compare` is the numerical oracle any shader-side
 change should be checked against.
 
+### 5.2 In the headset, on a build of this branch
+
+Four sessions of the title, on `_validate\shadps4.exe` built from this branch, each log kept as
+`run-<label>-log.txt`. The title renders 5760×3240 side-by-side (2880×3240 an eye) and the swapchain
+is 5760×3248 in every run.
+
+| run | told to the title (out/in/up/down) | UVs returned (`scale_x/scale_y, offset_x/offset_y`) | recovered tangents | declared to the compositor |
+|---|---|---|---|---|
+| 100 % (shipped settings) | 50.4/49.8/51.6/51.6° | 0.209312/0.395923, 0.252730/0.500000 | 1.2074/1.1813/1.2629/1.2629 | 50.4/49.8/51.6/51.6° |
+| `fov=70` | 40.2/39.6/41.5/41.5° | 0.299017/0.565604, 0.252730/0.500000 | 0.8452/0.8269/0.8840/0.8840 | 40.2/39.6/41.5/41.5° |
+| `fov=55` | 33.6/33.0/34.8/34.8° | 0.380568/0.719860, 0.252730/0.500000 | 0.6641/0.6497/0.6946/0.6946 | 33.6/33.0/34.8/34.8° |
+| `fov_of=headset` | 59.0/50.7/49.8/59.9° | 0.173247/0.344041, 0.288335/0.407581 | 1.6643/1.2218/1.1847/1.7219 | 59.0/50.7/49.8/59.9° |
+
+What these settle:
+
+1. **The title derives its UVs from the frustum it was told** (§4 S1). `scale_x` is 0.299017 at 70 %
+   and 0.380568 at 55 %, against `0.5/(tan_out+tan_in)` = 0.299043 and 0.380568 predicted for the
+   told frusta: agreement to 0.01 %. `scale_y` likewise (0.565604 against 0.565606). The round trip
+   is self-correcting, and the title is not hardcoding PSVR UVs.
+2. **The 71° cliff was real, and it is gone** (§3 C1). At 55 % the returned `scale_x` is 0.380568,
+   above the old rule's 0.35, so the old code would have taken U = 1.0 as the nose edge and declared
+   `(1 − 0.252730)/0.380568 = 1.964` — 63.0° where the title drew for 33.0°, a 30° error and a
+   threefold nasal tangent. The build declares 33.0°.
+3. **The vertical convention is right, including the asymmetry** (§4 S2). Told 49.8° up / 59.9°
+   down, the title returned UVs whose edges land at `v = 0` and `v = 1` exactly, and the inverse
+   gives `tan_top = 1.1847` / `tan_bottom = 1.7219` back: up = +49.8°, down = −59.9°. A flipped axis
+   on either side would have returned 59.9/49.8. There is neither a host-side convention error nor a
+   guest-side limitation on this path.
+4. **Stereo stays aligned across the change.** In every run the right eye's offset is the exact
+   mirror of the left's (`0.747270 = 1 − 0.252730` at 70 % and 55 %, `0.711665 = 1 − 0.288335` at
+   the headset's frustum), both eyes' pictures sit at `[0, 0.5]` and `[0.5, 1]` of the one image, and
+   the compositor is told the same frustum mirrored — so there is no spurious horizontal disparity
+   and no per-eye mismatch. The picture at 55 % is the same scene in a narrower window; the only
+   visible change is the field of view.
+5. **The layout was read unambiguously in every run.** The log says “the eyes' UVs are the halves of
+   one picture” once per session, and no ambiguity or fallback warning fired.
+
+### 5.3 Build
+
+The full emulator builds from this branch with the tree's own script and flags:
+
+```
+python tools/fetch-submodules.py                                  # 50 externals, from the worktree root
+pwsh _build\build.ps1 -Root M:\Development\Deracine-work\wt-projection   # exit 0, shadps4.exe
+```
+
+One environment note: `fetch-submodules.py` clones each external at its default branch, not at the
+revision this tree builds against. `magic_enum` therefore arrives newer than v0.9.7 and
+`magic_enum::customize` rejects `Core::MemoryProt` (“detected flags from operator| and operator&, but
+a named value has more than one bit set”); pin it back with
+`git -C src/externals/magic_enum fetch --depth 1 origin tag v0.9.7 && git -C src/externals/magic_enum checkout v0.9.7`.
+The 25 tests build and pass in the same worktree (§5.1).
+
 ---
 
 ## 6. The minimal fix in this branch
 
-`src/src/core/libraries/hmd/hmd_reprojection.cpp` only.
+`src/src/core/libraries/hmd/hmd_reprojection.cpp` only. The integration branch
+`fix/hmd-eye-frustum-from-layout` carries this file alone (+102 −10), with no swapchain or test
+changes, so it can be taken without the investigation branch.
 
 ```cpp
 // before (hmd_reprojection.cpp:50-62)
 const float right_edge = (left_eye.offset_x < 0.5f && left_eye.scale_x < 0.35f) ? 0.5f : 1.0f;
 
 // after
-bool EyesAreHalvesOfOnePicture(left, right, left_eye, right_eye) {
-    if (left.Address() != right.Address()) {
-        return false;                            // a texture each: the eye is the whole picture
-    }
-    return std::abs(right_eye.offset_x - (1.0f - left_eye.offset_x)) <
-           std::abs(right_eye.offset_x - left_eye.offset_x);   // opposite halves: mirror offsets
+EyeLayout EyeLayoutOf(left, right, left_eye, right_eye) {   // .halves, .ambiguous
+    const float mirrored = std::abs(right_eye.offset_x - (1.0f - left_eye.offset_x));
+    const float same = std::abs(right_eye.offset_x - left_eye.offset_x);
+    const bool offsets_say_halves = mirrored < same;
+    const bool shared = left.Address() == right.Address();
+    const bool offsets_fit_neither = same >= 0.02f && mirrored >= 0.02f;
+    return {.halves = shared && offsets_say_halves,
+            .ambiguous = offsets_fit_neither || (!shared && offsets_say_halves)};
 }
 ```
 
-and `FovFromUv(uv, halves)` takes its far edge from that fact, plus a `UsableFov` guard that falls
-back to “what the title was told” when the inversion yields a non-positive or non-finite tangent
-(the shape a whole-texture UV would take if it were misread as a half).
+and `FovFromUv(uv, halves)` takes its far edge from that decision, a `UsableFov` guard catches a
+frustum that comes out inside out, and `NoteEyeLayout` reports the reading once per session.
 
 Why this is the right minimal fix:
 
 - **It cannot change Déraciné.** The live frame has both eyes on one image address and
   `offset[1] = 0.747270 = 1 − 0.252730` exactly, so `halves == true` and the recovered frustum is
   bit-identical to today's (`1.207432 / 1.181347 / 1.262872 / 1.262872`).
-- **It removes the only way the mapping can be provably wrong today**: the 71° cliff (C1), with the
-  evidence in `GuestUv_MagnitudeHeuristicBreaksOnlyBelowSeventyOneDegrees`.
-- **It is layout-general**: a title with a texture per eye, or with both eyes sampling one whole
-  picture, is now described correctly instead of by luck, and the guard turns a reversed frustum
-  into the title's declared FOV.
+- **It removes the only way the mapping can be provably wrong today**: the 71° cliff (C1), measured
+  in the headset at 55 % (§5.2), with the arithmetic in
+  `GuestUv_MagnitudeHeuristicBreaksOnlyBelowSeventyOneDegrees`.
+- **It is layout-general and it does not guess.** A texture each is the whole picture whatever the
+  offsets look like; one shared image is decided by the offsets; offsets that fit neither reading, or
+  that contradict the textures, are marked ambiguous and named in the log with the angles actually
+  handed to the compositor, together with the 2 % threshold that decided it. The decision table is
+  pinned by `GuestUv_LayoutDecisionTable`.
+- **The fallback cannot hide a mismatch.** It is taken only when the inversion produces no usable
+  frustum, and it logs at WARNING with the raw UVs and the substituted angles, so a screen that then
+  looks stretched is traceable to that line rather than silently “valid”.
 - It touches no FPS, memory-pool or guest-engine configuration code.
 
-Verification in this branch: the translation unit compiles against the tree's own build flags; the
-four `GuestUv_*` tests pass; the live UVs are asserted numerically in
-`GuestUv_SideBySidePictureRoundTripsExactly`.
+Verification in this branch: the full emulator builds (§5.3); the 25 tests pass (§5.1); four
+in-headset sessions at 100 %, 70 %, 55 % and the headset's own frustum show the recovered tangents
+matching what the title was told every time (§5.2).
 
 ---
 
@@ -456,25 +522,30 @@ Current costs for comparison, per frame both eyes:
 | 3036×3240 (recommendation width, guest height) | 19.67 M | 30.32 × 31.38 |
 | 3795×3795 (1.25×) | 28.80 M | 37.90 × 36.76 |
 
-### 8.4 Two swapchains instead of one, one sub-image per view
+### 8.4 Per-view rectangles and array layers, before per-view swapchains
 
-`PRIMARY_STEREO` with equal views is served fine by one side-by-side swapchain and two half-rects,
-which is what the code does and what the tests already model (the rect argument carries any offset).
-For asymmetric configurations — different per-eye rects, or a future `XR_VIEW_CONFIGURATION_TYPE_*`
-with more views — use **one swapchain per view** with the view's own rect:
+One side-by-side swapchain with two half-rects is what the code does and what the tests model, and it
+is not obviously wrong for asymmetric views. The options, in the order they should be tried rather
+than assuming the last one:
 
-- `EnsureSwapchain` becomes per view: `(view, width, height)`, recreation when the pair changes —
-  the existing compare-and-recreate logic (`openxr_host.cpp:2430-2508`) is already correct, including
-  destroying on change and giving up after a failure;
-- `CopyFrame` loops over views instead of blitting one image into halves. The blit already handles
-  size differences (`:2609-2633`), so a per-view swapchain that is smaller or larger than the guest
-  image needs no new geometry code — only the policy in §8.3;
-- `FillProjection` takes the swapchain and rect from the view's own state; `arraySize` stays 1 and
-  `imageArrayIndex` stays 0.
+1. **One swapchain, per-view `imageRect` (today).** `XrSwapchainSubImage` carries its own
+   `imageRect` per view, so two different rectangles inside one image already express two different
+   per-eye sizes — as long as both fit inside the swapchain. What this cannot express is a per-eye
+   size *larger* than the shared image, or per-view formats. Cost to change: none.
+2. **One swapchain, `arraySize = view count`, one layer per view.** `subImage.imageArrayIndex`
+   selects the slice, and each slice may carry its own `imageRect`. This is the shape OpenXR
+   runtimes expect for stereo, it removes the side-by-side packing from the copy path (each eye is
+   copied into its own layer), and all slices share one size — so per-view recommendations are
+   honoured by sizing the common slice to the largest recommendation and giving each view its own
+   rectangle. Cost to change: `CopyFrame` writes two layers instead of two halves, `FillProjection`
+   sets `imageArrayIndex = view`. This is the recommended target.
+3. **One swapchain per view.** Needed only when per-view *pixel sizes* must differ beyond what a
+   common slice allows, or when per-view formats are wanted. Cost: more handles, per-view recreation.
 
-Both models keep the property that matters: the rect and the declared frustum are independent, so
-the swapchain can be recreated at any size without touching the geometry — and a resize cannot
-introduce distortion, only a change of sampling density.
+All three keep the property that matters: a rectangle and the frustum declared for it are
+independent, so the swapchain can be recreated at any size without touching the geometry — a resize
+can only change sampling density, never introduce distortion. Whichever is chosen, the projected
+frustum stays what the guest drew for; only the pixel budget per axis changes.
 
 ### 8.5 Guest-facing knobs
 
@@ -503,10 +574,16 @@ and gives the OpenXR-native path a name.
 - **Pixel aspect ratio is not geometry.** Moving to 3036×3036 needs no letterbox, no crop and no
   reprojection; it only redistributes sampling density (+5.4 % across, −6.3 % up). Adding bars to
   “preserve” the aspect would introduce 3.372287° of error, and centring them makes it look right.
-- One **real defect** is fixed: the source FOV was recovered from the UVs by a magnitude guess that
-  inverts the nose side below 71° of horizontal FOV (a +28.9° error at 70°). The fix reads the
-  layout instead of guessing, and is bit-identical for Déraciné.
+- One **real defect** is fixed, and was reproduced in the headset: the source frustum was recovered
+  from the UVs by a magnitude guess that inverts the nose side below 71° of horizontal field of view.
+  At 55 % the old code would have declared 63.0° where the title drew for 33.0° (§5.2); the fix reads
+  the layout instead of guessing, is bit-identical for Déraciné at 100 %, and says in the log which
+  reading it took — including when the offsets fit neither reading, and when it has to fall back.
+- Four in-headset sessions (100 %, 70 %, 55 %, and the headset's own 59.0/50.7/49.8/59.9° frustum)
+  show the title's UVs tracking what it was told to 0.01 %, the recovered tangents matching it in all
+  four, the vertical asymmetry landing the right way up, and the two eyes' offsets mirrored exactly —
+  which is the stereo alignment. Nothing on this path is left to appearance.
 - The **runtime's recommendation is fetched and thrown away**; the swapchain size is derived from the
   guest's aspect, so 3036×3036 cannot be expressed. §8 replaces this with per-view recommendations,
-  independent width/height, a supersampling factor, and per-view swapchains — while keeping the
-  projection frustum owned by the guest.
+  independent width/height and a supersampling factor, and prefers per-view `imageRect` and array
+  layers over one swapchain per view — while keeping the projection frustum owned by the guest.
