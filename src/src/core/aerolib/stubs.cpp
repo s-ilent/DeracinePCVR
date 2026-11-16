@@ -21,7 +21,9 @@ namespace Core::AeroLib {
 
 // Bloodborne's eboot plus late-loaded libc exceeds 8192 imports. Keep enough named slots for the
 // libc/FIOS boundary so missing imports remain diagnosable and can be routed to HLE functions.
-constexpr u32 MAX_STUBS = 12288;
+// Déraciné's PSVR module set (libSceNpToolkit2, SigninDialog, Smart, HeadTracker...) goes past
+// 12288, and a module that lands on UnknownStub gets a zero return it does not expect.
+constexpr u32 MAX_STUBS = 32768;
 
 u64 UnresolvedStub() {
     LOG_ERROR(Core, "Returning zero to {}", __builtin_return_address(0));
@@ -58,12 +60,24 @@ static u64 CommonStubTemplate() {
     return CommonStub(stub_index, __builtin_return_address(0));
 }
 
-template <size_t... Is>
-consteval auto MakeStubArray(std::index_sequence<Is...>) {
-    return std::array<u64 (*)(), sizeof...(Is)>{&CommonStubTemplate<Is>...};
+// A fold over 32768 entries exceeds clang's expression nesting limit, so fill by halving the
+// range: depth log2(MAX_STUBS), one instantiation per slot.
+template <size_t Lo, size_t Hi>
+static void FillStubRange(std::array<u64 (*)(), MAX_STUBS>& out) {
+    if constexpr (Hi - Lo == 1) {
+        out[Lo] = &CommonStubTemplate<static_cast<int>(Lo)>;
+    } else {
+        constexpr size_t Mid = Lo + (Hi - Lo) / 2;
+        FillStubRange<Lo, Mid>(out);
+        FillStubRange<Mid, Hi>(out);
+    }
 }
 
-constexpr auto stub_handlers = MakeStubArray(std::make_index_sequence<MAX_STUBS>{});
+static std::array<u64 (*)(), MAX_STUBS> stub_handlers = [] {
+    std::array<u64 (*)(), MAX_STUBS> handlers{};
+    FillStubRange<0, MAX_STUBS>(handlers);
+    return handlers;
+}();
 static u32 UsedStubEntries;
 
 u64 GetStub(const char* nid) {
@@ -86,6 +100,11 @@ u64 GetStub(const char* nid) {
         return reinterpret_cast<u64>(&Libraries::Kernel::sceKernelFstat);
     }
     if (UsedStubEntries >= MAX_STUBS) {
+        static std::atomic_bool reported{};
+        if (!reported.exchange(true, std::memory_order_relaxed)) {
+            LOG_ERROR(Core, "Stub table exhausted after {} imports; nid {} gets UnknownStub",
+                      MAX_STUBS, nid);
+        }
         return (u64)&UnknownStub;
     }
 
