@@ -7,6 +7,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <vector>
 #include "common/enum.h"
 #include "common/shared_first_mutex.h"
 #include "common/singleton.h"
@@ -234,6 +235,17 @@ public:
     }
 
     u64 ClampRangeSize(VAddr virtual_addr, u64 size);
+
+    // One mapped virtual range, as the devtools and the memory snapshot see it.
+    struct MappedRegionInfo {
+        VAddr address;
+        u64 size;
+        MemoryProt prot;
+        std::string name;
+    };
+
+    // Every mapped range, in address order. Free and reserved ranges are omitted.
+    std::vector<MappedRegionInfo> EnumerateMappedRegions();
 
     void SetPrtArea(u32 id, VAddr address, u64 size);
 
