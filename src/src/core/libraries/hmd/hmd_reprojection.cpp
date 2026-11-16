@@ -48,18 +48,33 @@ struct Reprojection {
 
 Reprojection g_reprojection;
 
-/// Whether the two eyes are the halves of one side-by-side picture: they sample the same image
-/// and their UV mappings sit on opposite halves of it, so the right eye's offset mirrors the left
-/// eye's around the middle. Then each eye's own right edge is that middle, not the image's edge,
-/// which is what keeps one eye from being described with the other's picture in view.
-bool EyesAreHalvesOfOnePicture(const AmdGpu::Image& left, const AmdGpu::Image& right,
-                               const OrbisHmdReprojectionEyeUv& left_eye,
-                               const OrbisHmdReprojectionEyeUv& right_eye) {
-    if (left.Address() != right.Address()) {
-        return false;
-    }
+/// Where the eye's own picture ends inside the texture it samples. The two eyes' UV offsets say
+/// which layout a title uses: offsets mirrored about the middle of one shared image mean each eye
+/// owns half of it; identical offsets mean both eyes sample the whole picture. Offsets that fit
+/// neither, or that contradict the textures, are reported instead of being forced into one of the
+/// two, so an unmodelled layout shows up rather than being drawn from a guess.
+struct EyeLayout {
+    bool halves{};
+    bool ambiguous{};
+};
+
+EyeLayout EyeLayoutOf(const AmdGpu::Image& left, const AmdGpu::Image& right,
+                      const OrbisHmdReprojectionEyeUv& left_eye,
+                      const OrbisHmdReprojectionEyeUv& right_eye) {
+    // 2% of a texture's width: below this an offset pair matches one of the two readings outright.
+    constexpr float Close = 0.02f;
     const float mirrored = std::abs(right_eye.offset_x - (1.0f - left_eye.offset_x));
-    return mirrored < std::abs(right_eye.offset_x - left_eye.offset_x);
+    const float same = std::abs(right_eye.offset_x - left_eye.offset_x);
+    const bool offsets_say_halves = mirrored < same;
+    // A texture each: the eye's UVs address its own picture end to end, whatever the offsets look
+    // like. One shared image: the offsets decide, and they say nothing when they match neither
+    // reading, which is reported rather than rounded to the nearer one.
+    const bool shared = left.Address() == right.Address();
+    const bool offsets_fit_neither = same >= Close && mirrored >= Close;
+    return {
+        .halves = shared && offsets_say_halves,
+        .ambiguous = offsets_fit_neither || (!shared && offsets_say_halves),
+    };
 }
 
 Core::Vr::Fov FovFromUv(const OrbisHmdReprojectionEyeUv& left_eye, bool halves) {
@@ -81,6 +96,51 @@ bool UsableFov(const Core::Vr::Fov& fov) {
         }
     }
     return true;
+}
+
+/// Says, once per layout and per outcome, what the title's UVs were taken to mean. A layout read
+/// from ambiguous offsets, and a fallback that replaces the UVs, both change what the headset shows:
+/// neither may pass silently, and both name the angles actually handed to the compositor.
+void NoteEyeLayout(const EyeLayout& layout, bool fallback,
+                   const OrbisHmdReprojectionEyeUv& left_eye,
+                   const OrbisHmdReprojectionEyeUv& right_eye, const Core::Vr::Fov& fov) {
+    static EyeLayout last{};
+    static bool last_fallback{};
+    static bool noted{};
+    if (noted && layout.halves == last.halves && layout.ambiguous == last.ambiguous &&
+        fallback == last_fallback) {
+        return;
+    }
+    noted = true;
+    last = layout;
+    last_fallback = fallback;
+
+    const float out = std::atan(fov.tan_out) * 57.29578f;
+    const float in = std::atan(fov.tan_in) * 57.29578f;
+    const float up = std::atan(fov.tan_top) * 57.29578f;
+    const float down = std::atan(fov.tan_bottom) * 57.29578f;
+    if (fallback) {
+        LOG_WARNING(Lib_Hmd,
+                    "The eyes' UVs describe no usable field of view (scale {:.6f}/{:.6f}, offset "
+                    "{:.6f}/{:.6f}): the headset is told the {:.1f}/{:.1f}/{:.1f}/{:.1f} degrees the "
+                    "title was given instead, so the picture is not described by its own UVs",
+                    left_eye.scale_x, left_eye.scale_y, left_eye.offset_x, left_eye.offset_y, out,
+                    in, up, down);
+    } else if (layout.ambiguous) {
+        LOG_WARNING(Lib_Hmd,
+                    "The eyes' UVs do not say whether they are the halves of one picture (offsets "
+                    "{:.6f} and {:.6f}): read as {}, and the headset is told "
+                    "{:.1f}/{:.1f}/{:.1f}/{:.1f} degrees (out, in, up, down). A stretched picture "
+                    "means this layout was read wrongly",
+                    left_eye.offset_x, right_eye.offset_x,
+                    layout.halves ? "halves" : "one picture each", out, in, up, down);
+    } else {
+        LOG_INFO(Lib_Hmd,
+                 "The eyes' UVs are {}: the headset is told {:.1f}/{:.1f}/{:.1f}/{:.1f} degrees "
+                 "(out, in, up, down)",
+                 layout.halves ? "the halves of one picture" : "one picture each", out, in, up,
+                 down);
+    }
 }
 
 } // namespace
@@ -251,14 +311,16 @@ static s32 sceHmdReprojectionStartInternal(const OrbisHmdReprojectionParam* para
                                    ov->uv[1].offset_y};
         }
     }
-    frame.fov = FovFromUv(param->uv[0],
-                          EyesAreHalvesOfOnePicture(frame.eye_textures[0], frame.eye_textures[1],
-                                                    param->uv[0], param->uv[1]));
-    if (!UsableFov(frame.fov)) {
-        // A frustum that is inside out or empty is one no compositor can be told of: what the title
-        // was told to draw for is the next best thing.
+    const EyeLayout layout =
+        EyeLayoutOf(frame.eye_textures[0], frame.eye_textures[1], param->uv[0], param->uv[1]);
+    frame.fov = FovFromUv(param->uv[0], layout.halves);
+    const bool fallback = !UsableFov(frame.fov);
+    if (fallback) {
+        // Nothing usable can be said of a frustum that is inside out or empty: what the title was
+        // told to draw for is the next best thing, and NoteEyeLayout says so.
         frame.fov = Core::Vr::Runtime::Instance().GetConfig().fov;
     }
+    NoteEyeLayout(layout, fallback, param->uv[0], param->uv[1], frame.fov);
     frame.render_pose = {
         .position{tracker_state->position[0], tracker_state->position[1],
                   tracker_state->position[2]},

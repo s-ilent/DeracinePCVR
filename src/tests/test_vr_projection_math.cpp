@@ -968,4 +968,64 @@ TEST(VrProjectionMath, LiveConfiguration_TodayAndAtTheRuntimesRecommendation) {
     EXPECT_NEAR(horizontal / vertical, static_cast<double>(kSrcHeight) / kSrcWidth, kAlgebraicTol);
 }
 
+// The layout decision the emulator applies to a frame's UVs: the two eyes' offsets
+// say whether they own half of one shared picture or a picture each. Offsets that do
+// not discriminate, or that contradict the textures, are flagged instead of assumed,
+// because reading the layout wrongly moves the nose side of the frustum by degrees.
+struct LayoutInput {
+    bool shared_image;
+    double left_offset;
+    double right_offset;
+};
+
+struct LayoutDecision {
+    bool halves;
+    bool ambiguous;
+};
+
+LayoutDecision DecideLayout(const LayoutInput& in) {
+    constexpr double kClose = 0.02; // 2 % of a texture's width
+    const double mirrored = std::abs(in.right_offset - (1.0 - in.left_offset));
+    const double same = std::abs(in.right_offset - in.left_offset);
+    const bool offsets_say_halves = mirrored < same;
+    const bool offsets_fit_neither = same >= kClose && mirrored >= kClose;
+    return {
+        .halves = in.shared_image && offsets_say_halves,
+        .ambiguous = offsets_fit_neither || (!in.shared_image && offsets_say_halves),
+    };
+}
+
+TEST(VrProjectionMath, GuestUv_LayoutDecisionTable) {
+    struct Case {
+        const char* name;
+        LayoutInput input;
+        bool halves;
+        bool ambiguous;
+    };
+    const Case cases[]{
+        {"live Deracine, one image, mirrored offsets", {true, 0.252730, 0.747270}, true, false},
+        {"one image, both eyes on the whole picture", {true, 0.506, 0.506}, false, false},
+        {"a texture each, whole-texture UVs", {false, 0.506, 0.506}, false, false},
+        {"a texture each, yet mirrored offsets", {false, 0.2527, 0.7473}, false, true},
+        {"one image, offsets fitting neither reading", {true, 0.30, 0.55}, true, true},
+        {"one image, both eyes on its middle", {true, 0.5, 0.5}, false, false},
+    };
+    for (const Case& c : cases) {
+        const LayoutDecision d = DecideLayout(c.input);
+        EXPECT_EQ(d.halves, c.halves) << c.name;
+        EXPECT_EQ(d.ambiguous, c.ambiguous) << c.name;
+    }
+}
+
+TEST(VrProjectionMath, GuestUv_ReadingTheLiveLayoutAsWholePicturesIsASixFigureMiss) {
+    const FovTan psvr = FovFromHalfAnglesDeg(-50.368309, 49.752363, 51.626199, -51.626199);
+    const GuestUv uv = LeftEyeUv(psvr, 0.5);
+    const FovTan halves = FovFromGuestUv(uv, 0.5);
+    const FovTan whole = FovFromGuestUv(uv, 1.0);
+    EXPECT_NEAR(ToDegrees(std::atan(halves.r)), 49.752363, 1e-3);
+    EXPECT_NEAR(ToDegrees(std::atan(whole.r)), 74.34, 0.05);
+    // 24.6 degrees of nose-side field of view, and the horizontal scale with it.
+    EXPECT_GT(ToDegrees(std::atan(whole.r)) - ToDegrees(std::atan(halves.r)), 24.0);
+}
+
 } // namespace
