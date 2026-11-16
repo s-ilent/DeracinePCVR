@@ -1023,6 +1023,11 @@ set(CORE src/core/aerolib/stubs.cpp
          src/core/linker.h
          src/core/memory.cpp
          src/core/memory.h
+         src/core/unreal/guest_memory.cpp
+         src/core/unreal/guest_memory.h
+         src/core/unreal/snapshot.cpp
+         src/core/unreal/snapshot.h
+         src/core/unreal/snapshot_live.cpp
          src/core/module.cpp
          src/core/module.h
          src/core/platform.h
