@@ -642,9 +642,14 @@ void RunUserFx(Voice& voice, float* const channels[], u32 num_channels, u32 coun
     if (voice.fx_handler == nullptr) {
         return;
     }
-    std::array<float*, MaxChannels> data{};
+    // Unreal Engine 4's SNDX compressor reads a second bank of MaxChannels detector (sidechain)
+    // pointers directly after the channel bank, as [r12 + rcx*8] with rcx up to 2*MaxChannels.
+    // Handing it only the channel bank leaves the detector pointers reading unmapped memory, so
+    // the effect faults inside its first grain. Mirror the channels into the detector bank.
+    std::array<float*, MaxChannels * 2> data{};
     for (u32 c = 0; c < MaxChannels; ++c) {
         data[c] = channels[std::min(c, num_channels - 1)];
+        data[MaxChannels + c] = data[c];
     }
     OrbisNgs2UserFxProcessContext context{};
     context.aChannelData = data.data();
