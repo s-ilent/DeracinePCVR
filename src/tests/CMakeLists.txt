@@ -107,6 +107,7 @@ set(GCN_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/shader_recompiler/ir/value.cpp
     ${CMAKE_SOURCE_DIR}/src/shader_recompiler/ir/value.h
     ${CMAKE_SOURCE_DIR}/src/video_core/amdgpu/pixel_format.cpp
+    ${CMAKE_SOURCE_DIR}/src/video_core/renderer_vulkan/liverpool_to_vk.cpp
     ${CMAKE_SOURCE_DIR}/src/video_core/amdgpu/pixel_format.h
     ${CMAKE_SOURCE_DIR}/src/video_core/amdgpu/resource.h
 
@@ -1024,6 +1025,65 @@ target_link_libraries(shadps4_backing_write_test PRIVATE
 list(APPEND TEST_TARGETS shadps4_backing_write_test)
 
 gtest_discover_tests(shadps4_backing_write_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)
+# ===========================================================================
+# Texture cache subresource matching (ImageInfo::MipOf / SliceOf)
+# ===========================================================================
+
+add_executable(shadps4_image_subresource_test
+    video_core/test_image_subresources.cpp
+    ${CMAKE_SOURCE_DIR}/src/video_core/texture_cache/image_info.cpp
+    ${CMAKE_SOURCE_DIR}/src/video_core/texture_cache/host_compatibility.cpp
+    ${CMAKE_SOURCE_DIR}/src/video_core/amdgpu/tiling.cpp
+    ${CMAKE_SOURCE_DIR}/src/video_core/amdgpu/pixel_format.cpp
+    ${CMAKE_SOURCE_DIR}/src/video_core/renderer_vulkan/liverpool_to_vk.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/number_utils.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/assert.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/error.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/string_util.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/logging/log.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/path_util.cpp
+    stubs/common_stub.cpp
+    stubs/kernel_stub.cpp
+    stubs/sdl_stub.cpp
+    stubs/core_stub.cpp
+    stubs/scm_rev_stub.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/emulator_settings.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/emulator_state.cpp
+)
+
+target_include_directories(shadps4_image_subresource_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/tests
+)
+target_compile_features(shadps4_image_subresource_test PRIVATE cxx_std_23)
+target_compile_definitions(shadps4_image_subresource_test PRIVATE NOMINMAX)
+
+# Unreferenced constructors drag in the whole AMD GPU layer; keep only what the
+# subresource tests call.
+target_compile_options(shadps4_image_subresource_test PRIVATE /Gy /Gw)
+target_link_options(shadps4_image_subresource_test PRIVATE /OPT:REF /OPT:ICF)
+
+target_link_libraries(shadps4_image_subresource_test PRIVATE
+    GTest::gtest_main
+    Vulkan::Headers
+    fmt::fmt
+    spdlog::spdlog
+    Boost::headers
+    magic_enum::magic_enum
+    tsl::robin_map
+    half::half
+    nlohmann_json::nlohmann_json
+    toml11::toml11
+    SDL3::SDL3
+)
+
+list(APPEND TEST_TARGETS shadps4_image_subresource_test)
+
+gtest_discover_tests(shadps4_image_subresource_test
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     DISCOVERY_TIMEOUT 60
 )
