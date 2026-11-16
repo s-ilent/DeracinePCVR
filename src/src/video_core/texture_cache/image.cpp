@@ -8,6 +8,7 @@
 #include "common/logging/log.h"
 #include "core/known_title.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
+#include "video_core/renderer_vulkan/quality_diag.h"
 #include "video_core/renderer_vulkan/vk_foveation.h"
 #include "video_core/renderer_vulkan/vk_gpu_profile.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -1072,6 +1073,8 @@ void Image::SetBackingSamples(u32 num_samples, bool copy_backing) {
     if (!backing || backing->num_samples == num_samples) {
         return;
     }
+    Vulkan::QualityDiag::NoteBacking(info.guest_address, backing->num_samples, num_samples,
+                                     copy_backing);
     ASSERT_MSG(!info.props.is_depth, "Swapping samples is only valid for color images");
     auto new_image_ci = backing->image.image_ci;
     SetHostSamples(new_image_ci, num_samples);
