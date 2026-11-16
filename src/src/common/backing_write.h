@@ -27,7 +27,7 @@ inline u64 WriteBackingSegments(const u8* data, u64 size,
             break;
         }
         const u64 chunk = std::min(segment.size, size - copied);
-        std::memcpy(segment.destination, data, chunk);
+        std::memcpy(segment.destination, data + copied, chunk);
         copied += chunk;
     }
     return copied;
