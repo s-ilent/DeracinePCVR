@@ -159,6 +159,15 @@ public:
         return objects;
     }
 
+    // Test hooks: simulate a slot being recycled or an object being re-parented.
+    void SetObjectIndex(u32 index, u32 value) {
+        Store<u32>(ObjectAddress(index) + ObjectIndex, value);
+    }
+
+    void SetObjectOuter(u32 index, VAddr value) {
+        Store<u64>(ObjectAddress(index) + ObjectOuter, value);
+    }
+
 private:
     const u8* Find(VAddr address, u64 size) const {
         for (const auto& region : regions) {
@@ -243,7 +252,9 @@ private:
             Store<u64>(object + ObjectClass, ObjectAddress(objects[index].class_index));
             Store<u32>(object + ObjectName, name_indices[objects[index].name_index]);
             Store<u32>(object + ObjectNumber, index < 8 ? 0 : index);
-            Store<u64>(object + ObjectOuter, 0);
+            // The left hand mesh sits inside the player controller, so tests can walk Outer.
+            Store<u64>(object + ObjectOuter,
+                       index == 5 ? ObjectAddress(3) : VAddr{0});
             // FUObjectItem: the UObject pointer first.
             Store<u64>(chunk0 + index * ItemSize, object);
         }
