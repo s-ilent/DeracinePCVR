@@ -861,6 +861,11 @@ if ($resolution -eq "game") {
 # Steam Frame); or a size to the letter, 3036x3036.
 $present = Setting "present" "guest"
 if ($present -ne "guest" -and $present -ne "") { $env:SHADPS4_VR_RESOLUTION = $present }
+# steady: hold this many frames a second and let the size the game draws its scene at follow what
+# the graphics card manages (the headset is still shown what present says). 120 with present=auto
+# is the 120 Hz target; left out, the size is chosen once and kept.
+$steady = Setting "steady" ""
+if ($steady -ne "") { $env:SHADPS4_VR_STEADY_FPS = $steady }
 $env:SHADPS4_VR_SHARPEN = Setting "sharpen" "0.4"
 if ((Setting "aniso") -ne "") { $env:SHADPS4_FORCE_ANISO = Setting "aniso" }
 $env:SHADPS4_VR_DESKTOP_VIEW = Get-DesktopView
