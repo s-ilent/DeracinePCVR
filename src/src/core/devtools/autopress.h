@@ -82,7 +82,7 @@ public:
     /// Advances the schedule to `now_ms`. Returns whether the device should press now; sets
     /// `began` on the first tick of a press so a caller can log one line per burst.
     bool Tick(u64 now_ms, bool* began = nullptr) {
-        const bool pressing = schedule_.Pressing(elapsed_ms(now_ms));
+        const bool pressing = enabled() && schedule_.Pressing(elapsed_ms(now_ms));
         if (began != nullptr) {
             *began = pressing && !pressing_;
         }
