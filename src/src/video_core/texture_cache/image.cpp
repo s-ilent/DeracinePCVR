@@ -561,8 +561,20 @@ void Image::Transit(vk::ImageLayout dst_layout, vk::AccessFlags2 dst_mask,
     }
 
     if (!cmdbuf) {
-        // When using external cmdbuf you are responsible for ending rp.
-        scheduler->EndRendering();
+        // A barrier for an image the pass being recorded does not draw into may be recorded inside
+        // that pass; one for an attachment has to end it first.
+        // Recording the first kind inside the pass instead of breaking it is what keeps a frame from
+        // storing and reloading a whole 5760x3240 target for every texture the guest moves between
+        // uses: measured 89 -> 65 passes and 556 -> 481 Mpx a frame on the title screen.
+        // SHADPS4_DBG_BARRIER_IN_PASS=0 puts the old behaviour back.
+        static const bool in_pass = [] {
+            const char* value = std::getenv("SHADPS4_DBG_BARRIER_IN_PASS");
+            return value == nullptr || value[0] != '0';
+        }();
+        if (!in_pass || scheduler->IsAttachmentImage(GetImage())) {
+            // When using external cmdbuf you are responsible for ending rp.
+            scheduler->EndRendering();
+        }
         cmdbuf = scheduler->CommandBuffer();
     }
     Vulkan::GpuProfile::Note(Vulkan::GpuProfile::HostWork::Barrier);

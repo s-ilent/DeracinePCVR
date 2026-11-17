@@ -93,6 +93,7 @@ void BlitHelper::ReinterpretColorAsMsDepth(u32 width, u32 height, vk::SampleCoun
     state.height = height;
     state.num_layers = 1;
     state.depth_stencil_attachment.image_view = depth_view;
+    state.depth_stencil_attachment.image = dest;
     state.depth_stencil_attachment.image_layout = vk::ImageLayout::eDepthAttachmentOptimal;
     state.depth_stencil_attachment.has_depth = true;
     state.depth_stencil_attachment.depth_clear = true;
@@ -204,6 +205,7 @@ void BlitHelper::CopyBetweenMsImages(u32 width, u32 height, vk::SampleCountFlagB
     state.num_layers = 1;
     state.num_color_attachments = 1;
     state.color_attachments[0].image_view = dst_view;
+    state.color_attachments[0].image = dest;
     state.color_attachments[0].image_layout = vk::ImageLayout::eColorAttachmentOptimal;
     state.color_attachments[0].is_clear = true;
     scheduler.BeginRendering(state);
@@ -317,6 +319,7 @@ void BlitHelper::SmoothInto(u32 width, u32 height, vk::Format src_pixel_format,
     state.num_layers = 1;
     state.num_color_attachments = 1;
     state.color_attachments[0].image_view = dst_view;
+    state.color_attachments[0].image = dest;
     state.color_attachments[0].image_layout = vk::ImageLayout::eColorAttachmentOptimal;
     scheduler.BeginRendering(state);
 
@@ -451,6 +454,7 @@ void BlitHelper::CopyColorToDepth32(u32 width, u32 height, vk::Image source,
     state.height = height;
     state.num_layers = 1;
     state.depth_stencil_attachment.image_view = depth_view;
+    state.depth_stencil_attachment.image = dest;
     state.depth_stencil_attachment.image_layout = depth_layout;
     state.depth_stencil_attachment.has_depth = true;
     state.depth_stencil_attachment.depth_clear = false;

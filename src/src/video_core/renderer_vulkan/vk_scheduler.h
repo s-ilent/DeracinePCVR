@@ -27,6 +27,10 @@ class Instance;
 
 struct RenderAttachment {
     vk::ImageView image_view;
+    /// The image behind the view, so a barrier can ask whether the pass draws into it. Next to the
+    /// view rather than after the layout, so that the struct has no padding: the render state is
+    /// compared byte for byte, which needs it to have none.
+    VkImage image;
     vk::ImageLayout image_layout;
     std::array<u32, 4> clear_value;
     union {
@@ -527,6 +531,26 @@ public:
     /// Returns the current render state.
     const RenderState& GetRenderState() const {
         return render_state;
+    }
+
+    /// Whether the pass being recorded draws into `image`. A barrier for an image the pass does not
+    /// draw into may be recorded inside it; one for an attachment has to end the pass first.
+    [[nodiscard]] bool IsAttachmentImage(VkImage image) const {
+        if (!is_rendering || !image) {
+            return false;
+        }
+        if (render_state.shading_rate_view) {
+            // The shading rate attachment of the pass is not tracked as an image here, so a pass
+            // that has one keeps ending for every barrier, as it did before.
+            return true;
+        }
+        for (u32 i = 0; i < render_state.num_color_attachments && i < render_state.color_attachments.size(); ++i) {
+            if (render_state.color_attachments[i].image == image) {
+                return true;
+            }
+        }
+        const auto& depth = render_state.depth_stencil_attachment;
+        return depth.image == image && (depth.has_depth || depth.has_stencil);
     }
 
     /// Binds a graphics pipeline for the draws of the title, unless it is the one the last draw
