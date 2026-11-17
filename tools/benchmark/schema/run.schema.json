@@ -41,6 +41,7 @@
             "eye_width": { "type": "integer" },
             "eye_height": { "type": "integer" },
             "stereo_width": { "type": "integer" },
+            "stereo_actual": { "type": ["string", "null"] },
             "eye_width_actual_observed": { "type": ["integer", "null"] }
           }
         },
@@ -158,7 +159,8 @@
           "minItems": 1,
           "items": {
             "type": "object",
-            "required": ["sample", "at_s", "fps", "frame_ms", "draws", "mpx", "in_window"],
+            "required": ["sample", "at_s", "fps", "frames", "frame_ms", "draws", "mpx",
+                         "in_window"],
             "properties": {
               "sample": { "type": "integer", "minimum": 0 },
               "at_s": { "type": "number" },
@@ -236,6 +238,7 @@
         "preflight_manifest": { "type": ["string", "null"] },
         "protected_unchanged": { "type": "boolean" },
         "protected_drift": { "type": "array", "items": { "type": "string" } },
+        "protected_observed": { "type": "array", "items": { "type": "string" } },
         "validator_version": { "type": "integer" }
       }
     },

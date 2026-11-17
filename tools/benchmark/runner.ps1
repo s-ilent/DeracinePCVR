@@ -35,7 +35,8 @@ param(
     [string]$Python = 'python',
     [string]$RdocCapture = '',
     [string]$RenderDocCaptureDir = '',
-    [string]$RenderDocCmd = 'C:\Program Files\RenderDoc\renderdoccmd.exe'
+    [string]$RenderDocCmd = 'C:\Program Files\RenderDoc\renderdoccmd.exe',
+    [string]$BuiltFromCommit = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,7 +56,7 @@ trap {
     } catch { }
     Get-Process -Name shadps4 -ErrorAction SilentlyContinue | ForEach-Object {
         try {
-            if ($null -eq $script:runStart -or $_.StartTime -ge $script:runStart) {
+            if ($null -ne $script:runStart -and $_.StartTime -ge $script:runStart) {
                 Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
             }
         } catch { }
@@ -139,11 +140,20 @@ function Fail-Run([string]$Reason) {
     } catch { }
     Get-Process -Name shadps4 -ErrorAction SilentlyContinue | ForEach-Object {
         try {
-            if ($null -eq $script:runStart -or $_.StartTime -ge $script:runStart) {
+            if ($null -ne $script:runStart -and $_.StartTime -ge $script:runStart) {
                 Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
             }
         } catch { }
     }
+    # Keep the evidence of a failed session: without the log, the next attempt has to guess.
+    try {
+        $labLogPath = Join-Path $Lab 'user\log\shad_log.txt'
+        if (Test-Path -LiteralPath $labLogPath) {
+            Copy-Item -LiteralPath $labLogPath -Destination (Join-Path $Out 'shad_log.txt') -Force `
+                -ErrorAction SilentlyContinue
+        }
+    } catch { }
+    Remove-Item -LiteralPath (Join-Path $Out 'run.json') -Force -ErrorAction SilentlyContinue
     $text = @(
         "INVALID RUN - $Reason",
         "run: $Out",
@@ -253,6 +263,14 @@ Get-ChildItem -LiteralPath $labUser -Directory -Filter 'rt_dump*' -ErrorAction S
     ForEach-Object { Invoke-Guard 'delete' $_.FullName; Remove-Item -LiteralPath $_.FullName -Recurse -Force }
 Invoke-Guard 'delete' $dumpFlag
 Remove-Item -LiteralPath $dumpFlag -Force -ErrorAction SilentlyContinue
+
+# A pipeline cache written under a previous executable, or after a device loss, can make a
+# session fail for reasons unrelated to the build under test; the old harness cleared it too.
+$gameCache = Join-Path $labUser 'cache\CUSA11919'
+if (Test-Path -LiteralPath $gameCache) {
+    Invoke-Guard 'delete' $gameCache
+    Remove-Item -LiteralPath $gameCache -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 $envMap = [ordered]@{
     'SHADPS4_TITLE_EYE_WIDTH'    = '2880'
@@ -501,7 +519,11 @@ if ($Capture) {
     if ($shotSimilarity -lt 0.85) {
         Write-Output ("scene screenshot did not match the reviewed reference (best similarity {0:N4})" -f $shotSimilarity)
     }
-    if (Test-Path -LiteralPath (Join-Path $Out 'captures.json')) { Remove-Item -LiteralPath (Join-Path $Out 'captures.json') -Force }
+    if (Test-Path -LiteralPath (Join-Path $Out 'captures.json')) {
+        Invoke-Guard 'delete' (Join-Path $Out 'captures.json')
+        Remove-Item -LiteralPath (Join-Path $Out 'captures.json') -Force
+    }
+    Invoke-Guard 'write' (Join-Path $Out 'captures.json')
     Write-JsonFile (Join-Path $Out 'captures.json') $dumpEvidence.ToArray()
     if ($emulator.HasExited) { Fail-Run 'the emulator ended after the scene screenshot' }
 }
@@ -525,6 +547,11 @@ while ($stopwatch.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
     Start-Sleep -Milliseconds 250
 }
 if ($null -eq $windowLastObs) { Fail-Run 'the measured window did not complete before the timeout' }
+# A poll can see several new lines at once; samples that arrived after the window ended are not
+# part of it and would break the "in-window rows are the tail" invariant.
+if ($samples.Count -gt $windowTarget) {
+    $samples.RemoveRange($windowTarget, $samples.Count - $windowTarget)
+}
 $samplesInWindow = $windowTarget - $warmupTarget
 for ($i = $warmupTarget; $i -lt $windowTarget; $i++) { $samples[$i].in_window = $true }
 $windowObserved = ($windowLastObs - $windowFirstObs).TotalSeconds + $StatsEvery
@@ -535,6 +562,7 @@ Start-Sleep -Milliseconds 1500
 Read-NewLogLines
 try { Read-NewLogLines } catch { }
 
+Invoke-Guard 'copy_dest' (Join-Path $Out 'shad_log.txt')
 Copy-Item -LiteralPath $labLog -Destination (Join-Path $Out 'shad_log.txt') -Force -ErrorAction SilentlyContinue
 if (-not (Test-Path -LiteralPath (Join-Path $Out 'shad_log.txt'))) {
     Fail-Run 'the emulator log was not collected'
@@ -544,7 +572,10 @@ if (-not (Test-Path -LiteralPath (Join-Path $Out 'shad_log.txt'))) {
 $window = $samples.ToArray() | Where-Object { $_.in_window }
 if ($window.Count -ne $samplesInWindow) { Fail-Run "only $($window.Count) in-window samples" }
 $frameMs = @($window | ForEach-Object { [double]$_.frame_ms })
-$uniqueFps = $window.Count / (($window | ForEach-Object { 1.0 / [double]$_.fps } | Measure-Object -Sum).Sum)
+$totalFrames = ($window | ForEach-Object { [int]$_.frames } | Measure-Object -Sum).Sum
+$totalTime = ($window | ForEach-Object { [double]$_.frames / [double]$_.fps } |
+    Measure-Object -Sum).Sum
+$uniqueFps = if ($totalTime -gt 0) { $totalFrames / $totalTime } else { 0.0 }
 $frameStats = [ordered]@{
     p50  = Round3 (Get-Percentile $frameMs 0.50)
     p90  = Round3 (Get-Percentile $frameMs 0.90)
@@ -573,6 +604,7 @@ foreach ($s in $samples) {
             $s.fps.ToString($inv), $s.frames, $s.frame_ms.ToString($inv), $s.passes, $s.loading,
             $s.mpx, $s.draws, $s.dispatches, $s.submits, $s.gpu_busy, [int]$s.in_window))
 }
+Invoke-Guard 'write' (Join-Path $Out 'frames.csv')
 [IO.File]::WriteAllText((Join-Path $Out 'frames.csv'), (($framesCsv -join "`r`n") + "`r`n"),
     (New-Object System.Text.UTF8Encoding($false)))
 
@@ -580,6 +612,7 @@ $allLines = $logLines.ToArray()
 $diag = @($allLines | Where-Object {
         $_ -match 'frame stats at|frame path:|HMD frame |OpenXR swapchain|QUALITYDIAG|Device lost|DEVICE_LOST|Assertion Failed|Unreachable code|AUTOPRESS|RDOC capture'
     })
+Invoke-Guard 'write' (Join-Path $Out 'diag.txt')
 [IO.File]::WriteAllText((Join-Path $Out 'diag.txt'), (($diag -join "`r`n") + "`r`n"),
     (New-Object System.Text.UTF8Encoding($false)))
 
@@ -587,7 +620,14 @@ $diag = @($allLines | Where-Object {
 $actualPresentation = $null
 foreach ($line in $allLines) {
     if ($line -match '(?<w>\d+)x(?<h>\d+) \[per eye: (?<pw>\d+)x(?<ph>\d+), base eye: (?<bw>\d+)x(?<bh>\d+), scale: (?<s>[0-9.]+)x\]') {
-        $actualPresentation = "$($Matches['w'])x$($Matches['h']) window, per eye $($Matches['pw'])x$($Matches['ph']), base eye $($Matches['bw'])x$($Matches['bh']), scale $($Matches['s'])x"
+        $actualPresentation = "$($Matches['w'])x$($Matches['h']) window, per eye $($Matches['pw'])x$($Matches['ph']), base eye $($Matches['bw'])x$($Matches['bh']), scale: $($Matches['s'])x"
+        break
+    }
+}
+$stereoActual = $null
+foreach ($line in $allLines) {
+    if ($line -match 'HMD frame \d+ eye \d+: image \d+ at 0x[0-9a-fA-F]+, (?<w>\d+)x(?<h>\d+)') {
+        $stereoActual = "$($Matches['w'])x$($Matches['h'])"
         break
     }
 }
@@ -641,7 +681,8 @@ $postflightPath = Join-Path $Out 'postflight.json'
 $postflightExit = $LASTEXITCODE
 $postDoc = Get-Content -LiteralPath $postflightPath -Raw | ConvertFrom-Json
 $protectedUnchanged = [bool]$postDoc.protected_unchanged
-$drift = @($postDoc.unexpected) + @($postDoc.observed)
+$drift = @($postDoc.unexpected)
+$observed = @($postDoc.observed)
 
 $screenshots = @()
 if ($sceneShot) { $screenshots += 'scene.png' }
@@ -667,6 +708,7 @@ $document = [ordered]@{
             eye_width         = 2880
             eye_height        = 3240
             stereo_width      = 5760
+            stereo_actual     = $stereoActual
         }
         presentation = [ordered]@{
             vr_scale  = $VrScale
@@ -705,7 +747,8 @@ $document = [ordered]@{
         bytes           = $exeBytes
         lab_path        = $labExe
         lab_sha256      = Get-Sha256 $labExe
-        built_from_head = $(if ($head) { $head.Trim() } else { $null })
+        built_from_head = $(if ($BuiltFromCommit) { $BuiltFromCommit } else { $null })
+        build_commit_source = $(if ($BuiltFromCommit) { 'declared by the session' } else { 'not recorded' })
     }
     host           = [ordered]@{
         gpu        = $gpu
@@ -770,11 +813,14 @@ $document = [ordered]@{
         preflight_manifest  = 'preflight.json'
         protected_unchanged = $protectedUnchanged
         protected_drift     = @($drift)
+        protected_observed  = @($observed)
         validator_version   = 1
     }
 }
 foreach ($key in $envMap.Keys) { $document.env[$key] = [string]$envMap[$key] }
 
+Invoke-Guard 'write' (Join-Path $Out 'run.json')
+Remove-Item -LiteralPath (Join-Path $Out 'INVALID.txt') -Force -ErrorAction SilentlyContinue
 Write-JsonFile (Join-Path $Out 'run.json') $document
 Write-Output ("run written: {0}" -f (Join-Path $Out 'run.json'))
 

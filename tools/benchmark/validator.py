@@ -15,6 +15,8 @@ import hashlib
 import json
 import math
 import os
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -25,7 +27,7 @@ VALIDATOR_VERSION = 1
 SCENARIO_ID = "deracine-classroom-menu-300-msaa2-vblank60"
 SCENE_CLASSIFICATION = "classroom-main-menu-overlay"
 SIGNATURE_THRESHOLD = scene_signature.DEFAULT_THRESHOLD
-WINDOW_TOLERANCE_S = 1.0
+WINDOW_TOLERANCE_S = 2.0
 PERCENTILE_TOLERANCE_MS = 0.1
 FPS_TOLERANCE = 0.1
 
@@ -57,8 +59,11 @@ def percentile(values: list[float], fraction: float) -> float:
     return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
 
 
-def harmonic_fps(samples: list[dict]) -> float:
-    return len(samples) / sum(1.0 / float(s["fps"]) for s in samples)
+def aggregate_fps(samples: list[dict]) -> float:
+    """Total frames / total measured time: the emulator's rendered-frame rate."""
+    total_frames = sum(int(s["frames"]) for s in samples)
+    total_time = sum(int(s["frames"]) / float(s["fps"]) for s in samples)
+    return total_frames / total_time
 
 
 class Checker:
@@ -109,16 +114,49 @@ class Checker:
         if lab_hash != actual:
             self.fail("the file the session ran is not the executable this run names")
         built_from = executable.get("built_from_head")
-        if built_from is not None and built_from != self.data["source"]["head_sha"]:
-            self.fail("executable.built_from_head does not match source.head_sha")
+        if built_from is not None:
+            if re.fullmatch(r"[0-9a-f]{40}", str(built_from)) is None:
+                self.fail("executable.built_from_head is not a commit id")
+            else:
+                result = subprocess.run(
+                    ["git", "-C", str(Path(self.data["source"]["worktree"])), "cat-file", "-e",
+                     f"{built_from}^{{commit}}"], capture_output=True, text=True)
+                if result.returncode != 0:
+                    self.fail("executable.built_from_head is not a commit of this worktree")
 
     def check_host(self) -> None:
         host = self.data["host"]
         for field in ("gpu", "driver", "xr_runtime"):
-            if not str(host[field]).strip() or str(host[field]).strip().lower() in ("unknown", "n/a"):
+            value = str(host[field]).strip()
+            if not value or value.lower() in ("unknown", "n/a", "unidentified"):
                 self.fail(f"host.{field} is not identified")
         if not host.get("headset"):
             self.fail("host.headset is not recorded (may be 'not worn', but must be stated)")
+
+    def check_configuration(self) -> None:
+        scenario = self.data["scenario"]
+        guest = scenario["guest"]
+        if float(guest["screen_percentage"]) != 300.0 or int(guest["msaa_requested"]) != 2:
+            self.fail("guest configuration is not 300% / MSAA 2")
+        stereo = f"{int(guest['stereo_width'])}x{int(guest['eye_height'])}"
+        if int(guest["stereo_width"]) != 2 * int(guest["eye_width"]):
+            self.fail("guest stereo width is not twice the eye width")
+        recorded_stereo = guest.get("stereo_actual")
+        if recorded_stereo is None:
+            self.fail("the actual guest stereo size was not read back from the session log")
+        elif recorded_stereo != stereo:
+            self.fail(f"actual guest stereo {recorded_stereo} is not the requested {stereo}")
+        presentation = scenario["presentation"]
+        actual = presentation.get("actual")
+        if not actual:
+            self.fail("the actual OpenXR presentation size was not read back from the log")
+        else:
+            match = re.search(r"scale:\s*([0-9.]+)x", str(actual))
+            if match is None:
+                self.fail(f"actual presentation text has no scale: {actual!r}")
+            elif abs(float(match.group(1)) - float(presentation["vr_scale"])) > 0.01:
+                self.fail(f"actual presentation scale {match.group(1)} != requested "
+                          f"{presentation['vr_scale']}")
 
     def check_env(self) -> None:
         env = self.data["env"]
@@ -162,7 +200,8 @@ class Checker:
         if elapsed < 1.0:
             self.fail(f"the measured window lasted {elapsed:.3f} s, not {scenario['window_s']} s")
         if abs(elapsed - float(scenario["window_s"])) > WINDOW_TOLERANCE_S:
-            self.fail(f"measured window {elapsed:.3f} s is not {scenario['window_s']} s")
+            self.fail(f"measured window {elapsed:.3f} s is not {scenario['window_s']} s "
+                      f"(tolerance {WINDOW_TOLERANCE_S} s)")
         if not (timing["window_start_s"] < timing["window_end_s"]):
             self.fail("window boundaries are not increasing")
         if float(timing["warmup_end_s"]) > float(timing["window_start_s"]) + 1e-9:
@@ -193,9 +232,6 @@ class Checker:
         if len(window) != len(samples) - timing["warmup_samples"]:
             self.fail("warmup_samples does not separate warmup from the measured window")
         if window:
-            recomputed = harmonic_fps(window)
-            if abs(recomputed - float(timing["unique_fps"])) > FPS_TOLERANCE:
-                self.fail(f"unique_fps {timing['unique_fps']} != recomputed {recomputed:.3f}")
             frame_ms = [float(s["frame_ms"]) for s in window]
             recomputed_stats = {
                 "p50": percentile(frame_ms, 0.50),
@@ -222,17 +258,18 @@ class Checker:
 
             frames_available = all(isinstance(s.get("frames"), int) and int(s["frames"]) > 0
                                    for s in window)
-            if frames_available:
+            if not frames_available:
+                self.fail("no per-window frame count: unique FPS and elapsed time cannot be "
+                          "verified from the emulator's own series")
+            else:
                 measured = sum(int(s["frames"]) / float(s["fps"]) for s in window)
                 if abs(measured - elapsed) > 0.5:
                     self.fail(f"window_elapsed_s {elapsed:.3f} != the emulator-measured "
                               f"{measured:.3f} s from per-window frames/fps")
-            else:
-                observed = timing.get("window_observed_s")
-                if observed is None:
-                    self.fail("no per-window frame counts and no observed duration")
-                elif abs(float(observed) - elapsed) > 1.5:
-                    self.fail("window_elapsed_s disagrees with the observed duration")
+                aggregate = aggregate_fps(window)
+                if abs(aggregate - float(timing["unique_fps"])) > FPS_TOLERANCE:
+                    self.fail(f"unique_fps {timing['unique_fps']} != total frames / total "
+                              f"measured time {aggregate:.3f}")
 
         cadence = timing.get("compositor_cadence")
         if cadence:
@@ -262,6 +299,15 @@ class Checker:
             if abs(float(anchor["draws"]) - float(scene["draws"])) > 0.1 or \
                     abs(float(anchor["mpx"]) - float(scene["mpx"])) > 0.1:
                 self.fail("scene anchor statistics disagree with the sample they name")
+        # The measured window itself must stay in the heavy scene: an anchor match plus a
+        # screenshot is not proof if the title drops to the light front end mid-window.
+        for sample in self.data["timing"]["per_sample"]:
+            if not sample["in_window"]:
+                continue
+            if float(sample["draws"]) < float(gate["min_draws"]) or \
+                    float(sample["mpx"]) < float(gate["min_mpx"]):
+                self.fail(f"in-window sample {sample['sample']} left the scene gate "
+                          f"({sample['draws']:.0f} draws, {sample['mpx']:.1f} Mpx)")
 
         shot = scene["screenshot"]
         image_path = self.path(shot["path"])
@@ -334,7 +380,6 @@ class Checker:
             self.fail("protected paths changed during the run")
         if provenance.get("protected_drift"):
             self.fail("protected drift is recorded but the run still claims validity")
-
     def check_artifacts(self) -> None:
         artifacts = self.data["artifacts"]
         log = self.path(artifacts["log"])
@@ -387,10 +432,12 @@ class Checker:
                       f"{self.run_dir.name!r}")
 
     def run(self) -> dict:
+        if (self.run_dir / "INVALID.txt").exists():
+            self.errors.append("INVALID.txt is present: this directory records a failed run")
         self.check_schema()
-        checks = [self.check_source, self.check_executable, self.check_host, self.check_env,
-                  self.check_timing, self.check_scene, self.check_cleanup, self.check_provenance,
-                  self.check_artifacts, self.check_ids]
+        checks = [self.check_source, self.check_executable, self.check_host,
+                  self.check_configuration, self.check_env, self.check_timing, self.check_scene,
+                  self.check_cleanup, self.check_provenance, self.check_artifacts, self.check_ids]
         for check in checks:
             try:
                 check()

@@ -11,7 +11,7 @@ Scenario ID: `deracine-classroom-menu-300-msaa2-vblank60`.
 
 | measured | source |
 |---|---|
-| unique rendered FPS | `SHADPS4_FRAME_STATS` windows: `frames / steady_clock seconds` computed by the emulator draw scheduler (`FrameStats::EndFrame`) |
+| unique rendered FPS | `SHADPS4_FRAME_STATS` windows: **total frames / total measured time** (`Σ frames / Σ(frames/fps)`), computed by the emulator draw scheduler (`FrameStats::EndFrame`) |
 | frame time p50/p90/p95/p99 | the mean frame time of each 0.5 s window, `1000/fps` |
 | scene identity | a render-target dump compared with the reviewed reference by normalised 64×36 grayscale correlation |
 | workload | draws, passes and target Mpx per window, from the same frame-stats line |
@@ -24,10 +24,12 @@ Scenario ID: `deracine-classroom-menu-300-msaa2-vblank60`.
 * GPU-busy × frame-time estimates. They are not per-pass GPU timing.
 * gameplay. The classroom is the front end; menu selection and gameplay are separate gates.
 
-The measured window is 40.0 s of actual runner-observed duration, built from 80 consecutive
-0.5 s windows after a warmup of at least 10 s from the scene anchor. The window's first and last
-sample timestamps and the observed duration are all recorded so the validator can reject a
-claimed 40 s window that really lasted 0.65 s.
+The measured window is 80 consecutive 0.5 s windows after a warmup of at least 10 s from the
+scene anchor. The emulator closes a stats window at the first frame boundary after 0.5 s, so the
+80 windows cover `40 + 80/fps` seconds; the run records the emulator-measured duration
+(`Σ frames/fps`) and the validator requires it within 2 s of the scenario's 40 s. The first and
+last sample timestamps and the runner-observed duration are recorded as well, so a claimed 40 s
+window that really lasted 0.65 s is rejected.
 
 ## Files
 
@@ -113,30 +115,35 @@ percentiles, unique FPS), `scene` (classification, anchor stats, screenshot hash
 among others:
 
 1. compositor/present cadence used as FPS;
-2. a claimed 40 s window that is shorter/longer than the measured one;
+2. a measured window that is not 80 windows / about 40 s, or rows that do not carry the frame
+   counts the duration is derived from;
 3. a light front end or SIE splash screenshotted while carrying high FPS numbers;
 4. 500+ draws with a missing or wrong screenshot (draw count alone is never scene proof);
-5. missing autopress, vblank, guest resolution, GPU/driver or executable hash;
+5. an in-window sample that drops below the scene gate, or missing autopress, vblank, guest
+   resolution, GPU/driver or executable hash;
 6. mixed 60/120 Hz cells (compare.py refuses the comparison);
 7. an empty/traversal/out-of-root cleanup destination (validator) or an unsafe file operation
    (path guard);
-8. truncated, overlapping, nonmonotonic or inconsistent samples;
+8. truncated, overlapping, nonmonotonic or inconsistent samples, including an `INVALID.txt`
+   marker from a failed attempt;
 9. metadata naming one executable while a different file was run;
-10. content drift between A and B (compare.py refuses the comparison).
+10. content drift between A and B (compare.py refuses the comparison);
+11. an actual presentation/guest size that differs from the requested one.
 
 Invalid runs get `valid:false`, a reason list, no headline FPS and no place in a summary table.
 The raw log and the invalid run directory are preserved.
 
 ## Path guard: preventive where it runs, detection otherwise
 
-`path_guard.py` is called by the runner before every copy, delete and settings/config/engine
-write. It refuses empty paths, relative paths, `..` components, paths outside the allow roots,
-paths under a deny root, and reparse points that resolve outside the allowed root. It does not
-sandbox arbitrary processes: this machine runs everything under one Windows token, so a tool that
-ignores the guard can still write anywhere the user can. `preflight.ps1`/`postflight.ps1` are the
-barrier that covers that gap: they hash the protected files before and after and the run is
-invalid if anything changed. Both are detection, not OS enforcement; no ACL or permission was
-changed.
+`path_guard.py` is called by the runner before its copies, deletes and the session-state writes
+(lab executable and settings, engine.ini, run directory artifacts); the guard config itself is
+written before the first destructive operation. It refuses empty paths, relative paths, `..`
+components, paths outside the allow roots, paths under a deny root, and reparse points that
+resolve outside the allowed root. It does not sandbox arbitrary processes: this machine runs
+everything under one Windows token, so a tool that ignores the guard can still write anywhere the
+user can. `preflight.ps1`/`postflight.ps1` are the barrier that covers that gap: they hash the
+protected files before and after and the run is invalid if anything changed. Both are detection,
+not OS enforcement; no ACL or permission was changed.
 
 ## Reference image
 

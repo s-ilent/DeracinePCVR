@@ -71,6 +71,8 @@ class RunFixture:
         window = [row for row in per_sample if row["in_window"]]
         frame_ms = [row["frame_ms"] for row in window]
         measured_elapsed = sum(row["frames"] / row["fps"] for row in window)
+        total_frames = sum(row["frames"] for row in window)
+        aggregate_fps = total_frames / measured_elapsed
         stats = {
             "p50": validator.percentile(frame_ms, 0.50),
             "p90": validator.percentile(frame_ms, 0.90),
@@ -92,7 +94,7 @@ class RunFixture:
             "window_observed_s": 40.0,
             "warmup_start_s": 0.0,
             "warmup_end_s": 19.5,
-            "unique_fps": round(validator.harmonic_fps(window), 3),
+            "unique_fps": round(aggregate_fps, 3),
             "frame_ms": {key: round(value, 3) for key, value in stats.items()},
             "compositor_cadence": {
                 "presented_hz": 120.2,
@@ -156,9 +158,11 @@ class RunFixture:
                     "content_source": "fixture",
                 },
                 "guest": {"screen_percentage": 300, "msaa_requested": 2, "eye_width": 2880,
-                          "eye_height": 3240, "stereo_width": 5760},
+                          "eye_height": 3240, "stereo_width": 5760,
+                          "stereo_actual": "5760x3240"},
                 "presentation": {"vr_scale": 0.5, "guest_eye": "2880x3240 per eye",
-                                 "actual": "2880x1632 per eye"},
+                                 "actual": "2880x1632 window, per eye 1440x1632, base eye "
+                                           "2880x3240, scale: 0.50x"},
                 "vblank_hz": 60,
                 "vblank_actual_hz": 60,
                 "autopress": {"enabled": True, "value": "1", "devices": "pad,move",
@@ -182,7 +186,8 @@ class RunFixture:
                 "bytes": self.exe.stat().st_size,
                 "lab_path": str(self.lab_exe),
                 "lab_sha256": validator.sha256_file(self.lab_exe),
-                "built_from_head": self.head_sha,
+                "built_from_head": None,
+                "build_commit_source": "not recorded",
             },
             "host": {"gpu": "AMD Radeon fixture", "driver": "fixture 1.0", "os": "Windows 11",
                      "cpu": "fixture CPU", "xr_runtime": "SteamVR fixture", "headset": "not worn"},
@@ -208,6 +213,7 @@ class RunFixture:
                 "preflight_manifest": "preflight.json",
                 "protected_unchanged": True,
                 "protected_drift": [],
+                "protected_observed": [],
                 "validator_version": validator.VALIDATOR_VERSION,
             },
         }
@@ -410,6 +416,56 @@ class ValidatorTests(unittest.TestCase):
         self.assertTrue(result["comparable"])
         self.assertTrue(result["inside_noise_floor"])
         self.assertIn("inconclusive", result["conclusion"])
+
+    def test_unique_fps_is_total_frames_over_total_time(self) -> None:
+        document = self.fixture.reload()
+        document["timing"]["unique_fps"] = round(document["timing"]["unique_fps"] + 1.0, 3)
+        self.fixture.write(document)
+        self.assert_invalid("total frames / total measured time")
+
+    def test_in_window_workload_must_stay_in_the_scene(self) -> None:
+        document = self.fixture.reload()
+        row = next(s for s in document["timing"]["per_sample"] if s["in_window"])
+        row["draws"] = 38.0
+        row["mpx"] = 232.0
+        self.fixture.write(document)
+        self.assert_invalid("left the scene gate")
+
+    def test_observed_protected_changes_do_not_fail_but_drift_does(self) -> None:
+        document = self.fixture.reload()
+        document["provenance"]["protected_observed"] = ["another worktree changed"]
+        self.fixture.write(document)
+        self.assertTrue(validator.validate_run(self.run_dir)["valid"])
+
+        document = self.fixture.reload()
+        document["provenance"]["protected_drift"] = ["content changed: pc-vr/shadps4.exe"]
+        self.fixture.write(document)
+        self.assert_invalid("protected drift")
+
+    def test_failed_run_directory_is_never_valid(self) -> None:
+        (self.run_dir / "INVALID.txt").write_text("INVALID RUN - timeout\n", encoding="utf-8")
+        self.assert_invalid("records a failed run")
+        (self.run_dir / "INVALID.txt").unlink()
+        self.assertTrue(validator.validate_run(self.run_dir)["valid"])
+
+    def test_missing_frame_counts_are_not_estimated(self) -> None:
+        document = self.fixture.reload()
+        row = next(s for s in document["timing"]["per_sample"] if s["in_window"])
+        row.pop("frames")
+        self.fixture.write(document)
+        self.assert_invalid("no per-window frame count")
+
+    def test_actual_presentation_must_match_requested(self) -> None:
+        document = self.fixture.reload()
+        document["scenario"]["presentation"]["actual"] = (
+            "2880x1632 window, per eye 1440x1632, base eye 2880x3240, scale: 1.00x")
+        self.fixture.write(document)
+        self.assert_invalid("actual presentation scale")
+
+        document = self.fixture.reload()
+        document["scenario"]["guest"]["stereo_actual"] = "2880x3240"
+        self.fixture.write(document)
+        self.assert_invalid("actual guest stereo")
 
 
 if __name__ == "__main__":
