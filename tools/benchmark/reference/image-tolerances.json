@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "description": "Default tolerances for tools/benchmark/image_validation.py (RGB/colour validation). The module's DEFAULT_TOLERANCES carries the same values; this file is the documented copy the CLI accepts with --tolerances. Units are 0-255 per-channel values. A pass requires every limit to hold (limits are inclusive); black or uniform images are inconclusive, never a pass.",
+  "tolerances": {
+    "max_mae": 2.0,
+    "max_channel_mae": 3.0,
+    "max_p99": 12.0,
+    "max_bad_fraction": 0.01,
+    "pixel_diff_threshold": 8.0,
+    "max_region_mae": 6.0,
+    "region_grid": 4,
+    "black_luma_threshold": 4.0,
+    "black_fraction_max": 0.98,
+    "stereo_side_by_side": true,
+    "min_eye_energy": 0.5,
+    "eye_identical_mae": 1.0,
+    "channel_swap_improvement": 0.5,
+    "min_std": 1.0
+  },
+  "documentation": {
+    "max_mae": "Overall mean absolute error over the R/G/B channels. The primary same-frame gate: two captures of the same static frame differ by compression noise (tens of a level), not by several levels.",
+    "max_channel_mae": "Per-channel mean absolute error. Catches one channel drifting even when the overall mean stays low (a colour cast).",
+    "max_p99": "Per-channel and overall 99th percentile of the absolute difference. Catches sparse but strong corruption that a mean would hide.",
+    "max_bad_fraction": "Fraction of pixels with any colour channel differing by more than pixel_diff_threshold. Catches a localised defect on a small part of the frame.",
+    "pixel_diff_threshold": "Per-channel absolute difference above which a pixel counts as bad for max_bad_fraction.",
+    "max_region_mae": "Worst region of the region_grid must stay below this mean absolute error. A localised corruption (for example an overlay on one part of the scene) can pass the whole-image mean while failing here.",
+    "region_grid": "Region grid used for the region statistics: an int for a square grid or [columns, rows]. Default 4x4.",
+    "black_luma_threshold": "A channel value at or below this is 'near zero' for black-frame and half-black detection.",
+    "black_fraction_max": "The candidate is black when every colour channel has at least this fraction of near-zero pixels. Black is inconclusive, never a pass.",
+    "stereo_side_by_side": "Enable the stereo side-by-side checks: missing/black eye and duplicated (identical) halves.",
+    "min_eye_energy": "A stereo half whose non-black pixel fraction is below this is treated as a missing eye and fails.",
+    "eye_identical_mae": "Left/right halves whose mean absolute difference is at or below this are treated as identical; if the reference halves differ, a duplicated eye fails.",
+    "channel_swap_improvement": "The R/B-swapped comparison is materially better when its MAE is at most this fraction of the direct MAE while the direct comparison already fails max_mae.",
+    "min_std": "An image whose colour-channel standard deviation is below this carries no structure and is inconclusive."
+  }
+}
