@@ -40,6 +40,28 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $inv = [System.Globalization.CultureInfo]::InvariantCulture
+$script:emulator = $null
+$script:runStart = $null
+
+trap {
+    Write-Output ("runner failed: {0}" -f $_.Exception.Message)
+    if ($_.InvocationInfo -and $_.InvocationInfo.PositionMessage) {
+        Write-Output $_.InvocationInfo.PositionMessage
+    }
+    try {
+        if ($script:emulator -and -not $script:emulator.HasExited) {
+            Stop-Process -Id $script:emulator.Id -Force -ErrorAction SilentlyContinue
+        }
+    } catch { }
+    Get-Process -Name shadps4 -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+            if ($null -eq $script:runStart -or $_.StartTime -ge $script:runStart) {
+                Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+            }
+        } catch { }
+    }
+    exit 4
+}
 
 function Get-Sha256([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -110,6 +132,18 @@ function Invoke-Guard([string]$Op, [string]$Path) {
 }
 
 function Fail-Run([string]$Reason) {
+    try {
+        if ($script:emulator -and -not $script:emulator.HasExited) {
+            Stop-Process -Id $script:emulator.Id -Force -ErrorAction SilentlyContinue
+        }
+    } catch { }
+    Get-Process -Name shadps4 -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+            if ($null -eq $script:runStart -or $_.StartTime -ge $script:runStart) {
+                Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+            }
+        } catch { }
+    }
     $text = @(
         "INVALID RUN - $Reason",
         "run: $Out",
@@ -255,6 +289,7 @@ if (Test-Path -LiteralPath $patchFile) { $gameArgs += @('-p', $patchFile) }
 $consoleOut = Join-Path $Out 'console.txt'
 $consoleErr = Join-Path $Out 'console-errors.txt'
 $runStart = Get-Date
+$script:runStart = $runStart
 $stopwatch = [Diagnostics.Stopwatch]::StartNew()
 if ($RenderDocCaptureDir) {
     $RenderDocCaptureDir = [IO.Path]::GetFullPath($RenderDocCaptureDir)
@@ -271,6 +306,7 @@ if ($RenderDocCaptureDir) {
     $emulator = Start-Process -FilePath $labExe -ArgumentList $gameArgs -WorkingDirectory $Lab `
         -PassThru -WindowStyle Hidden -RedirectStandardOutput $consoleOut -RedirectStandardError $consoleErr
 }
+$script:emulator = $emulator
 
 function Stop-LabGame {
     if ($emulator -and -not $emulator.HasExited) {
@@ -466,7 +502,7 @@ if ($Capture) {
         Write-Output ("scene screenshot did not match the reviewed reference (best similarity {0:N4})" -f $shotSimilarity)
     }
     if (Test-Path -LiteralPath (Join-Path $Out 'captures.json')) { Remove-Item -LiteralPath (Join-Path $Out 'captures.json') -Force }
-    Write-JsonFile (Join-Path $Out 'captures.json') @($dumpEvidence)
+    Write-JsonFile (Join-Path $Out 'captures.json') $dumpEvidence.ToArray()
     if ($emulator.HasExited) { Fail-Run 'the emulator ended after the scene screenshot' }
 }
 
