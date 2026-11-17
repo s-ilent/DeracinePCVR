@@ -487,7 +487,30 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
                 const char* value = std::getenv("SHADPS4_DBG_COPY_VIA_BUFFER");
                 return value != nullptr && value[0] == '1';
             }();
-            if (instance.IsMaintenance8Supported() && !via_buffer) {
+            // SHADPS4_DBG_DEPTH_PASS=1: carry a colour picture into a depth image by writing it
+            // through the depth unit instead of copying it. The words are the same 32-bit floats,
+            // but a copy from a colour format into a depth one makes the driver detile and
+            // decompress the whole depth surface first.
+            static const bool via_depth_pass = [] {
+                const char* value = std::getenv("SHADPS4_DBG_DEPTH_PASS");
+                return value != nullptr && value[0] == '1';
+            }();
+            const bool color_into_depth = !source_image.info.props.is_depth &&
+                                          new_info.props.is_depth &&
+                                          source_image.info.pixel_format == vk::Format::eR32Sfloat &&
+                                          (new_info.pixel_format == vk::Format::eD32Sfloat ||
+                                           new_info.pixel_format == vk::Format::eD32SfloatS8Uint);
+            if (via_depth_pass && color_into_depth) {
+                source_image.Transit(vk::ImageLayout::eShaderReadOnlyOptimal,
+                                     vk::AccessFlagBits2::eShaderRead, {});
+                new_image.Transit(vk::ImageLayout::eDepthAttachmentOptimal,
+                                  vk::AccessFlagBits2::eDepthStencilAttachmentWrite, {});
+                blit_helper.CopyColorToDepth32(new_info.size.width, new_info.size.height,
+                                               source_image.GetImage(),
+                                               source_image.info.pixel_format,
+                                               new_image.GetImage(), new_info.pixel_format);
+                NoteOverlap("depthpass");
+            } else if (instance.IsMaintenance8Supported() && !via_buffer) {
                 new_image.CopyImage(source_image);
                 NoteOverlap("direct");
                 {

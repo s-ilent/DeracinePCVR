@@ -29,7 +29,7 @@
 #include "video_core/renderer_vulkan/vk_gpu_profile.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
-#include "video_core/renderer_vulkan/renderdoc_app.h"
+#include <renderdoc_app.h>
 
 namespace {
 /// SHADPS4_DBG_RDOC_CAPTURE=<seconds>: with the process started under RenderDoc, asks it for one
@@ -43,7 +43,7 @@ void MaybeTriggerRenderDocCapture() {
     if (at_seconds <= 0.0) {
         return;
     }
-    static RENDERDOC_API_1_4_0* api = []() -> RENDERDOC_API_1_4_0* {
+    static RENDERDOC_API_1_6_0* api = []() -> RENDERDOC_API_1_6_0* {
         const HMODULE module = GetModuleHandleA("renderdoc.dll");
         if (module == nullptr) {
             LOG_INFO(Render_Vulkan, "RDOC capture was asked for but renderdoc.dll is not loaded");
@@ -55,10 +55,10 @@ void MaybeTriggerRenderDocCapture() {
             return nullptr;
         }
         void* out = nullptr;
-        if (get_api(eRENDERDOC_API_Version_1_4_0, &out) != 1) {
+        if (get_api(eRENDERDOC_API_Version_1_6_0, &out) != 1) {
             return nullptr;
         }
-        return static_cast<RENDERDOC_API_1_4_0*>(out);
+        return static_cast<RENDERDOC_API_1_6_0*>(out);
     }();
     if (api == nullptr) {
         return;

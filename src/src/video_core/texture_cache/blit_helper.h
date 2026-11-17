@@ -40,6 +40,13 @@ public:
     /// moved to GENERAL, written, and left readable by shaders.
     void CopyReinterpret32(u32 width, u32 height, vk::Image source, vk::Image dest);
 
+    /// Writes a single-sample 32-bit float colour picture into a depth attachment, one pixel per
+    /// pixel (host_shaders/color_to_depth32.frag). The source has to be in a layout for reading in
+    /// shaders and the destination in the one for depth attachments; the destination's stencil
+    /// plane, if it has one, is loaded and stored untouched.
+    void CopyColorToDepth32(u32 width, u32 height, vk::Image source, vk::Format src_pixel_format,
+                            vk::Image dest, vk::Format dst_pixel_format);
+
     void CopyBetweenMsImages(u32 width, u32 height, vk::SampleCountFlagBits samples,
                              vk::Format pixel_format, bool src_msaa, vk::Image source,
                              vk::Image dest);
@@ -72,6 +79,7 @@ private:
     };
     void CreateColorToMSDepthPipeline(const MsPipelineKey& key);
     void CreateMsCopyPipeline(const MsPipelineKey& key);
+    void CreateColorToDepth32Pipeline(vk::Format depth_format);
     vk::Pipeline SmoothPipeline(vk::Format attachment_format, bool fine_only);
 
 private:
@@ -93,12 +101,15 @@ private:
     vk::UniqueDescriptorPool copy32_pool;
     vk::ShaderModule fs_tri_vertex;
     vk::ShaderModule color_to_ms_depth_frag;
+    vk::ShaderModule color_to_depth32_frag;
     vk::ShaderModule src_msaa_copy_frag;
     vk::ShaderModule src_non_msaa_copy_frag;
 
     using MsPipeline = std::pair<MsPipelineKey, vk::UniquePipeline>;
     std::vector<MsPipeline> color_to_ms_depth_pl;
     std::vector<MsPipeline> ms_image_copy_pl;
+    /// A depth attachment's format and the colour picture written into it, one pipeline each.
+    std::vector<std::pair<vk::Format, vk::UniquePipeline>> color_to_depth32_pl;
 
     // Smoothing in place of a resolve: a texture read through a sampler, one pipeline for
     // every format drawn to.
