@@ -541,7 +541,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $Out 'shad_log.txt'))) {
 }
 
 # --- analysis --------------------------------------------------------------------------------
-$window = @($samples | Where-Object { $_.in_window })
+$window = $samples.ToArray() | Where-Object { $_.in_window }
 if ($window.Count -ne $samplesInWindow) { Fail-Run "only $($window.Count) in-window samples" }
 $frameMs = @($window | ForEach-Object { [double]$_.frame_ms })
 $uniqueFps = $window.Count / (($window | ForEach-Object { 1.0 / [double]$_.fps } | Measure-Object -Sum).Sum)
@@ -576,7 +576,7 @@ foreach ($s in $samples) {
 [IO.File]::WriteAllText((Join-Path $Out 'frames.csv'), (($framesCsv -join "`r`n") + "`r`n"),
     (New-Object System.Text.UTF8Encoding($false)))
 
-$allLines = @($logLines)
+$allLines = $logLines.ToArray()
 $diag = @($allLines | Where-Object {
         $_ -match 'frame stats at|frame path:|HMD frame |OpenXR swapchain|QUALITYDIAG|Device lost|DEVICE_LOST|Assertion Failed|Unreachable code|AUTOPRESS|RDOC capture'
     })
@@ -599,13 +599,27 @@ $rdcPngRelative = $null
 $rdcSha = $null
 $rdcPngSimilarity = $null
 if ($RenderDocCaptureDir) {
-    $rdc = Get-ChildItem -LiteralPath $RenderDocCaptureDir -File -Filter '*.rdc' -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    # shadps4's RenderDoc integration sets its own capture file template to
+    # user\captures\CUSA11919, so the capture lands in the lab, not where renderdoccmd was told.
+    # Search both places, take the newest capture of this session, and copy it into the run.
+    $searchDirs = @($RenderDocCaptureDir, (Join-Path $labUser 'captures')) |
+        Select-Object -Unique
+    $rdc = $null
+    foreach ($dir in $searchDirs) {
+        if (-not (Test-Path -LiteralPath $dir)) { continue }
+        $found = Get-ChildItem -LiteralPath $dir -File -Filter '*.rdc' -ErrorAction SilentlyContinue |
+            Where-Object { $_.LastWriteTime -ge $runStart } |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($found -and ($null -eq $rdc -or $found.LastWriteTime -gt $rdc.LastWriteTime)) { $rdc = $found }
+    }
     if ($null -eq $rdc) { Fail-Run 'the RenderDoc capture did not appear; the scene step still ran but the capture is missing' }
-    $rdcSha = Get-Sha256 $rdc.FullName
-    $rdcRelative = [IO.Path]::GetRelativePath($Out, $rdc.FullName)
+    $rdcInRun = Join-Path $RenderDocCaptureDir $rdc.Name
+    Invoke-Guard 'write' $rdcInRun
+    Copy-Item -LiteralPath $rdc.FullName -Destination $rdcInRun -Force
+    $rdcSha = Get-Sha256 $rdcInRun
+    $rdcRelative = [IO.Path]::GetRelativePath($Out, $rdcInRun)
     $pngPath = Join-Path $RenderDocCaptureDir ($rdc.BaseName + '-final.png')
-    & $RenderDocCmd thumb --out $pngPath --max-size 0 $rdc.FullName | Out-Null
+    & $RenderDocCmd thumb --out $pngPath --max-size 0 $rdcInRun | Out-Null
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $pngPath)) {
         Fail-Run 'renderdoccmd could not read the capture back into a thumbnail'
     }
@@ -717,7 +731,7 @@ $document = [ordered]@{
         unique_fps         = Round3 $uniqueFps
         frame_ms           = $frameStats
         compositor_cadence = $null
-        per_sample         = @($samples | ForEach-Object { $_ })
+        per_sample         = $samples.ToArray()
     }
     scene          = [ordered]@{
         classification    = $classification
@@ -728,7 +742,7 @@ $document = [ordered]@{
         draws             = $anchor.draws
         mpx               = $anchor.mpx
         passes            = $anchor.passes
-        dumps             = @($dumpEvidence)
+        dumps             = $dumpEvidence.ToArray()
         screenshot        = [ordered]@{
             path                 = $(if ($sceneShot) { 'scene.png' } else { '' })
             sha256               = $(if ($shotSha) { $shotSha } else { '' })
