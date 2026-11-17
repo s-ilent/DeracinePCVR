@@ -30,6 +30,7 @@
 #include "core/vr/frame_timeline.h"
 #include "video_core/texture_cache/preserve_tracker.h"
 #include "video_core/texture_cache/alias_trace.h"
+#include "video_core/texture_cache/image_stats.h"
 #include <vk_mem_alloc.h>
 
 namespace VideoCore {
@@ -49,6 +50,7 @@ std::atomic<u32> g_copyimage{};
 std::atomic<u32> g_draws{};
 std::atomic<long long> g_last_report{};
 void NoteOverlap(const char* which) {
+    ImageStats::Report();
     if (std::getenv("SHADPS4_DBG_OVERLAP") == nullptr) {
         return;
     }
@@ -366,6 +368,7 @@ void TextureCache::UnmapMemory(VAddr cpu_addr, size_t size) {
 
 ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, BindingType binding,
                                           ImageId cache_image_id) {
+    ScopedTimer timed{ImageStats::depth_ns};
     NoteOverlap("depth");
     auto& cache_image = slot_images[cache_image_id];
 
@@ -660,6 +663,7 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
                                                            BindingType binding,
                                                            ImageId cache_image_id,
                                                            ImageId merged_image_id) {
+    ScopedTimer timed{ImageStats::overlap_ns};
     auto& cache_image = slot_images[cache_image_id];
     if (AliasTrace::Enabled() &&
         (AliasTrace::Hits(image_info.guest_address, image_info.guest_size) ||
@@ -934,6 +938,7 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
 }
 
 ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
+    ScopedTimer timed{ImageStats::expand_ns};
     {
         // Expanding an image to the size it already has only re-allocates it and copies its
         // contents to the same place. The cache already holds an image big enough.
