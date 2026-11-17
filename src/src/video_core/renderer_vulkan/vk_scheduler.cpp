@@ -614,10 +614,11 @@ void FrameStats::EndFrame() {
     }
     LOG_INFO(Render_Vulkan,
              "frame stats at {:.0f} s{}: {:.1f} fps, per frame {:.1f} passes ({:.1f} loading their "
-             "targets, {:.1f} Mpx), {:.0f} draws, {:.1f} dispatches, {:.1f} submits{}",
+             "targets, {:.1f} Mpx), {:.0f} draws, {:.1f} dispatches, {:.1f} submits{}, {:.0f} "
+             "frames",
              std::chrono::duration<double>(now - start).count(), ab, n / seconds,
              c.passes.Take() / n, c.loading_passes.Take() / n, c.pass_pixels.Take() / n / 1e6,
-             c.draws.Take() / n, c.computes.Take() / n, c.submits.Take() / n, gpu);
+             c.draws.Take() / n, c.computes.Take() / n, c.submits.Take() / n, gpu, n);
     const auto stage_ms = [](Stage stage) {
         const u64 total = g_stage_times.total[static_cast<size_t>(stage)].exchange(0);
         const u64 count = g_stage_times.count[static_cast<size_t>(stage)].exchange(0);
