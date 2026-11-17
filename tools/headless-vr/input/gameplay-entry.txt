@@ -1,0 +1,45 @@
+# M2 gameplay entry — scripted Move sequence
+#
+# Provenance: this is the input script of the committed evidence run
+# _build/headless/probe-scene/evidence/m2-confirm-1 (scene-eng, 2026-11-18), the run that reached
+# genuine Déraciné gameplay headlessly (menu -> Continue -> loading -> gameplay, ~49-65 s) from
+# savedata slot 1 (stage m00_00_10_10). It is committed here so the benchmark does not depend on a
+# private _build file.
+#
+# Format (src/src/input/scripted_input.cpp): "<start_s> <hold_s> <actions...>", positions persist
+# and the most recently started line wins. Lines beginning with '#' are comments.
+#
+# Requirements: savedata slot 1 from tools/headless-vr/save-slot/MANIFEST.json, the environment in
+# tools/benchmark/reference/scene-gameplay.json (SHADPS4_VR_MOVE_FROM_PAD=1, SHADPS4_VR_HANDS=synthetic,
+# SHADPS4_DBG_AUTOPRESS=1), and a build carrying the M2 commits. Everything is test-only.
+#
+# The pad's x=+0.30 mirrors hand 1 to x=-0.30 (the Continue item); y=-0.12 is its centre at the
+# menu plane. The presses below are the confirm variants of the M2 sweep.
+
+# Face the menu, then put the pad at the menu plane.
+0 900 head=0,0,0,0,0,0
+0 45 pad=0,-0.17,-0.5,0,0,0
+
+# Aim: mirrored hand 1 at the Continue item.
+46 900 pad=0.30,-0.12,-0.5,0,0,0
+
+# Confirm variants with the star on Continue.
+50 1 cross
+53 1 options
+56 1 move0=2,255
+59 1 move1=4,255
+62 1 move0=6,255
+65 1 move1=6,255
+68 1 move0=6,255
+
+# Gaze variant: look at Continue (8 deg left, 1 deg down) and press the pointer hand.
+70 6 head=0,0,0,8,-1,0
+72 1 move1=6,255
+74 1 move1=6,255
+76 900 head=0,0,0,0,0,0
+
+# Depth variant: the hand at the menu plane (mirrored to x=-0.40).
+78 900 pad=0.40,-0.02,-1.5,0,0,0
+82 1 move0=6,255 move1=6,255
+85 1 move0=6,255 move1=6,255
+88 1 move0=6,255 move1=6,255

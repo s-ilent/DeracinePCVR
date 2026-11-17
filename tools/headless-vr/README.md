@@ -21,6 +21,9 @@ Milestones (user decision, 2026-11-18):
 | `headless-vr-launch.ps1` | M1 entry point: isolated lab, headless env, launch, watch the log, assert the eye size and the front-end heavy phase, capture one eye PNG, stop, write `result.json` |
 | `gpu-lock.sh` | machine-wide GPU lock (same lock directory as the old HMD slot; headless-friendly; `--require-quiet` process audit; release on failure) |
 | `HEADLESS-ONLY.md` | the user directive and the rules all agents follow |
+| `HEADLESS-M2.md` | M2 gameplay: integration notes, opt-in table, benchmark procedure, single-lab status |
+| `input/gameplay-entry.txt` | the committed M2 scripted Move sequence that reaches gameplay |
+| `save-slot/` | `MANIFEST.json` + `provision.ps1` for the deterministic slot-1 save (hashes pinned) |
 
 ## M1 verified result
 

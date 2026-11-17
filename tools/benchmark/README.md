@@ -7,6 +7,17 @@ that did not prove the scene, the configuration, the window and the protected-fi
 
 Scenario ID: `deracine-classroom-menu-300-msaa2-vblank60`.
 
+## Headless gameplay benchmark (M2)
+
+A second, dedicated benchmark lives beside the classroom one. `headless-gameplay.ps1` drives
+Déraciné into **gameplay** with no physical headset and no OpenXR host (synthetic Move hands plus
+the committed M2 input sequence), then validates the run against `reference/scene-gameplay.json`
+with `gameplay_gate.py`. It is a separate profile because the menu (~465–500 draws) and gameplay
+(~1,866–1,900 draws) are different scenes and must never share a gate. The gate, band, unique-FPS
+arithmetic and the save-slot pin are unit-tested without a GPU
+(`tests/test_gameplay_gate.py`). Procedure, opt-in table and single-lab status:
+`../headless-vr/HEADLESS-M2.md`.
+
 ## What is measured, and what is not
 
 | measured | source |
@@ -44,10 +55,13 @@ tools/benchmark/
   scene_signature.py    signature, preview and size helpers for scene screenshots
   path_guard.py         allowlist/denylist guard for automated file operations
   json_schema_lite.py   schema-structure check for run.json
+  gameplay_gate.py      headless gameplay gate: frame-stats parse, scene gate/band, unique FPS,
+                        save-manifest verification (standard library only)
+  headless-gameplay.ps1 one headless gameplay cell: lab, launch, window, normal quit, run.json
   schema/run.schema.json
-  reference/            reviewed classroom reference signature + preview
+  reference/            reviewed classroom reference signature + preview, and scene-gameplay.json
   fixtures/             negative-control images (SIE splash)
-  tests/                unittest suites for the validator and the path guard
+  tests/                unittest suites for the validator, the gameplay gate and the path guard
   README.md
 ```
 
