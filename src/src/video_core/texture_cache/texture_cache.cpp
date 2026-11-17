@@ -1022,7 +1022,9 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
     // RefreshImage declines multisampled images, so for those the copy is the only writer). Porting
     // it means putting exactly that expression here: the coverage skip collapses to "skip nothing"
     // when the copy will not run, which is why the assertion below exists.
-    const bool carries_contents = true;
+    const bool src_has_gpu_data = src_image.SafeToDownload();
+    // RefreshImage declines multisampled images, so for those the copy is the only writer.
+    const bool carries_contents = src_has_gpu_data || src_image.info.num_samples > 1;
     // What the copy is going to write, level by level. Only levels it does not reach are read
     // from guest memory: the rest would be overwritten before anything could read them.
     // SHADPS4_DBG_COVERED_REFRESH=1 turns it on; the shapes it decides on are logged once each.
@@ -1080,6 +1082,9 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
 
     TrackImage(new_image_id);
     new_image.flags &= ~ImageFlagBits::Dirty;
+    if (carries_contents) {
+        new_image.flags |= ImageFlagBits::GpuModified;
+    }
     return new_image_id;
 }
 
