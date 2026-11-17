@@ -13,6 +13,11 @@ render_percent=300
 
 # 1: put the game's own Engine.ini back (the copy kept before DeracinePCVR changed it).
 #render_restore=0
+# The 120 fps configuration: the GPU's work a frame is very nearly proportional to what is written
+# into targets (~0.028 ms per megapixel, measured at 180/210/320 percent), and at 210 percent it is
+# 6.5 ms, which with ~1.8 ms of host time fits the 8.3 ms that 120 fps allows. It draws at 2016x2268
+# an eye and the headset is still shown 3036x3036 (present=auto), so the cost is sharpness, not size.
+#render_percent=210
 
 # Target FPS: 120, 90, 80, 72, 60, 45, 30.
 # 60 is the PS4 console's native VR rate. Set your headset refresh rate to 120 Hz
