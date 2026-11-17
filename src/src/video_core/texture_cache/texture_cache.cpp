@@ -1003,8 +1003,11 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
         std::getenv("SHADPS4_DBG_SKIP_COVERED_REFRESH") != nullptr;
     // Whether the new image takes the old image's contents at all. Written as one condition
     // because the coverage below is only sound while the copy that follows really runs: upstream
-    // #5444 gates this copy on the source holding GPU-written data (src_image.SafeToDownload()).
-    // If that is ported, gate this condition with it and the skip stays sound.
+    // #5444 gates this copy on the source holding GPU-written data
+    // (`src_image.SafeToDownload() || src_image.info.num_samples > 1` - the second term because
+    // RefreshImage declines multisampled images, so for those the copy is the only writer). Porting
+    // it means putting exactly that expression here: the coverage skip collapses to "skip nothing"
+    // when the copy will not run, which is why the assertion below exists.
     const bool carries_contents = true;
     // What the copy is going to write, level by level. Only levels it does not reach are read
     // from guest memory: the rest would be overwritten before anything could read them.
@@ -1046,6 +1049,11 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
     } else {
         RefreshImage(new_image, &covered);
     }
+    // The property that keeps this coherent: a level whose upload was skipped is a level the copy
+    // is about to write. Adopting #5444 without moving the coverage gate with it breaks exactly
+    // this, and breaks it silently - the skip is opt-in, so the corruption would only appear when
+    // someone turned the measurement switch on.
+    ASSERT(carries_contents || covered.CoversNothing());
     if (carries_contents) {
         new_image.CopyImage(src_image);
     }
