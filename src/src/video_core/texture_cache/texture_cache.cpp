@@ -24,6 +24,7 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/staging_diag.h"
 #include "video_core/texture_cache/host_compatibility.h"
+#include "video_core/texture_cache/image_stats.h"
 #include "video_core/texture_cache/image_view.h"
 #include "video_core/texture_cache/texture_cache.h"
 #include "video_core/texture_cache/tile_manager.h"
@@ -305,6 +306,7 @@ void TextureCache::UnmapMemory(VAddr cpu_addr, size_t size) {
 
 ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, BindingType binding,
                                           ImageId cache_image_id) {
+    ScopedTimer timed{ImageStats::depth_ns};
     auto& cache_image = slot_images[cache_image_id];
 
     if (!cache_image.info.props.is_depth && !requested_info.props.is_depth) {
@@ -458,6 +460,7 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
                                                            BindingType binding,
                                                            ImageId cache_image_id,
                                                            ImageId merged_image_id) {
+    ScopedTimer timed{ImageStats::overlap_ns};
     auto& cache_image = slot_images[cache_image_id];
     const bool safe_to_delete =
         scheduler.CurrentTick() - cache_image.tick_accessed_last > NumFramesBeforeRemoval;
@@ -686,6 +689,7 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
 }
 
 ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
+    ScopedTimer timed{ImageStats::expand_ns};
     const auto new_image_id =
         slot_images.insert(instance, scheduler, blit_helper, slot_image_views, info);
     RegisterImage(new_image_id);
@@ -723,6 +727,13 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     if (info.guest_address == 0) [[unlikely]] {
         return GetNullImage(info.pixel_format);
     }
+
+    // Drives the per-second counters. This is the cache's most frequent entry point and the only
+    // one that runs whether or not anything is being created, so the second's totals are written
+    // here rather than from one of the paths that add to them (the tree this was extracted from
+    // reported from its overlap counters, which do not exist here). Off unless
+    // SHADPS4_DBG_OVERLAP is set; ImageStats::Report() then reads one bool and returns.
+    ImageStats::Report();
 
     std::scoped_lock lock{mutex};
     Vulkan::FrameStats::Add(Vulkan::FrameStats::Counter::ImageLookups);

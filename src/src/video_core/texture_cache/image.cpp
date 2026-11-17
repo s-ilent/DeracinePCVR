@@ -14,6 +14,7 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/texture_cache/blit_helper.h"
 #include "video_core/texture_cache/image.h"
+#include "video_core/texture_cache/image_stats.h"
 
 #include <vk_mem_alloc.h>
 
@@ -91,12 +92,16 @@ static vk::FormatFeatureFlags2 FormatFeatureFlags(const vk::ImageUsageFlags usag
 
 UniqueImage::~UniqueImage() {
     if (image) {
+        ScopedTimer timed{ImageStats::destroy_ns};
+        ImageStats::NoteImageDestroyed();
         vmaDestroyImage(allocator, image, allocation);
     }
 }
 
 void UniqueImage::Destroy() {
     if (image) {
+        ScopedTimer timed{ImageStats::destroy_ns};
+        ImageStats::NoteImageDestroyed();
         vmaDestroyImage(allocator, image, allocation);
         image = vk::Image{};
         allocation = {};
@@ -128,10 +133,16 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci,
         image_ci_unsafe.pNext = &format_list;
     }
     VkImage unsafe_image{};
-    VkResult result = vmaCreateImage(allocator, &image_ci_unsafe, &alloc_info, &unsafe_image,
-                                     &allocation, nullptr);
+    VmaAllocationInfo alloc_info_out{};
+    VkResult result;
+    {
+        ScopedTimer timed{ImageStats::create_ns};
+        result = vmaCreateImage(allocator, &image_ci_unsafe, &alloc_info, &unsafe_image,
+                                &allocation, &alloc_info_out);
+    }
     ASSERT_MSG(result == VK_SUCCESS, "Failed allocating image with error {}",
                vk::to_string(vk::Result{result}));
+    ImageStats::NoteImageCreated(alloc_info_out.size);
     image = vk::Image{unsafe_image};
 }
 
@@ -716,6 +727,71 @@ static std::pair<u32, u32> SanitizeCopyLayers(const ImageInfo& src_info, const I
     return std::make_pair(src_layers, dst_layers);
 }
 
+namespace {
+/// GPU timestamps around the full-surface transfers only, so their cost is measured rather than
+/// inferred from the gap around them. SHADPS4_DBG_XFER=1.
+///
+/// The counters exist because an average nobody can audit is worse than no number: a timestamp
+/// pair the pool had no room for, or one whose results were not ready when read, used to be
+/// dropped silently, which is how "four copies a frame" and a GPU query set covering fewer
+/// operations could both be true at once. The line now says how many pairs were asked for,
+/// recorded, read back and lost, so an interval count can be checked against the copy count
+/// reported by ImageStats.
+struct CopyTiming {
+    vk::QueryPool pool{};
+    u32 used{};
+    static constexpr u32 Capacity = 512;
+    u64 last_report{};
+    u64 requested{};
+    u64 recorded{};
+    u64 retrieved{};
+    u64 dropped{};
+    u64 not_ready{};
+    /// When the pairs being held were recorded, so a read that has to wait can say for how long.
+    u64 last_tick{};
+};
+CopyTiming g_copy_timing;
+
+/// Reads back whatever pairs are in the pool. Returns false when they are not done yet; the pairs
+/// are then kept (not reset) and read at the next report, so a busy GPU loses no measurement.
+bool ReadCopyTimings(vk::Device device, u64 tick) {
+    if (g_copy_timing.used == 0) {
+        return true;
+    }
+    std::array<u64, CopyTiming::Capacity> stamps{};
+    const vk::Result read = device.getQueryPoolResults(
+        g_copy_timing.pool, 0, g_copy_timing.used, g_copy_timing.used * sizeof(u64), stamps.data(),
+        sizeof(u64), vk::QueryResultFlagBits::e64);
+    if (read != vk::Result::eSuccess) {
+        ++g_copy_timing.not_ready;
+        return false;
+    }
+    u64 total = 0;
+    u32 pairs = 0;
+    for (u32 q = 0; q + 1 < g_copy_timing.used; q += 2) {
+        ++pairs;
+        if (stamps[q + 1] > stamps[q]) {
+            total += stamps[q + 1] - stamps[q];
+        }
+    }
+    g_copy_timing.retrieved += pairs;
+    LOG_INFO(Render_Vulkan,
+             "XFER_GPU copies={} recorded={} retrieved={} dropped={} not_ready={} "
+             "avg={:.3f} ms total={:.3f} ms tick={}",
+             pairs, g_copy_timing.recorded, g_copy_timing.retrieved, g_copy_timing.dropped,
+             g_copy_timing.not_ready,
+             pairs > 0 ? static_cast<double>(total) / pairs / 1e6 : 0.0,
+             static_cast<double>(total) / 1e6, tick);
+    g_copy_timing.requested = 0;
+    g_copy_timing.recorded = 0;
+    g_copy_timing.retrieved = 0;
+    g_copy_timing.dropped = 0;
+    g_copy_timing.not_ready = 0;
+    device.resetQueryPool(g_copy_timing.pool, 0, CopyTiming::Capacity);
+    g_copy_timing.used = 0;
+    return true;
+}
+} // Anonymous namespace
 void Image::CopyImage(Image& src_image) {
     Vulkan::GpuProfile::Note(Vulkan::GpuProfile::HostWork::ImageCopy);
     const auto& src_info = src_image.info;
@@ -740,6 +816,7 @@ void Image::CopyImage(Image& src_image) {
     src_image.SetBackingSamples(src_info.num_samples);
 
     boost::container::small_vector<vk::ImageCopy, 8> regions;
+    u64 copy_bytes = 0;
 
     const vk::ImageAspectFlags src_aspect =
         src_image.aspect_mask & ~vk::ImageAspectFlagBits::eStencil;
@@ -800,7 +877,10 @@ void Image::CopyImage(Image& src_image) {
         }
 
         regions.push_back(region);
+        copy_bytes += static_cast<u64>(region.extent.width) * region.extent.height *
+                      region.extent.depth * (info.num_bits / 8);
     }
+    ImageStats::NoteCopy(copy_bytes);
 
     scheduler->EndRendering();
 
@@ -810,15 +890,57 @@ void Image::CopyImage(Image& src_image) {
 
     auto cmdbuf = scheduler->CommandBuffer();
 
+    // The interval runs bottom-of-pipe before the copy to bottom-of-pipe after it, so it is an
+    // upper bound on the transfer: any wait the copy had for earlier work on the queue is inside
+    // it. Do not read it as the copy's own execution time, and do not compare it with a
+    // wall-clock figure that excluded the wait.
+    static const bool time_transfer = [] {
+        const char* value = std::getenv("SHADPS4_DBG_XFER");
+        return value != nullptr && value[0] == '1';
+    }();
+    const auto device = instance->GetDevice();
+    if (time_transfer && !g_copy_timing.pool) {
+        const vk::QueryPoolCreateInfo pool_ci{.queryType = vk::QueryType::eTimestamp,
+                                             .queryCount = CopyTiming::Capacity};
+        g_copy_timing.pool = device.createQueryPool(pool_ci).value;
+    }
+    bool timed_transfer = false;
+    if (time_transfer && g_copy_timing.pool) {
+        // Read the previous second's pairs first: if they are ready, the pool frees up for the
+        // pair this copy wants, which is what stops a slow read from throwing measurements away.
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now().time_since_epoch())
+                             .count();
+        if (g_copy_timing.used > 0 && now - g_copy_timing.last_report >= 1000) {
+            g_copy_timing.last_report = now;
+            (void)ReadCopyTimings(device, scheduler->CurrentTick());
+        }
+        ++g_copy_timing.requested;
+        timed_transfer = g_copy_timing.used + 2 <= CopyTiming::Capacity;
+        if (!timed_transfer) {
+            ++g_copy_timing.dropped;
+        }
+    }
+    if (timed_transfer) {
+        cmdbuf.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, g_copy_timing.pool,
+                              g_copy_timing.used);
+        ++g_copy_timing.recorded;
+    }
     if (!regions.empty()) {
         cmdbuf.copyImage(src_image.GetImage(), src_image.backing->state.layout, GetImage(),
                          backing->state.layout, regions);
+    }
+    if (timed_transfer) {
+        cmdbuf.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, g_copy_timing.pool,
+                              g_copy_timing.used + 1);
+        g_copy_timing.used += 2;
     }
 
     Transit(vk::ImageLayout::eGeneral,
             vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eTransferRead, {});
 }
 void Image::CopyImageWithBuffer(Image& src_image, vk::Buffer buffer, u64 offset) {
+    ImageStats::NoteBufferedCopy();
     Vulkan::GpuProfile::Note(Vulkan::GpuProfile::HostWork::ImageCopy);
     const auto& src_info = src_image.info;
     const u32 num_mips = std::min(src_info.resources.levels, info.resources.levels);
