@@ -461,8 +461,25 @@ int ProcessStates(s32 handle, OrbisPadData* pData, Input::GameController& contro
             return value != nullptr && value[0] == '1';
         }();
         static unsigned long long auto_frames{};
+        // SHADPS4_DBG_AUTOSTICK="x,y": holds the stick there, which the launcher maps to the
+        // touchpad when stick_touchpad is on - the pointer a menu may be driven by.
+        static const std::array<float, 2> auto_stick = [] {
+            const char* value = std::getenv("SHADPS4_DBG_AUTOSTICK");
+            if (value == nullptr) {
+                return std::array<float, 2>{};
+            }
+            const char* comma = std::strchr(value, ',');
+            if (comma == nullptr) {
+                return std::array<float, 2>{};
+            }
+            return std::array<float, 2>{std::strtof(value, nullptr), std::strtof(comma + 1, nullptr)};
+        }();
         if (auto_press_menu) {
             ++auto_frames;
+            if (auto_stick[0] != 0.0f || auto_stick[1] != 0.0f) {
+                pData[i].leftStick.x = auto_stick[0];
+                pData[i].leftStick.y = auto_stick[1];
+            }
             const unsigned long long cycle = auto_frames % 300;
             if (auto_frames > 1800 && cycle == 0) {
                 pData[i].buttons |= OrbisPadButtonDataOffset::Down;
