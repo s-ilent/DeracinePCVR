@@ -344,6 +344,7 @@ $logPos = 0
 $logLines = New-Object System.Collections.Generic.List[string]
 $samples = New-Object System.Collections.Generic.List[object]
 $statsCursor = 0
+$script:incompleteStats = 0
 
 function Read-NewLogLines {
     if (-not (Test-Path -LiteralPath $labLog)) { return }
@@ -368,11 +369,14 @@ function Update-Samples {
     for ($i = $script:statsCursor; $i -lt $script:logLines.Count; $i++) {
         $match = $statsRegex.Match($script:logLines[$i])
         if (-not $match.Success) { continue }
+        # A stats line that was cut short (no trailing frame count) is not a sample: skipping it
+        # keeps the frame-count-derived duration honest instead of mixing in an unverifiable row.
+        if (-not $match.Groups['frames'].Success) { $script:incompleteStats++; continue }
         $script:samples.Add([ordered]@{
             sample     = $script:samples.Count
             at_s       = [double]$match.Groups['at'].Value
             fps        = [double]$match.Groups['fps'].Value
-            frames     = $(if ($match.Groups['frames'].Success) { [int]$match.Groups['frames'].Value } else { 0 })
+            frames     = [int]$match.Groups['frames'].Value
             frame_ms   = Round3 (1000.0 / [double]$match.Groups['fps'].Value)
             draws      = [double]$match.Groups['draws'].Value
             mpx        = [double]$match.Groups['mpx'].Value
@@ -774,6 +778,7 @@ $document = [ordered]@{
         unique_fps         = Round3 $uniqueFps
         frame_ms           = $frameStats
         compositor_cadence = $null
+        incomplete_stats_lines = $script:incompleteStats
         per_sample         = $samples.ToArray()
     }
     scene          = [ordered]@{

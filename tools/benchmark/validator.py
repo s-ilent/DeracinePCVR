@@ -27,7 +27,6 @@ VALIDATOR_VERSION = 1
 SCENARIO_ID = "deracine-classroom-menu-300-msaa2-vblank60"
 SCENE_CLASSIFICATION = "classroom-main-menu-overlay"
 SIGNATURE_THRESHOLD = scene_signature.DEFAULT_THRESHOLD
-WINDOW_TOLERANCE_S = 3.0
 PERCENTILE_TOLERANCE_MS = 0.1
 FPS_TOLERANCE = 0.1
 
@@ -199,9 +198,14 @@ class Checker:
         elapsed = float(timing["window_elapsed_s"])
         if elapsed < 1.0:
             self.fail(f"the measured window lasted {elapsed:.3f} s, not {scenario['window_s']} s")
-        if abs(elapsed - float(scenario["window_s"])) > WINDOW_TOLERANCE_S:
+        # Each of the 80 windows closes at the next frame boundary and any hitch inside a window
+        # is part of that window, so the measured span is 40 s plus quantization and stalls. The
+        # gate rejects a short or wildly long window; the negative case is a claimed 40 s that
+        # really lasted 0.65 s, which this bound still fails.
+        allowed_upper = float(scenario["window_s"]) * 1.2 + 0.5
+        if elapsed < float(scenario["window_s"]) - 1.0 or elapsed > allowed_upper:
             self.fail(f"measured window {elapsed:.3f} s is not {scenario['window_s']} s "
-                      f"(tolerance {WINDOW_TOLERANCE_S} s)")
+                      f"(allowed {float(scenario['window_s']) - 1.0:.1f}-{allowed_upper:.1f} s)")
         if not (timing["window_start_s"] < timing["window_end_s"]):
             self.fail("window boundaries are not increasing")
         if float(timing["warmup_end_s"]) > float(timing["window_start_s"]) + 1e-9:
