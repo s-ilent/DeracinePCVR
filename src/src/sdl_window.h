@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <string>
 
 #include "common/types.h"
@@ -75,6 +76,9 @@ public:
 
     void WaitEvent();
     void InitTimers();
+    /// Test-only (SHADPS4_EXIT_AFTER): ask the event loop to leave through the normal quit path,
+    /// from another thread. Wakes a waiting loop and is also seen where a quit event is not.
+    void RequestQuit();
 
     void RequestKeyboard();
     void ReleaseKeyboard();
@@ -83,6 +87,7 @@ private:
     void OnResize();
     void OnKeyboardMouseInput(const SDL_Event* event);
     void OnGamepadEvent(const SDL_Event* event);
+    bool TakeQuitRequest();
 
 private:
     s32 width;
@@ -92,6 +97,7 @@ private:
     SDL_Window* window{};
     bool is_shown{};
     bool is_open{true};
+    std::atomic<bool> quit_requested{};
 };
 
 void SetWindowIcon(SDL_Window* window, const std::vector<u8>& png);

@@ -162,8 +162,8 @@ s32 PS4_SYSV_ABI sceVideoOutSubmitFlip(s32 handle, s32 bufferIndex, s32 flipMode
     const bool trace = submit_flip_traces.fetch_add(1, std::memory_order_relaxed) < 32;
     if (trace) {
         LOG_INFO(Lib_VideoOut,
-                 "BACHATA_FLIP_TRACE stage=guest_submit handle={} index={} mode={} arg={}",
-                 handle, bufferIndex, flipMode, flipArg);
+                 "BACHATA_FLIP_TRACE stage=guest_submit handle={} index={} mode={} arg={}", handle,
+                 bufferIndex, flipMode, flipArg);
     }
     auto* port = driver->GetPort(handle);
     if (!port) {
@@ -377,9 +377,8 @@ s32 sceVideoOutSubmitEopFlip(s32 handle, u32 buf_id, u32 mode, s64 flip_arg, voi
     Platform::IrqC::Instance()->RegisterOnce(
         Platform::InterruptId::GfxFlip, flip_token, [=](Platform::InterruptId irq) {
             if (eop_irq_traces.fetch_add(1, std::memory_order_relaxed) < 32) {
-                LOG_INFO(Lib_VideoOut,
-                         "BACHATA_FLIP_TRACE stage=eop_irq index={} arg={} label={}", buf_id,
-                         flip_arg, port->buffer_labels[buf_id]);
+                LOG_INFO(Lib_VideoOut, "BACHATA_FLIP_TRACE stage=eop_irq index={} arg={} label={}",
+                         buf_id, flip_arg, port->buffer_labels[buf_id]);
             }
             ASSERT_MSG(irq == Platform::InterruptId::GfxFlip, "An unexpected IRQ occured");
             if (port->buffer_labels[buf_id] != 1) {
@@ -519,6 +518,12 @@ s32 PS4_SYSV_ABI sceVideoOutSubmitChangeBufferAttribute(s32 handle, s32 attribut
 s32 PS4_SYSV_ABI sceVideoOutSetWindowModeMargins(s32 handle, s32 top, s32 bottom) {
     LOG_ERROR(Lib_VideoOut, "(STUBBED) called top = {}, bottom = {}", top, bottom);
     return ORBIS_OK;
+}
+
+void StopDriver() {
+    if (driver) {
+        driver->Stop();
+    }
 }
 
 void RegisterLib(Core::Loader::SymbolsResolver* sym) {

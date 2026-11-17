@@ -69,6 +69,9 @@ public:
     explicit Liverpool();
     ~Liverpool();
 
+    /// Stops the GPU command processor and waits for it (test-only clean exit).
+    void Stop();
+
     void SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb);
     void SubmitAsc(u32 gnm_vqid, std::span<const u32> acb);
 

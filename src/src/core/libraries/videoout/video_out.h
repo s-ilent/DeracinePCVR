@@ -172,4 +172,8 @@ s32 SubmitHmdFrame(s32 handle, const HmdFrame& frame);
 
 void RegisterLib(Core::Loader::SymbolsResolver* sym);
 
+/// Test-only (SHADPS4_CLEAN_EXIT): stops the video-out present thread so the presenter may be
+/// destroyed without it racing the teardown. Safe to call when there is no driver.
+void StopDriver();
+
 } // namespace Libraries::VideoOut

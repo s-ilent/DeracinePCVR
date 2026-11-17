@@ -75,6 +75,13 @@ VideoOutDriver::VideoOutDriver(u32 width, u32 height) {
 
 VideoOutDriver::~VideoOutDriver() = default;
 
+void VideoOutDriver::Stop() {
+    present_thread.request_stop();
+    if (present_thread.joinable()) {
+        present_thread.join();
+    }
+}
+
 int VideoOutDriver::Open(const ServiceThreadParams* params, s32 bus_type) {
     if (bus_type == SCE_VIDEO_OUT_BUS_TYPE_AUX_SOCIAL_SCREEN) {
         if (social_port.is_open) {

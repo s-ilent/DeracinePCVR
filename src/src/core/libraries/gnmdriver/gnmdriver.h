@@ -300,4 +300,12 @@ int PS4_SYSV_ABI Func_E51D44DB8151238C();
 int PS4_SYSV_ABI Func_F916890425496553();
 
 void RegisterLib(Core::Loader::SymbolsResolver* sym);
+
+/// Test-only (SHADPS4_CLEAN_EXIT): pauses the guest threads, then stops the GPU command processor
+/// and the video-out present thread, and destroys the Vulkan presenter so its destructor (and
+/// with it the image recycler and allocator teardown) actually runs before the process leaves via
+/// quick_exit. Returns false, with the presenter left alone, when the guest threads did not settle
+/// (the caller then exits as usual; the harness reports R6 blocked rather than a crash).
+bool ResetPresenter();
+
 } // namespace Libraries::GnmDriver

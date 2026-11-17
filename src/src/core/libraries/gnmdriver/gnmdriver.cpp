@@ -2895,6 +2895,37 @@ int PS4_SYSV_ABI Func_F916890425496553() {
     return ORBIS_OK;
 }
 
+bool ResetPresenter() {
+    // Guest threads are still running after the window loop (the normal exit relies on
+    // quick_exit killing them) and they call into the GPU. Pause them and let the pause settle
+    // first; if it does not, leave the presenter alone: a crash here would be reported as an
+    // emulator fault rather than as the R6 shutdown the caller wanted to test.
+    DebugState.PauseGuestThreads();
+    bool paused = DebugState.IsGuestThreadsPaused();
+    for (int attempt = 0; attempt < 200 && !paused; ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        paused = DebugState.IsGuestThreadsPaused();
+    }
+    if (!paused) {
+        LOG_WARNING(Lib_GnmDriver,
+                    "SHADPS4_CLEAN_EXIT: the guest threads did not pause; the presenter is left "
+                    "alone and the process exits as usual (R6 not exercised)");
+        return false;
+    }
+    LOG_INFO(Lib_GnmDriver, "SHADPS4_CLEAN_EXIT: the guest threads are paused");
+    LOG_INFO(Lib_GnmDriver, "SHADPS4_CLEAN_EXIT: stopping the GPU and present threads");
+    if (liverpool) {
+        liverpool->Stop();
+    }
+    ::Libraries::VideoOut::StopDriver();
+    if (presenter) {
+        LOG_INFO(Lib_GnmDriver, "SHADPS4_CLEAN_EXIT: destroying the presenter");
+        presenter.reset();
+    }
+    LOG_INFO(Lib_GnmDriver, "SHADPS4_CLEAN_EXIT: the presenter is destroyed");
+    return true;
+}
+
 void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     LOG_INFO(Lib_GnmDriver, "Initializing presenter");
     liverpool = std::make_unique<AmdGpu::Liverpool>();
