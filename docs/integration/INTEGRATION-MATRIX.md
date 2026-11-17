@@ -1,6 +1,6 @@
 # Déraciné PCVR — integration matrix (2026-11-18)
 
-Unified branch: `integration/deracine-unified-2026-11`, source commit `9358d7a` (branch tip adds this matrix and the report; documentation only)
+Unified branch: `integration/deracine-unified-2026-11`, source content `647b87b` (headless M2 merge); later commits are documentation only
 Base: `acda49e` (`recovery/baseline`, recovered clean baseline)
 Worktree: `M:\Development\Deracine-work\wt-unified`
 
@@ -34,8 +34,8 @@ Disposition vocabulary: **INTEGRATED** / **INTEGRATED WITH MODIFICATIONS** / **A
 | 20 | `recovery/renderdoc` | recovery store | `7130e9f` | **ALREADY SUPERSEDED** | The guardrails trigger (`9deb0bb`, in row 5) is the same trigger with the harness around it. |
 | 21 | `test/v0.21.0-plus-fixes` | (no worktree) | `517213c` | **ALREADY SUPERSEDED** | Runtime-lineage devtools intermediate (pad automation, menu-walk, barrier). The barrier reached the unified branch via row 23; the rest are dev-only experiments retained on that lineage. |
 | 22 | `integration/r58-presentsize` (**live runtime**) | `DeracinePCVR` | `de9c78c` | **DO NOT MERGE — accounted** | The active runtime lineage. Later functionality carried selectively: presentation sizing (`5dfaf94`), launcher `present=` (`6fc3500`), depth pass (`56a6f8a`, now opt-in), barrier (`267d200`, now opt-in). Deliberately **not** carried: `633d212`'s mixed WIP (frame timeline, alias trace, preserve tracker, HMD panel probe, foveation), pad automation / menu-walk / autostick / hand-pose, `7e90afb` foveation-any, `steady=`/`SHADPS4_VR_STEADY_FPS`, `ad7238d` vblank pacing. Those stay on the branch. |
-| 23 | `feature/headless-vr-harness` | `wt-harness` | `6417f36` | **IN PROGRESS, RETAINED** | Active work by another agent; sits on the runtime lineage and carries the quarantined recycler commits. Not integrated. |
-| 24 | `feature/headless-vr-scene` | `wt-headless` | `94998e0` (advanced to `a21109c` during the session) | **IN PROGRESS, RETAINED** | Same reason as row 23; synthetic Move hands / scripted timeline / timed quit are devtools, not production. |
+| 23 | `feature/headless-vr-harness` | `wt-harness` | `6417f36` | **INTEGRATED** | `5b6bea5` / `beeb77f`: `tools/headless-vr/` — headless launcher, GPU lock, the M1 rules and the verified M1 record. Tools and docs only; no runtime code. |
+| 24 | `feature/headless-vr-scene` | `wt-headless` | `a21109c` | **INTEGRATED WITH MODIFICATIONS** | `937818d` synthetic hands + Move-from-pad, `5f0a3d9` frame-relative scripted input + 6 tests, `7aa383b` scene-gated HMD dump (adapted: the lineage's RenderDoc scene gate is not imported, a local non-consuming `Tally::PeekWindow()` is used; `265978c` restores the definition the adaptation omitted), `fc33715` timed quit + clean presenter shutdown (`bac8476` drops a lineage-only include), `b41dbdb` scripted-aim fix, `c28bef8` Move read trace. Merged as `647b87b`. All test-only and off unless its env var is set. **Single-lab verified**; second lab pending. |
 | 25 | `diag/lut-dump` | `wt-lut-diag` | `ae702aa` | **EXPERIMENTAL, RETAINED** | The LUT investigation is closed without confirmed root cause; no fix is proposed. Diagnostics not integrated. |
 | 26 | `merge/eval-2026-11-17` (`633d212`), `merge/eval-upstream-sync`, `-render-quality`, `-openxr-res`, `-color-fix`, `-hmd-frustum` | `wt-merge` (last on `merge2/hmd-frustum`) | `633d212`, `ef80f80`, `f5d829a`, `168e33d`, `0eb91d8`, `d941812` | **EVIDENCE ONLY** | Prior merge-evaluation branches built on `633d212`. Their question ("does each candidate merge and build?") is answered and superseded by the unified branch. |
 | 27 | `merge2/upstream-sync`, `merge2/color-fix`, `merge2/hmd-frustum` | `wt-merge` | `2aa2dae`, `970625e`, `92a0041` | **EVIDENCE ONLY** | Round 2 on `fc2fb55`; the conflicts they documented are resolved structurally in the unified branch. |
@@ -46,6 +46,7 @@ Disposition vocabulary: **INTEGRATED** / **INTEGRATED WITH MODIFICATIONS** / **A
 | 32 | `integration/unified-unreal-quality` | `wt-unified-unreal` | `d075091` | **PROCESS BRANCH — MERGED** | Integration branch for row 15; merged as `73685be`. |
 | 33 | `integration/unified-presentation-perf` | `wt-unified-present` | `98aae10` | **PROCESS BRANCH — MERGED** | Integration branch for rows 7–11, 19 (depth pass) and 22 (barrier); merged as `9a617a2`. |
 | 34 | `integration/unified-crossfork-diag` | `wt-unified-crossfork` | `a2fdd41` | **PROCESS BRANCH — MERGED** | Extraction branch for row 16; merged as `c5bc3f8`. |
+| 35 | `integration/unified-headless-m2` | `wt-unified-headless` | `99085ad` | **PROCESS BRANCH — MERGED** | Integration branch for rows 23+24 plus the gameplay benchmark; merged as `647b87b`. |
 
 ## B. Worktrees and uncommitted work (all left untouched)
 

@@ -5,14 +5,14 @@
 | | |
 |---|---|
 | Branch | `integration/deracine-unified-2026-11` |
-| Tip | source commit `9358d7a` plus documentation-only commits (this report and its matrix are among them) |
-| Source commit of the shipped binary | `9358d7a` (the two later commits are test/docs only; `ninja: no work to do` at `fc01c02`) |
+| Tip | source content `647b87b` (headless M2 merge); later commits are documentation only |
+| Source commit of the shipped binary | `647b87b` |
 | Base | `acda49e` (`recovery/baseline`) |
 | Worktree | `M:\Development\Deracine-work\wt-unified` |
-| Commits since base | 70 (7 merge commits, the rest reviewed/cherry-picked workstream commits) |
-| Diff since base | 125 files, +20,141 / −293 |
-| Executable | `wt-unified\build\shadPS4.exe`, 73,297,408 bytes |
-| SHA-256 | `438C8318571344A67A22A2FCD77C43FD609FC258EAED496C09F2CAA3EB1903F3` |
+| Commits since base | 86 (six top-level merges plus two workstream merges) |
+| Diff since base | 158 files, +23,455 / −331 |
+| Executable | `wt-unified\build\shadPS4.exe`, 73,319,936 bytes |
+| SHA-256 | `1537F061CBE83915D9A1B080420191C5F10BCE9B73F2FE931EA657C25B2AEBCB` |
 
 The branch contains no commit from the contaminated runtime lineage: `633d212`, `8638928`,
 `fc2fb55`, `194958b`, `33ebbf8`, `517213c`, `de9c78c` are verified non-ancestors, and no
@@ -45,21 +45,21 @@ Toolchain: VS 2022 Build Tools 14.44 + LLVM/clang-cl 23.1.5 + Ninja, Release, CP
 ## B. Integration matrix
 
 Full accounting of every branch and worktree is in [`INTEGRATION-MATRIX.md`](INTEGRATION-MATRIX.md).
-Summary over 45 local branches plus the 4 integration process branches and 32 worktrees:
+Summary over 45 local branches plus the 5 integration process branches and 33 worktrees:
 
 - Integrated: upstream-sync, guardrails, color fix, frustum fix, openxr native resolution,
   render-quality, hand-rig-live, compat (two commits), crossfork diagnostics/coverage,
-  depth-pass (opt-in).
+  depth-pass (opt-in), headless M1 tooling.
 - Integrated with modifications: upstream-texture-staging (guards carried, duplicates avoided),
   deracine-version-compat (contaminated ancestry excluded), psvr-projection-geometry (docs/tests
-  restored; source identical to the frustum fix), depth-pass/barrier (default flipped to opt-in).
+  restored; source identical to the frustum fix), depth-pass/barrier (default flipped to opt-in),
+  headless M2 (lineage-only RenderDoc scene gate and frame_timeline include removed; everything
+  test-only and off by default; single-lab verified).
 - Already superseded or already present: candidate/guardrails, three Unreal lineages,
   recovery/renderdoc, fix/libc-cxa-hooks, audit/stage1-host-guest, test/v0.21.0-plus-fixes,
   merge/eval-* and merge2/* (evidence only).
 - Experimental, retained separately: image recycler (both branches), diag/lut-dump, wt-perf's
-  frame-count duplicate, wt-lut-* bisect/revert.
-- In progress, retained: feature/headless-vr-harness, feature/headless-vr-scene (both advanced
-  while this integration ran; both carry the quarantined recycler commits).
+  frame-count duplicate, wt-lut-* bisect/revert, M3 validation work.
 - Rejected: `633d212` as a unit, `fc2fb55` as a commit, foveation-any, `steady=`, vblank pacing,
   the `render_percent=210` preset, LUT fixes, autostick / hand-pose / pad-automation defaults.
 
@@ -68,7 +68,7 @@ Summary over 45 local branches plus the 4 integration process branches and 32 wo
 Executable: see §A. Tests tree rebuilt from the same tree; final CTest:
 
 ```
-770 tests, 765 passed, 4 failed, 1 skipped (HostOverride.ActiveExactHostMatchFromJsonFile, inherited)
+776 tests, 772 passed, 4 failed, 1 skipped (HostOverride.ActiveExactHostMatchFromJsonFile, inherited)
 FAILED:
   69  shadps4_gcn_test_NOT_BUILT                     (inherited link failure)
  108  ReadConstSnapshotDiag.IsolationDisabledAfterTestB (inherited)
@@ -81,7 +81,8 @@ Baseline comparison, same machine and toolchain:
 | Tree | Tests | Passed | Failed | Notes |
 |---|---|---|---|---|
 | `acda49e` (batch 1 of this integration) | 542 | 532 | 10 | documented inherited Windows set |
-| **unified `fc01c02`** | **770** | **765** | **4** | +228 tests, 0 new failures, 6 inherited failures fixed |
+| unified `fc01c02` (before M2) | 770 | 765 | 4 | +228 tests, 0 new failures, 6 inherited failures fixed |
+| **unified `647b87b` (with M2)** | **776** | **772** | **4** | +6 `ScriptedTimeline` tests; same four inherited failures |
 
 Fixed relative to the documented baseline: `shadps4_memory_patcher_test` (compat `1f5aaff`) and
 the five patch-family targets (`patch_repository`, `patch_state`, `patch_domain`, `patch_session`,
@@ -91,8 +92,10 @@ remaining unbuildable items are the POSIX-only usbd test and the jni-dependent
 
 New suites all pass: `VrProjectionMath` (1031-line suite restored), `VrPresentationSize` (10),
 `ColorContract` (7), `QualityProbe` (3), `ImageCoverage` (19), `MipChain` (6), `AutoPress` (6),
-`VirtualCameraClock` (8), Unreal inspector/report/snapshot (23), hand retarget/live (18), plus the
-compat patch-manager cases.
+`VirtualCameraClock` (8), `ScriptedTimeline` (6, from M2), Unreal inspector/report/snapshot (23),
+hand retarget/live (18), plus the compat patch-manager cases. The headless gameplay benchmark's own
+suite (`tools/benchmark/tests`, standard-library Python) is **45/45**, including the 14 gameplay-gate
+cases; it runs without a GPU.
 
 **Validation limitations (explicit):** no emulator, game, SteamVR or GPU run was performed. The
 HMD slot was held by another agent (`wt-crossfork-int`) for the whole integration, and the project
@@ -106,7 +109,7 @@ offline tests are. The executable hash is build-specific (PE debug GUID); compar
 Live runtime of record: `integration/r58-presentsize` @ `de9c78c` (the checked-out branch of the
 active `pc-vr/` folder; the deployed binary there is `E6A5A165…`, untouched).
 
-| Function | Live runtime `de9c78c` | Unified `fc01c02` | Why |
+| Function | Live runtime `de9c78c` | Unified `647b87b` | Why |
 |---|---|---|---|
 | Déraciné launch path, OpenXR presentation, stereo, PSVR services, Move tracking, audio | yes (base acda49e + later) | **yes** (same base lineage) | Nothing removed from the base. |
 | Resolution controls: `SHADPS4_TITLE_EYE_WIDTH`, `SHADPS4_VR_SCALE`, `render_percent` | yes | **yes** | Preserved unchanged. |
@@ -128,7 +131,8 @@ active `pc-vr/` folder; the deployed binary there is `E6A5A165…`, untouched).
 | Image recycler | absent | **absent** (retained separately) | Quarantined. |
 | Unreal inspector / snapshots / report export / hand rig / retargeter | absent | **present** + 41 tests, guest read-only | `73685be`. |
 | Déraciné version compatibility, SNDX Expected-byte gate, honest launcher report | absent | **present** + tests | `71baaf1`/`35fc0e2`. |
-| Headless-VR harness / synthetic Move input / timed quit | in progress on feature branches | **absent** (retained) | Active work by another agent. |
+| Headless launch / synthetic Move hands / scripted entry / timed quit | in progress on feature branches | **present, all opt-in and off by default** | M2 merge `647b87b`; see §G. |
+| Dedicated headless gameplay benchmark (gate, band, unique FPS, save pin) | absent | **present** (`tools/benchmark/headless-gameplay.ps1` + `gameplay_gate.py` + `reference/scene-gameplay.json`) | New infrastructure; live cell still to be run. |
 
 ## E. Integration report — conflicts, risks, remaining steps
 
@@ -159,17 +163,23 @@ active `pc-vr/` folder; the deployed binary there is `E6A5A165…`, untouched).
   not deployed; the active `pc-vr/` was not written.
 
 ### Remaining steps before safe deployment
-1. Rebuild from `fc01c02` on a clean machine and confirm the same test result (documented above).
-2. On a worn headset, with permission: VR smoke test — PSVR/OpenXR init, both eyes, tracking,
-   audio; then the classroom benchmark for unique rendered FPS. Do not use compositor cadence.
-3. A/B the presentation-size default against `SHADPS4_VR_RESOLUTION=guest` (colour/scale, per-eye
+1. Rebuild from `647b87b` on a clean machine and confirm the same test result (documented above).
+2. Run one **headless gameplay cell** with `tools/benchmark/headless-gameplay.ps1` inside the GPU
+   lock (first live use of the new benchmark), then repeat it from a **second independently
+   constructed lab**. Until that second lab passes, M2 and any gameplay cell are single-lab
+   evidence only.
+3. On a worn headset, with permission: VR smoke test — PSVR/OpenXR init, both eyes, tracking,
+   audio; confirm the M2 switches (all unset in a normal session) change nothing; then the
+   classroom benchmark for unique rendered FPS. Do not use compositor cadence.
+4. A/B the presentation-size default against `SHADPS4_VR_RESOLUTION=guest` (colour/scale, per-eye
    imageRect and swapchain) and record repeated cells.
-4. Instrument camera reads vs presents at 60 and 120 Hz before promoting the camera clock.
-5. Gameplay A/B for the depth pass and the in-pass barrier; keep them opt-in until reproduced.
-6. RenderDoc capture gate (a fresh classroom `.rdc` with a matching extracted image) before the
-   harness's capture path is called verified.
-7. If the recycler is ever promoted: matched-scene cells + pixel A/B for Review finding R3.
-8. Publication: no push was performed. The branch is committed and ready; coordinate with the
+5. Instrument camera reads vs presents at 60 and 120 Hz before promoting the camera clock.
+6. Gameplay A/B for the depth pass and the in-pass barrier; keep them opt-in until reproduced.
+7. RenderDoc capture gate (a fresh classroom `.rdc` with a matching extracted image) before the
+   harness's capture path is called verified. The gameplay image reference is still uninstalled
+   (candidate exists; needs visual review).
+8. If the recycler is ever promoted: matched-scene cells + pixel A/B for Review finding R3.
+9. Publication: no push was performed. The branch is committed and ready; coordinate with the
    repository-history cleanup agent (history rewriting in progress) before publishing.
 
 ## F. Explicit reconciliation with `integration/upstream-texture-staging`
@@ -200,3 +210,36 @@ Handover asked for this workstream to be incorporated without duplicates. Verifi
   image coverage and colour-contract paths and pass. Runtime aliasing, depth preservation and LUT
   behaviour were **not** re-measured (no GPU work); the LUT investigation remains closed and nothing
   LUT-related is enabled.
+
+## G. Headless gameplay M2
+
+Handover added `feature/headless-vr-harness` and `feature/headless-vr-scene` @ `a21109c` (M2:
+synthetic Move interactions, menu traversal and gameplay entry with no HMD). Both sit on the live
+runtime lineage, so only their **committed checkpoints** were cherry-picked onto the unified base
+(merge `647b87b`); neither branch nor its worktree was modified, and the in-flight validation matrix
+was not touched.
+
+- Integrated: `tools/headless-vr/` (headless launcher, GPU lock, M1 rules) and M2's synthetic
+  tracked hands, Move-from-pad input, frame-relative scripted timeline (+6 tests), scene-gated HMD
+  eye dump, test-only timed quit / clean presenter shutdown, aim fix and Move read trace.
+- Adaptations: the HMD dump commit depended on the lineage's RenderDoc scene gate and
+  `Tally::PeekWindow()`; the scene gate is **not** imported (this tree keeps the time-based
+  trigger), `PeekWindow()` was added locally as a non-consuming read, and a lineage-only
+  `frame_timeline.h` include that the 3-way merge carried in was removed.
+- Opt-in only: `SHADPS4_VR_HANDS`, `SHADPS4_VR_MOVE_FROM_PAD`, `SHADPS4_INPUT_SCRIPT`,
+  `SHADPS4_DBG_AUTOPRESS`, `SHADPS4_EXIT_AFTER`, `SHADPS4_CLEAN_EXIT`,
+  `SHADPS4_DBG_DUMP_HMD_AT_SCENE`, `SHADPS4_DBG_MOVE_TRACE` are all off/unset by default; a normal
+  headset session sets none of them.
+- Dedicated benchmark (alongside the classroom one): `tools/benchmark/headless-gameplay.ps1`,
+  `tools/benchmark/gameplay_gate.py`, `tools/benchmark/reference/scene-gameplay.json`,
+  `tools/headless-vr/input/gameplay-entry.txt` (the committed M2 sequence) and
+  `tools/headless-vr/save-slot/` (manifest + checksum-verifying provisioning). Gate: draws ≥ 800;
+  band: draws 1500–2300, Mpx 550–750, passes 35–55, ≥ 90 % of the window inside; unique FPS =
+  total frames / total measured time. The menu cannot pass the gate.
+- Provenance: `tools/headless-vr/HEADLESS-M2.md` records the procedure, evidence and limits. The
+  M2 gameplay workload was measured as **1866–1900 draws, 620–720 Mpx, 42–46 passes** per frame
+  (menu: 465–500 draws).
+- Reproducibility: **single lab only**. The M2 entry was proven in one independently constructed
+  lab; a second lab has not passed, so no cell from this infrastructure is presented as generally
+  reproducible yet. No emulator was launched during this integration and the GPU lock was not taken.
+- Not included: M3 renderer validation, the image recycler, the LUT investigation.
