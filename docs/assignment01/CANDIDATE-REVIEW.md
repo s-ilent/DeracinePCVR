@@ -35,6 +35,7 @@ autopress devtool stays **default-off**.
 | Python harness suite | **31/31 pass** in this worktree |
 | independent log parse of `classroom-valid-r9` (does not import the validator) | log has 190 complete frame-stats lines; the last 80 are the window: 1631 frames / 40.948666 s = **39.8304 FPS**, p50/p95/p99 24.213/39.231/89.356 ms, 473–572 draws, 453.3–574 Mpx, GPU 97–100 %; log, scene and executable SHA-256 all match `run.json` |
 | fail-closed protection | preflight/postflight on this worktree: unchanged sentinel → exit 0; same sentinel altered → exit 1, `content changed: …sentinel.bin`, `protected_unchanged=false`. No real protected file was touched |
+| new C++ gtests | `shadps4_virtual_camera_clock_test` 8/8 and `shadps4_autopress_test` 6/6 (binaries from the feature worktree at the same C++ source; the candidate's tests tree is not built) |
 | active runtime | `pc-vr/shadps4.exe` still `E6A5A165…`; no `pc-vr/` file was written |
 
 Evidence: `_out\candidate-tests\independent-check.json` and the `failclosed\` outputs in this
@@ -46,9 +47,6 @@ The user is using the headset. Per instruction, there is **no VR testing and no 
 while that lasts, so these are not run:
 
 - the tests-enabled CMake tree in this candidate,
-- the two new C++ gtests in this candidate (they were built and passed 14/14 in the feature
-  worktree at the same C++ source; the candidate's C++ tree differs only by comments after
-  `fcaa02f`),
 - the full CTest in this candidate (540/550 in the feature worktree, ten inherited failures,
   documented in `EVIDENCE.md`),
 - the classroom benchmark and RenderDoc capture.
