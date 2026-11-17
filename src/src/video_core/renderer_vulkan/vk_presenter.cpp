@@ -14,15 +14,17 @@
 #include "core/vr/spectator_view.h"
 #ifdef ENABLE_OPENXR_HOST
 #include "core/vr/openxr_host.h"
+#include "core/vr/presentation_size.h"
 #endif
 #include "imgui/notifications_layer.h"
 #include "imgui/renderer/imgui_core.h"
 #include "imgui/renderer/imgui_impl_vulkan.h"
 #include "sdl_window.h"
-#include "video_core/buffer_cache/buffer.h"
-#include "video_core/renderdoc.h"
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/amdgpu/stall_log.h"
+#include "video_core/buffer_cache/buffer.h"
+#include "video_core/color_contract.h"
+#include "video_core/renderdoc.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
@@ -35,6 +37,7 @@
 #include <chrono>
 #include <cmath>
 #include <csetjmp>
+#include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
@@ -497,6 +500,181 @@ static void SavePendingScreenshots(const std::vector<ScreenshotReadback>& readba
     }
 }
 
+// --- Color diagnostics -----------------------------------------------------------------------
+// SHADPS4_DBG_COLOR_LOG=1 logs the formats and the encoding decisions of the pass. A few frames
+// of a run can be captured raw with SHADPS4_DBG_COLOR_CAPTURE=<frame>[,<frame>...][,every:N]: the
+// guest's eye picture, the headset picture and the window frame beside them, to
+// <UserDir>/color_capture as .bin plus a .json of the formats and settings; the window's final
+// image is taken by the screenshot path, which saves the bytes as they are. The bytes are written
+// as the images hold them; nothing on this path applies or removes a transfer function.
+struct ColorCaptureInfo {
+    u32 frame{};
+    std::string point;
+    u32 width{};
+    u32 height{};
+    vk::Format format{};
+    vk::ImageLayout layout{};
+    std::string source_view_format;
+    std::string source_image_format;
+    u32 eye_width{};
+    u32 eye_height{};
+    float gamma{};
+    u32 hdr{};
+    u32 encoded_in{};
+    u32 linear_out{};
+    std::string target_format;
+    bool target_srgb{};
+    bool ab_off{};
+    std::string note;
+};
+
+struct ColorCaptureEntry {
+    std::shared_ptr<ScreenshotReadback> readback;
+    ColorCaptureInfo info;
+};
+
+static vk::Format SrgbSibling(const vk::Format format) {
+    switch (format) {
+    case vk::Format::eR8G8B8A8Srgb:
+        return vk::Format::eR8G8B8A8Unorm;
+    case vk::Format::eB8G8R8A8Srgb:
+        return vk::Format::eB8G8R8A8Unorm;
+    default:
+        return vk::Format::eUndefined;
+    }
+}
+
+static bool IsEightBitColor(const vk::Format format) {
+    switch (format) {
+    case vk::Format::eR8G8B8A8Unorm:
+    case vk::Format::eR8G8B8A8Srgb:
+    case vk::Format::eB8G8R8A8Unorm:
+    case vk::Format::eB8G8R8A8Srgb:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/// Whether a target of this format encodes what is drawn into it for display by itself.
+static bool IsSrgbDisplayFormat(const vk::Format format) {
+    return SrgbSibling(format) != vk::Format::eUndefined;
+}
+
+static bool ColorLogOn() {
+    static const bool on = [] {
+        const char* value = std::getenv("SHADPS4_DBG_COLOR_LOG");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    return on;
+}
+
+struct ColorCaptureSpec {
+    std::vector<u32> frames;
+    u32 every{};
+};
+
+static const ColorCaptureSpec& ColorCapture() {
+    static const ColorCaptureSpec spec = [] {
+        ColorCaptureSpec result;
+        const char* value = std::getenv("SHADPS4_DBG_COLOR_CAPTURE");
+        if (value == nullptr) {
+            return result;
+        }
+        for (const char* at = value; *at != '\0';) {
+            char* end = nullptr;
+            if (std::strncmp(at, "every:", 6) == 0) {
+                result.every = static_cast<u32>(std::strtoul(at + 6, &end, 10));
+            } else {
+                const u32 frame = static_cast<u32>(std::strtoul(at, &end, 10));
+                if (end != at) {
+                    result.frames.push_back(frame);
+                }
+            }
+            if (end == at) {
+                break;
+            }
+            at = *end == ',' ? end + 1 : end;
+        }
+        return result;
+    }();
+    return spec;
+}
+
+static bool ColorCaptureWanted(const u32 frame_id) {
+    const auto& spec = ColorCapture();
+    return std::ranges::find(spec.frames, frame_id) != spec.frames.end() ||
+           (spec.every != 0 && frame_id != 0 && frame_id % spec.every == 0);
+}
+
+static void WriteColorCapture(const ScreenshotReadback& readback, const ColorCaptureInfo& info) {
+    const auto dir = Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "color_capture";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    const auto name = fmt::format("f{:06}_{}", info.frame, info.point);
+    const auto bin_path = dir / (name + ".bin");
+    const size_t bytes = size_t{info.width} * info.height * 4;
+    if (bytes == 0 || readback.buffer.mapped_data.size() < bytes) {
+        LOG_ERROR(Render_Vulkan, "Color capture {}: {} bytes read back for {}x{}", name,
+                  readback.buffer.mapped_data.size(), info.width, info.height);
+        return;
+    }
+    {
+        std::ofstream out{bin_path, std::ios::binary};
+        out.write(reinterpret_cast<const char*>(readback.buffer.mapped_data.data()),
+                  static_cast<std::streamsize>(bytes));
+    }
+    std::ofstream meta{dir / (name + ".json")};
+    const auto text = [&](const char* key, std::string_view value, const bool last = false) {
+        meta << "  \"" << key << "\": \"" << value << "\"" << (last ? "\n" : ",\n");
+    };
+    meta << "{\n";
+    meta << "  \"frame\": " << info.frame << ",\n";
+    text("point", info.point);
+    meta << "  \"width\": " << info.width << ",\n";
+    meta << "  \"height\": " << info.height << ",\n";
+    meta << "  \"format\": " << static_cast<u32>(info.format) << ",\n";
+    text("formatName", vk::to_string(info.format));
+    text("layout", vk::to_string(info.layout));
+    text("source_view_format", info.source_view_format);
+    text("source_image_format", info.source_image_format);
+    meta << "  \"eye_width\": " << info.eye_width << ",\n";
+    meta << "  \"eye_height\": " << info.eye_height << ",\n";
+    meta << "  \"gamma\": " << info.gamma << ",\n";
+    meta << "  \"hdr\": " << info.hdr << ",\n";
+    meta << "  \"encoded_in\": " << info.encoded_in << ",\n";
+    meta << "  \"linear_out\": " << info.linear_out << ",\n";
+    text("target_format", info.target_format);
+    meta << "  \"target_srgb\": " << (info.target_srgb ? "true" : "false") << ",\n";
+    meta << "  \"ab_off\": " << (info.ab_off ? "true" : "false") << ",\n";
+    text("note", info.note, true);
+    meta << "}\n";
+    LOG_INFO(Render_Vulkan, "Color capture written: {}", bin_path.string());
+}
+
+/// Reads `image` into a buffer now and queues the file for once the GPU has run it.
+static void AddColorCapture(vk::CommandBuffer cmdbuf, const Instance& instance,
+                            Scheduler& scheduler, const vk::Image image,
+                            const vk::ImageLayout layout, const u32 width, const u32 height,
+                            const vk::Format format, ColorCaptureInfo info,
+                            std::vector<ColorCaptureEntry>& out) {
+    info.width = width;
+    info.height = height;
+    info.format = format;
+    info.layout = layout;
+    auto readback = std::make_shared<ScreenshotReadback>(
+        instance, scheduler, ScreenshotKind::GameOnly, std::vector<std::filesystem::path>{}, width,
+        height, format, false);
+    CopyImageToReadback(cmdbuf, image, layout, *readback);
+    out.push_back(ColorCaptureEntry{std::move(readback), std::move(info)});
+}
+
+static void SaveColorCaptures(const std::vector<ColorCaptureEntry>& captures) {
+    for (const auto& capture : captures) {
+        WriteColorCapture(*capture.readback, capture.info);
+    }
+}
+
 // SHADPS4_DBG_EYE_SCAN=<n>: every n-th frame for a headset, both eyes' pictures are read back,
 // and with them the picture handed to the headset's app (both eyes side by side, after the eye
 // copy), and looked over for black blocks in lit surroundings (issue #19: black rectangles on
@@ -894,6 +1072,7 @@ void Presenter::RecreateFrame(Frame* frame, u32 width, u32 height) {
     frame->image_view = view;
     frame->width = width;
     frame->height = height;
+    frame->format = format;
 
     frame->imgui_texture = ImGui::Vulkan::AddTexture(view, vk::ImageLayout::eShaderReadOnlyOptimal);
     frame->is_hdr = swapchain.GetHDR();
@@ -1233,10 +1412,59 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
     const bool crop = spectator && desktop_crop;
     const float desktop_aspect = Core::Vr::DesktopViewAspect(
         desktop_view, fov, static_cast<float>(eye_width) / eye_height);
-    // Compute target resolution for OpenXR swapchain.
-    // When SHADPS4_TITLE_EYE_WIDTH (from settings.txt resolution) or SHADPS4_VR_SCALE is set,
-    // upscale the OpenXR swapchain so modern VR headsets (Quest 2/3, etc.) receive a supersampled
-    // frame with SSAA rather than stretching the low-res 1248x1404 guest render target.
+    // What the headset is shown is not what the title draws. An OpenXR runtime asks an eye to be a
+    // size of its own (a Steam Frame, 3036x3036, square), while the title renders whatever its own
+    // settings say (a PlayStation VR's 960x1080 an eye at 300, 320 or 400 per cent: 2880x3240,
+    // 3072x3456, 3840x4320). SHADPS4_VR_RESOLUTION chooses between the runtime's size, the title's
+    // own, and one given here; SHADPS4_VR_SUPERSAMPLE multiplies the choice.
+    // SHADPS4_TITLE_EYE_WIDTH and SHADPS4_VR_SCALE keep the meaning they always had, for settings
+    // already written that way. None of this touches the projected field of view: the whole eye
+    // image is shown with the frustum the title drew for, whatever size it is sent at.
+    static const auto configured_resolution = [] {
+        struct Choice {
+            bool set{};
+            Core::Vr::PresentationSizeMode mode{Core::Vr::PresentationSizeMode::Recommended};
+            u32 width{};
+            u32 height{};
+        } choice{};
+        const char* value = std::getenv("SHADPS4_VR_RESOLUTION");
+        if (value == nullptr || *value == '\0') {
+            return choice;
+        }
+        choice.set = true;
+        const std::string_view text{value};
+        if (text == "auto" || text == "recommended") {
+            choice.mode = Core::Vr::PresentationSizeMode::Recommended;
+        } else if (text == "guest" || text == "title") {
+            choice.mode = Core::Vr::PresentationSizeMode::Guest;
+        } else {
+            u32 width = 0;
+            u32 height = 0;
+            const int parts = std::sscanf(value, "%ux%u", &width, &height);
+            if (parts >= 1 && width > 0) {
+                choice.mode = Core::Vr::PresentationSizeMode::Explicit;
+                choice.width = width;
+                choice.height = parts == 2 ? height : 0;
+            } else {
+                LOG_WARNING(Render_Vulkan,
+                            "SHADPS4_VR_RESOLUTION={} is neither auto, guest nor a size: the "
+                            "runtime's recommendation is used",
+                            value);
+            }
+        }
+        return choice;
+    }();
+    static const bool configured_supersample_given = [] {
+        const char* value = std::getenv("SHADPS4_VR_SUPERSAMPLE");
+        return value != nullptr && *value != '\0';
+    }();
+    static const float configured_supersample = [] {
+        const char* value = std::getenv("SHADPS4_VR_SUPERSAMPLE");
+        if (value == nullptr || *value == '\0') {
+            return 1.0f;
+        }
+        return std::clamp(static_cast<float>(std::atof(value)), 0.1f, 8.0f);
+    }();
     static const u32 configured_eye_width = [] {
         const char* val = std::getenv("SHADPS4_TITLE_EYE_WIDTH");
         return val != nullptr ? static_cast<u32>(std::max(0, std::atoi(val))) : 0u;
@@ -1246,31 +1474,69 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
         return val != nullptr ? std::max(0.5f, static_cast<float>(std::atof(val))) : 0.0f;
     }();
 
-    u32 target_eye_width = eye_width;
-    u32 target_eye_height = eye_height;
-    if (configured_scale > 0.0f) {
-        target_eye_width = static_cast<u32>(std::round(eye_width * configured_scale));
-        target_eye_height = static_cast<u32>(std::round(eye_height * configured_scale));
-    } else if (configured_eye_width > eye_width) {
-        target_eye_width = configured_eye_width;
-        const float scale = static_cast<float>(target_eye_width) / static_cast<float>(eye_width);
-        target_eye_height = static_cast<u32>(std::round(eye_height * scale));
+    const Core::Vr::OpenXrHost::ViewSizes view_sizes = Core::Vr::OpenXrHost::Instance().EyeSizes();
+    Core::Vr::PresentationSizeRequest request{};
+    request.supersample = configured_supersample;
+    if (configured_resolution.set) {
+        request.mode = configured_resolution.mode;
+        request.explicit_width = configured_resolution.width;
+        request.explicit_height = configured_resolution.height;
+    } else if (configured_scale > 0.0f) {
+        // The old scale factor: the title's own picture, multiplied and clamped as it always was.
+        request.mode = Core::Vr::PresentationSizeMode::Guest;
+        if (!configured_supersample_given) {
+            request.supersample = configured_scale;
+        }
+    } else if (configured_eye_width > 0) {
+        // The old width: it only ever enlarged the picture, so asking for less leaves it alone.
+        request.mode = Core::Vr::PresentationSizeMode::Explicit;
+        request.explicit_width = std::max(configured_eye_width, eye_width);
+    } else {
+        request.mode = Core::Vr::PresentationSizeMode::Recommended;
     }
-    // Align dimensions to 16 for optimal Vulkan memory and OpenXR encoder performance
-    target_eye_width = (target_eye_width + 15u) & ~15u;
-    target_eye_height = (target_eye_height + 15u) & ~15u;
-
+    const Core::Vr::PresentationSize presentation = Core::Vr::PlanPresentationSize(
+        eye_width, eye_height, view_sizes.recommended_width, view_sizes.recommended_height,
+        Core::Vr::PresentationSizeLimits{
+            .max_eye_width = view_sizes.max_width,
+            .max_eye_height = view_sizes.max_height,
+            .max_image_width = view_sizes.max_image_width,
+            .max_image_height = view_sizes.max_image_height,
+        },
+        request);
+    const u32 target_eye_width = presentation.eye_width;
+    const u32 target_eye_height = presentation.eye_height;
     const u32 target_swapchain_width = target_eye_width * 2;
     const u32 target_swapchain_height = target_eye_height;
 
-    static bool logged_target_res = false;
-    if (!logged_target_res) {
+    static u32 logged_guest_width{};
+    static u32 logged_guest_height{};
+    static u32 logged_target_width{};
+    static u32 logged_target_height{};
+    static bool logged_target_res{};
+    if (!logged_target_res || logged_guest_width != eye_width ||
+        logged_guest_height != eye_height || logged_target_width != target_eye_width ||
+        logged_target_height != target_eye_height) {
         logged_target_res = true;
+        logged_guest_width = eye_width;
+        logged_guest_height = eye_height;
+        logged_target_width = target_eye_width;
+        logged_target_height = target_eye_height;
+        std::string note = presentation.mode == Core::Vr::PresentationSizeMode::Recommended
+                               ? "the runtime's size"
+                           : presentation.mode == Core::Vr::PresentationSizeMode::Explicit
+                               ? "the size asked for"
+                               : "the title's own size";
+        if (request.supersample != 1.0f) {
+            note += fmt::format(", {:.2f}x", request.supersample);
+        }
+        if (presentation.clamped) {
+            note += ", cut to the runtime's maximum";
+        }
         LOG_INFO(Render_Vulkan,
-                 "VR HMD OpenXR swapchain target: {}x{} [per eye: {}x{}, base eye: {}x{}, scale: {:.2f}x]",
-                 target_swapchain_width, target_swapchain_height,
-                 target_eye_width, target_eye_height, eye_width, eye_height,
-                 static_cast<float>(target_eye_width) / static_cast<float>(eye_width));
+                 "VR: the title draws {}x{} an eye; the headset is shown {}x{} an eye ({}), {}x{} "
+                 "for both",
+                 eye_width, eye_height, target_eye_width, target_eye_height, note,
+                 target_swapchain_width, target_swapchain_height);
     }
 
     Frame* const local = exported ? nullptr : vr_exporter->AcquireLocal(target_swapchain_width, target_swapchain_height);
@@ -1311,39 +1577,40 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
         .pImageMemoryBarriers = pre_barriers.data(),
     });
 
-    // Pictures the title keeps sRGB-encoded are read as the bytes they hold where what is made
-    // of them is encoded the same way (gamma 1) and they are copied pixel for pixel: the
-    // hardware then does not decode every tap the sharpening takes, only for the shader to
-    // encode it again. (Where a picture is drawn larger or smaller, as into a window, its
-    // pixels are blended, and blended encoded they would come out darker in fine detail.) Both
-    // eyes or neither: they share the pass's settings. (Not where an image was made without
-    // that view's format, to be moved to one that allows it; nor under the A/B measuring aid
-    // as "ppcopy".)
-    const auto encoded_sibling = [](vk::Format format) {
-        switch (format) {
-        case vk::Format::eR8G8B8A8Srgb:
-            return vk::Format::eR8G8B8A8Unorm;
-        case vk::Format::eB8G8R8A8Srgb:
-            return vk::Format::eB8G8R8A8Unorm;
-        default:
-            return vk::Format::eUndefined;
+    // The pictures the title hands the headset system are its final, display-referred ones:
+    // 8-bit bytes already encoded for a display, which it shows as they are. The pass reads
+    // those bytes (through the view's UNORM sibling where the guest asked for an sRGB view) and
+    // does not encode them again; a target that encodes for display itself gets linear light
+    // from the shader and stores the same bytes (video_core/color_contract.h).
+    const auto byte_view_of = [&](const u32 eye) {
+        const vk::Format view_format = descs[eye].view_info.format;
+        if (!IsEightBitColor(view_format)) {
+            return VideoCore::Color::ByteView::Unavailable;
         }
+        const vk::Format sibling = SrgbSibling(view_format);
+        if (sibling == vk::Format::eUndefined) {
+            return VideoCore::Color::ByteView::StoredBytes;
+        }
+        return texture_cache.GetImage(image_ids[eye]).backing->image.AllowsViewFormat(sibling)
+                   ? VideoCore::Color::ByteView::SrgbViewWithSibling
+                   : VideoCore::Color::ByteView::Unavailable;
     };
-    const auto pixel_for_pixel = [&](const Frame* target) {
-        return target == nullptr || target == local ||
-               (target->width == eye_width * 2 && target->height == eye_height);
+    const std::array<VideoCore::Color::ByteView, 2> byte_views{byte_view_of(0), byte_view_of(1)};
+    // Both eyes share the pass's settings, so both or neither give their bytes.
+    const VideoCore::Color::ByteView pictures =
+        byte_views[0] != VideoCore::Color::ByteView::Unavailable &&
+                byte_views[1] != VideoCore::Color::ByteView::Unavailable
+            ? VideoCore::Color::ByteView::StoredBytes
+            : VideoCore::Color::ByteView::Unavailable;
+    const auto plan_for = [&](const Frame* target, const bool a_b_off) {
+        return VideoCore::Color::Plan(pictures,
+                                      target != nullptr && IsSrgbDisplayFormat(target->format),
+                                      pp_settings.gamma == 1.0f, pp_settings.hdr != 0, a_b_off);
     };
-    const auto& right_info = texture_cache.GetImage(image_ids[1]).info;
-    const u32 src_image_width = is_sbs ? (eye_width * 2) : eye_width;
-    bool encoded_in = pp_settings.gamma == 1.0f && pp_settings.hdr == 0 &&
-                      right_info.size.width == src_image_width && right_info.size.height == eye_height &&
-                      !FrameStats::AbOff("ppcopy");
-    for (u32 eye = 0; eye < 2 && encoded_in; ++eye) {
-        const vk::Format sibling = encoded_sibling(descs[eye].view_info.format);
-        encoded_in = sibling != vk::Format::eUndefined &&
-                     texture_cache.GetImage(image_ids[eye]).backing->image.AllowsViewFormat(
-                         sibling);
-    }
+    // The A/B measuring aid "ppcopy" leaves out the window's shortcut, as it did before the
+    // headset's own picture was drawn from the same decision; it never concerns the headset.
+    const auto window_plan = plan_for(frame, FrameStats::AbOff("ppcopy"));
+    const auto headset_plan = plan_for(local, false);
     static const u32 eye_scan_every = [] {
         const char* value = std::getenv("SHADPS4_DBG_EYE_SCAN");
         return value != nullptr ? static_cast<u32>(std::max(0, std::atoi(value))) : 0u;
@@ -1353,14 +1620,23 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
         eye_scan = std::make_shared<std::vector<ScreenshotReadback>>();
         eye_scan->reserve(2);
     }
+    std::vector<ColorCaptureEntry> color_captures;
+    const bool capture_frame = ColorCaptureWanted(frame_id);
+    if (capture_frame && frame != nullptr) {
+        // The window's final image is taken by the screenshot path of Present.
+        VideoCore::RequestScreenshot(VideoCore::ScreenshotRequest::WithOverlays);
+    }
     std::array<vk::ImageView, 2> eye_views;
+    std::array<vk::Format, 2> sampled_formats{};
     for (u32 eye = 0; eye < 2; ++eye) {
         auto view_info = descs[eye].view_info;
         // Exclude alpha from output frame to avoid blending with UI.
         view_info.mapping.a = vk::ComponentSwizzle::eOne;
-        if (encoded_in) {
-            view_info.format = encoded_sibling(view_info.format);
+        if (window_plan.read_stored_bytes &&
+            byte_views[eye] == VideoCore::Color::ByteView::SrgbViewWithSibling) {
+            view_info.format = SrgbSibling(view_info.format);
         }
+        sampled_formats[eye] = view_info.format;
 
         // The view first: an image that does not allow the view's format moves to a backing
         // that does, and that is the one to get ready for reading.
@@ -1375,8 +1651,28 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
             CopyImageToReadback(cmdbuf, image.GetImage(), vk::ImageLayout::eTransferSrcOptimal,
                                 eye_scan->back());
         }
-        image.Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderRead,
-                      {}, cmdbuf);
+        image.Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderRead, {},
+                      cmdbuf);
+        if (capture_frame && (!is_sbs || eye == 0)) {
+            AddColorCapture(cmdbuf, instance, draw_scheduler, image.GetImage(),
+                            vk::ImageLayout::eShaderReadOnlyOptimal, image.info.size.width,
+                            image.info.size.height, image.info.pixel_format,
+                            ColorCaptureInfo{
+                                .frame = frame_id,
+                                .point = fmt::format("eye{}", eye),
+                                .source_view_format = vk::to_string(view_info.format),
+                                .source_image_format = vk::to_string(image.info.pixel_format),
+                                .eye_width = eye_width,
+                                .eye_height = eye_height,
+                                .gamma = pp_settings.gamma,
+                                .hdr = pp_settings.hdr,
+                                .encoded_in = window_plan.encoded_in ? 1u : 0u,
+                                .ab_off = FrameStats::AbOff("ppcopy"),
+                                .note = fmt::format("guest eye picture as stored, {}x{}",
+                                                    image.info.size.width, image.info.size.height),
+                            },
+                            color_captures);
+        }
     }
     if (has_overlay) {
         for (u32 eye = 0; eye < 2; ++eye) {
@@ -1436,6 +1732,24 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
         }
         return regions;
     };
+    if (ColorLogOn() && (frame_id < 3 || frame_id % 120 == 0)) {
+        for (u32 eye = 0; eye < 2; ++eye) {
+            const auto& image = texture_cache.GetImage(image_ids[eye]);
+            LOG_INFO(
+                Render_Vulkan,
+                "COLORDIAG frame {} eye {}: image {} {}x{} guest view {} -> sampled {} | "
+                "byte view {} | window encoded_in {} linear_out {} fmt {} | headset "
+                "encoded_in {} linear_out {} fmt {} | gamma {} hdr {} ab_off {}",
+                frame_id, eye, vk::to_string(image.info.pixel_format), image.info.size.width,
+                image.info.size.height, vk::to_string(descs[eye].view_info.format),
+                vk::to_string(sampled_formats[eye]), static_cast<u32>(byte_views[eye]),
+                window_plan.encoded_in ? 1 : 0, window_plan.linear_out ? 1 : 0,
+                frame != nullptr ? std::string{vk::to_string(frame->format)} : std::string{"none"},
+                headset_plan.encoded_in ? 1 : 0, headset_plan.linear_out ? 1 : 0,
+                local != nullptr ? std::string{vk::to_string(local->format)} : std::string{"none"},
+                pp_settings.gamma, pp_settings.hdr, FrameStats::AbOff("ppcopy") ? 1 : 0);
+        }
+    }
     // The eyes' pictures are shown far larger than they are drawn (a headset's display has
     // several pixels for each of theirs), which blurs them: SHADPS4_VR_SHARPEN=<0..1> sharpens
     // them on the way by that much.
@@ -1448,28 +1762,37 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
         const char* value = std::getenv("SHADPS4_RESOLVE_AA");
         return value == nullptr || value[0] != '0';
     }();
+    // SHADPS4_VR_DOWNSAMPLE=1: where a picture is larger than the headset's, average the
+    // source texels each output pixel covers instead of reading one point of it (and instead
+    // of FXAA, which works on the source's grid). Off by default: at 1:1 it does nothing, and
+    // where an eye is only a little larger it trades a little sharpness for less moire.
+    static const bool downsample = [] {
+        const char* value = std::getenv("SHADPS4_VR_DOWNSAMPLE");
+        return value != nullptr && value[0] != '0';
+    }();
     auto hmd_settings = pp_settings;
     hmd_settings.sharpen = sharpen;
-    hmd_settings.encoded_in = encoded_in ? 1 : 0;
+    hmd_settings.encoded_in = window_plan.encoded_in ? 1 : 0;
+    hmd_settings.linear_out = window_plan.linear_out ? 1 : 0;
     hmd_settings.antialias = antialias ? 1 : 0;
+    hmd_settings.downsample = downsample ? 1 : 0;
     // Where FSR 1 enlarged the title's scene (TitleUpscale), the picture is crisp already:
     // sharpened by SHADPS4_VR_SHARPEN_FSR there (half of the rest by default).
     if (rasterizer->EyesUpscaled()) {
         static const float sharpen_fsr = [] {
             const char* value = std::getenv("SHADPS4_VR_SHARPEN_FSR");
-            return value != nullptr
-                       ? std::clamp(static_cast<float>(std::atof(value)), 0.0f, 1.0f)
-                       : -1.0f;
+            return value != nullptr ? std::clamp(static_cast<float>(std::atof(value)), 0.0f, 1.0f)
+                                    : -1.0f;
         }();
         hmd_settings.sharpen_centre = sharpen_fsr >= 0.0f ? sharpen_fsr : sharpen * 0.5f;
         hmd_settings.centre_radius = rasterizer->UpscaledRadius();
     }
     if (frame != nullptr) {
-        const auto bounds = Core::Vr::SpectatorContentRect(frame->width, frame->height,
-                                                        desktop_aspect, crop);
+        const auto bounds =
+            Core::Vr::SpectatorContentRect(frame->width, frame->height, desktop_aspect, crop);
         const vk::Rect2D content{{bounds.x, bounds.y}, {bounds.width, bounds.height}};
         const vk::Rect2D clip{{bounds.x, std::max(0, bounds.y)},
-                             {bounds.width, std::min(bounds.height, frame->height)}};
+                              {bounds.width, std::min(bounds.height, frame->height)}};
         if (spectator && desktop_view == Core::Vr::DesktopView::Combined) {
             const auto layout = Core::Vr::CombinedEyeRegions(content.extent.width, fov);
             const auto region_for = [&](u32 eye) {
@@ -1504,31 +1827,52 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
         if (has_overlay) {
             pp_pass.RenderOverlay(cmdbuf, overlay_regions_for(*frame), *frame);
         }
+        if (capture_frame) {
+            AddColorCapture(
+                cmdbuf, instance, draw_scheduler, frame->image, vk::ImageLayout::eGeneral,
+                frame->width, frame->height, frame->format,
+                ColorCaptureInfo{
+                    .frame = frame_id,
+                    .point = "window",
+                    .source_view_format = fmt::format("{}/{}", vk::to_string(sampled_formats[0]),
+                                                      vk::to_string(sampled_formats[1])),
+                    .eye_width = eye_width,
+                    .eye_height = eye_height,
+                    .gamma = pp_settings.gamma,
+                    .hdr = pp_settings.hdr,
+                    .encoded_in = hmd_settings.encoded_in,
+                    .linear_out = hmd_settings.linear_out,
+                    .target_format = vk::to_string(frame->format),
+                    .target_srgb = IsSrgbDisplayFormat(frame->format),
+                    .ab_off = FrameStats::AbOff("ppcopy"),
+                    .note = "window frame after the post-processing pass",
+                },
+                color_captures);
+        }
         if (exported && eye_scan) {
             // What the headset's app gets, as the eye copy left it (in the general layout).
-            const auto copy_barrier = [&](vk::PipelineStageFlags2 src_stage,
-                                          vk::AccessFlags2 src_access,
-                                          vk::PipelineStageFlags2 dst_stage,
-                                          vk::AccessFlags2 dst_access) {
-                const vk::ImageMemoryBarrier2 barrier = {
-                    .srcStageMask = src_stage,
-                    .srcAccessMask = src_access,
-                    .dstStageMask = dst_stage,
-                    .dstAccessMask = dst_access,
-                    .oldLayout = vk::ImageLayout::eGeneral,
-                    .newLayout = vk::ImageLayout::eGeneral,
-                    .image = frame->image,
-                    .subresourceRange{
-                        .aspectMask = vk::ImageAspectFlagBits::eColor,
-                        .levelCount = 1,
-                        .layerCount = 1,
-                    },
+            const auto copy_barrier =
+                [&](vk::PipelineStageFlags2 src_stage, vk::AccessFlags2 src_access,
+                    vk::PipelineStageFlags2 dst_stage, vk::AccessFlags2 dst_access) {
+                    const vk::ImageMemoryBarrier2 barrier = {
+                        .srcStageMask = src_stage,
+                        .srcAccessMask = src_access,
+                        .dstStageMask = dst_stage,
+                        .dstAccessMask = dst_access,
+                        .oldLayout = vk::ImageLayout::eGeneral,
+                        .newLayout = vk::ImageLayout::eGeneral,
+                        .image = frame->image,
+                        .subresourceRange{
+                            .aspectMask = vk::ImageAspectFlagBits::eColor,
+                            .levelCount = 1,
+                            .layerCount = 1,
+                        },
+                    };
+                    cmdbuf.pipelineBarrier2(vk::DependencyInfo{
+                        .imageMemoryBarrierCount = 1,
+                        .pImageMemoryBarriers = &barrier,
+                    });
                 };
-                cmdbuf.pipelineBarrier2(vk::DependencyInfo{
-                    .imageMemoryBarrierCount = 1,
-                    .pImageMemoryBarriers = &barrier,
-                });
-            };
             copy_barrier(vk::PipelineStageFlagBits2::eColorAttachmentOutput |
                              vk::PipelineStageFlagBits2::eFragmentShader,
                          vk::AccessFlagBits2::eColorAttachmentWrite,
@@ -1551,15 +1895,41 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
     if (local != nullptr) {
         // An image that encodes for display itself.
         auto local_settings = hmd_settings;
-        local_settings.encoded_in = 1;
-        local_settings.linear_out = 1;
+        local_settings.encoded_in = headset_plan.encoded_in ? 1 : 0;
+        local_settings.linear_out = headset_plan.linear_out ? 1 : 0;
         hmd_pp_pass.Render(cmdbuf, regions_for(*local), *local, local_settings);
         if (has_overlay) {
             hmd_pp_pass.RenderOverlay(cmdbuf, overlay_regions_for(*local), *local);
         }
+        if (capture_frame) {
+            AddColorCapture(
+                cmdbuf, instance, draw_scheduler, local->image, vk::ImageLayout::eGeneral,
+                local->width, local->height, local->format,
+                ColorCaptureInfo{
+                    .frame = frame_id,
+                    .point = "hmd",
+                    .source_view_format = fmt::format("{}/{}", vk::to_string(sampled_formats[0]),
+                                                      vk::to_string(sampled_formats[1])),
+                    .eye_width = eye_width,
+                    .eye_height = eye_height,
+                    .gamma = pp_settings.gamma,
+                    .hdr = pp_settings.hdr,
+                    .encoded_in = local_settings.encoded_in,
+                    .linear_out = local_settings.linear_out,
+                    .target_format = vk::to_string(local->format),
+                    .target_srgb = IsSrgbDisplayFormat(local->format),
+                    .ab_off = FrameStats::AbOff("ppcopy"),
+                    .note = "headset frame after the post-processing pass",
+                },
+                color_captures);
+        }
         DebugState.output_resolution = {local->width, local->height};
     }
     DebugState.game_resolution = {eye_width * 2, eye_height};
+    if (!color_captures.empty()) {
+        auto captures = std::make_shared<std::vector<ColorCaptureEntry>>(std::move(color_captures));
+        draw_scheduler.DeferPriorityOperation([captures]() { SaveColorCaptures(*captures); });
+    }
     if (eye_scan) {
         draw_scheduler.DeferPriorityOperation([eye_scan, frame_id]() {
             EyeScan::Look(*eye_scan, frame_id);

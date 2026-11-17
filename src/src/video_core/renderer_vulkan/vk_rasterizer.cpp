@@ -9,6 +9,7 @@
 #include "video_core/amdgpu/liverpool.h"
 #include "common/alignment.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
+#include "video_core/renderer_vulkan/quality_diag.h"
 #include "video_core/renderer_vulkan/readconst_snapshot_diag.h"
 #include "video_core/renderer_vulkan/vk_foveation.h"
 #include "video_core/renderer_vulkan/vk_gpu_profile.h"
@@ -306,6 +307,7 @@ void Rasterizer::ChooseUniformBuffers(bool graphics) const {
 
 void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     RENDERER_TRACE;
+    QualityDiag::NoteOperation(static_cast<u32>(liverpool->regs.color_control.mode));
     ChooseUniformBuffers(true);
 
     scheduler.PopPendingOperations();
@@ -434,6 +436,7 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     scheduler.BeginRendering(state);
     scheduler.NoteDraw();
     FrameStats::Draw();
+    QualityDiag::NoteDraw();
 
     const auto& vs_info = pipeline->GetStage(Shader::LogicalStage::Vertex);
     const auto& fetch_shader = pipeline->GetFetchShader();
@@ -753,6 +756,7 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     scheduler.BeginRendering(state);
     scheduler.NoteDraw();
     FrameStats::Draw();
+    QualityDiag::NoteDraw();
 
     // We can safely ignore both SGPR UD indices and results of fetch shader parsing, as vertex and
     // instance offsets will be automatically applied by Vulkan from indirect args buffer.
@@ -1512,6 +1516,7 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
     attachment_feedback_loop = false;
     const auto& regs = liverpool->regs;
     const auto& key = pipeline->GetGraphicsKey();
+    QualityDiag::BeginRenderState();
     RenderState state;
     state.width = instance.GetMaxFramebufferWidth();
     state.height = instance.GetMaxFramebufferHeight();
@@ -1540,6 +1545,7 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
         const auto& col_buf = regs.color_buffers[cb];
         const bool is_clear = texture_cache.IsMetaCleared(col_buf.CmaskAddress(), slice);
         texture_cache.TouchMeta(col_buf.CmaskAddress(), slice, false);
+        QualityDiag::NoteColorTarget(cb, col_buf, *image);
 
         if (image->binding.is_bound) {
             ASSERT_MSG(!image->binding.force_general,
@@ -1564,6 +1570,7 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
             is_clear ? LiverpoolToVK::ColorBufferClearValue(col_buf) : vk::ClearValue{};
         auto& attachment = state.color_attachments[cb];
         attachment.image_view = *image_view.image_view;
+        attachment.image = image->GetImage();
         attachment.image_layout = image->backing->state.layout;
         attachment.clear_value = clear_value.color.uint32;
         attachment.is_clear = is_clear;
@@ -1598,9 +1605,11 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
         state.width = std::min<u32>(state.width, image.info.size.width);
         state.height = std::min<u32>(state.height, image.info.size.height);
         state.num_layers = std::min<u32>(state.num_layers, image_view.info.range.extent.layers);
+        QualityDiag::NoteDepthTarget(regs.depth_buffer, image);
 
         auto& attachment = state.depth_stencil_attachment;
         attachment.image_view = *image_view.image_view;
+        attachment.image = image.GetImage();
         attachment.image_layout = image.backing->state.layout;
         attachment.clear_value = {};
 
@@ -1631,6 +1640,7 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
         state.shading_rate_view = foveation->MapFor(state.width, state.height);
     }
 
+    QualityDiag::NoteRenderState(state.num_layers, key.num_samples, key.depth_samples);
     return state;
 }
 
@@ -1671,6 +1681,7 @@ void Rasterizer::Resolve() {
     VideoCore::TextureCache::ImageDesc mrt1_desc{liverpool->regs.color_buffers[1], mrt1_hint};
     auto& mrt0_image = texture_cache.GetImage(texture_cache.FindImage(mrt0_desc, true));
     auto& mrt1_image = texture_cache.GetImage(texture_cache.FindImage(mrt1_desc, true));
+    QualityDiag::NoteResolve(mrt0_image, mrt1_image);
 
     ScopeMarkerBegin(fmt::format("Resolve:MRT0={:#x}:MRT1={:#x}",
                                  liverpool->regs.color_buffers[0].Address(),

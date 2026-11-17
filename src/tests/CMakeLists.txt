@@ -155,6 +155,7 @@ set(GUEST_MEMORY_VALIDATION_TEST_SOURCES
     core/test_flip_label_tracker.cpp
     core/test_fios2_module_choice.cpp
     video_core/test_legacy_vertex_attributes.cpp
+    video_core/test_color_contract.cpp
     video_core/test_readconst_snapshot_diag.cpp
     video_core/test_fma_split_diag.cpp
     video_core/test_recip_refine_fix.cpp
@@ -975,6 +976,28 @@ target_link_libraries(shadps4_unique_function_test PRIVATE
 
 list(APPEND TEST_TARGETS shadps4_unique_function_test)
 
+add_executable(shadps4_quality_probe_test
+    video_core/test_quality_probe.cpp
+)
+
+target_include_directories(shadps4_quality_probe_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/tests
+)
+target_compile_features(shadps4_quality_probe_test PRIVATE cxx_std_23)
+
+target_link_libraries(shadps4_quality_probe_test PRIVATE
+    GTest::gtest_main
+)
+
+list(APPEND TEST_TARGETS shadps4_quality_probe_test)
+
+gtest_discover_tests(shadps4_quality_probe_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)
+
 gtest_discover_tests(shadps4_unique_function_test
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     DISCOVERY_TIMEOUT 60
@@ -1364,6 +1387,35 @@ target_link_libraries(shadps4_hand_live_test PRIVATE
 list(APPEND TEST_TARGETS shadps4_hand_live_test)
 
 gtest_discover_tests(shadps4_hand_live_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)
+
+# ===========================================================================
+# OpenXR presentation size policy (pure math, no emulator dependencies)
+# ===========================================================================
+# Keeps the title's render size and the headset's picture size independent, and pins the acceptance
+# sizes (2880x3240 / 3072x3456 / 3840x4320 in, 3036x3036 out) without a GPU.
+
+add_executable(shadps4_vr_presentation_size_test
+    test_vr_presentation_size.cpp
+)
+
+target_include_directories(shadps4_vr_presentation_size_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_compile_features(shadps4_vr_presentation_size_test PRIVATE cxx_std_23)
+
+target_link_libraries(shadps4_vr_presentation_size_test PRIVATE
+    GTest::gtest_main
+)
+
+list(APPEND TEST_TARGETS shadps4_vr_presentation_size_test)
+
+gtest_discover_tests(shadps4_vr_presentation_size_test
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     DISCOVERY_TIMEOUT 60
 )

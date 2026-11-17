@@ -1249,6 +1249,8 @@ set(VIDEO_CORE src/video_core/amdgpu/cb_db_extent.h
                src/video_core/renderer_vulkan/vk_title_upscale.cpp
                src/video_core/renderer_vulkan/vk_title_upscale.h
                src/video_core/renderer_vulkan/readconst_snapshot_diag.h
+               src/video_core/renderer_vulkan/quality_diag.cpp
+               src/video_core/renderer_vulkan/quality_diag.h
                src/video_core/renderer_vulkan/vk_resource_pool.cpp
                src/video_core/renderer_vulkan/vk_resource_pool.h
                src/video_core/renderer_vulkan/vk_scheduler.cpp

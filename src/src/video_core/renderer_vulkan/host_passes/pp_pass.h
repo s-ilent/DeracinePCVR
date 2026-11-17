@@ -24,10 +24,11 @@ public:
         u32 hdr = 0;
         /// 0..1: how much the picture is sharpened on the way (host_shaders/post_process.frag).
         float sharpen = 0.0f;
-        /// For an output image of an sRGB format, which does the encoding for display itself.
+        /// The target's sRGB attachment encodes on write, so the shader must hand it linear
+        /// light (post_process.frag decodes what it would otherwise have encoded).
         u32 linear_out = 0;
-        /// The input is read as the bytes it holds, already encoded for display (an sRGB image
-        /// seen through a view of its UNORM sibling, with `gamma` 1): nothing to encode.
+        /// The input is read as the bytes it holds, already encoded for display: the shader
+        /// must not encode them again (the eye pictures of a headset are display-referred).
         u32 encoded_in = 0;
         /// Within `centre_radius` of the middle of the picture (a share of the way to its edge,
         /// on both axes) it is sharpened by `sharpen_centre` instead: where FSR 1 enlarged the
@@ -35,6 +36,11 @@ public:
         float sharpen_centre = 0.0f;
         float centre_radius = 0.0f;
         u32 antialias = 1;
+        /// The picture is larger than the target: average the source texels each output
+        /// pixel covers (host_shaders/post_process.frag) instead of reading one point of
+        /// it, which blurs near-Nyquist detail less than it folds it into moire. Only
+        /// where an axis actually shrinks; 0 keeps the previous single tap and FXAA.
+        u32 downsample = 0;
     };
 
     void Create(const Instance& instance, MasterSemaphore* master_semaphore,

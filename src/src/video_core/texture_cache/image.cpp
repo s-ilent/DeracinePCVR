@@ -8,6 +8,7 @@
 #include "common/logging/log.h"
 #include "core/known_title.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
+#include "video_core/renderer_vulkan/quality_diag.h"
 #include "video_core/renderer_vulkan/vk_foveation.h"
 #include "video_core/renderer_vulkan/vk_gpu_profile.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -560,8 +561,22 @@ void Image::Transit(vk::ImageLayout dst_layout, vk::AccessFlags2 dst_mask,
     }
 
     if (!cmdbuf) {
-        // When using external cmdbuf you are responsible for ending rp.
-        scheduler->EndRendering();
+        // A barrier for an image the pass being recorded does not draw into may be recorded inside
+        // that pass; one for an attachment has to end it first.
+        // Recording the first kind inside the pass instead of breaking it is what keeps a frame from
+        // storing and reloading a whole 5760x3240 target for every texture the guest moves between
+        // uses: measured 89 -> 65 passes and 556 -> 481 Mpx a frame on the title screen.
+        // Off unless SHADPS4_DBG_BARRIER_IN_PASS=1: that was a synthetic 400% measurement, and
+        // the +2.6% it showed has not been reproduced in gameplay. Unset keeps ending the pass for
+        // every barrier, which is what shipped before this experiment.
+        static const bool in_pass = [] {
+            const char* value = std::getenv("SHADPS4_DBG_BARRIER_IN_PASS");
+            return value != nullptr && value[0] == '1';
+        }();
+        if (!in_pass || scheduler->IsAttachmentImage(GetImage())) {
+            // When using external cmdbuf you are responsible for ending rp.
+            scheduler->EndRendering();
+        }
         cmdbuf = scheduler->CommandBuffer();
     }
     Vulkan::GpuProfile::Note(Vulkan::GpuProfile::HostWork::Barrier);
@@ -1072,6 +1087,8 @@ void Image::SetBackingSamples(u32 num_samples, bool copy_backing) {
     if (!backing || backing->num_samples == num_samples) {
         return;
     }
+    Vulkan::QualityDiag::NoteBacking(info.guest_address, backing->num_samples, num_samples,
+                                     copy_backing);
     ASSERT_MSG(!info.props.is_depth, "Swapping samples is only valid for color images");
     auto new_image_ci = backing->image.image_ci;
     SetHostSamples(new_image_ci, num_samples);
