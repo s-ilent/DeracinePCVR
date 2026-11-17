@@ -25,11 +25,10 @@ Scenario ID: `deracine-classroom-menu-300-msaa2-vblank60`.
 * gameplay. The classroom is the front end; menu selection and gameplay are separate gates.
 
 The measured window is 80 consecutive 0.5 s windows after a warmup of at least 10 s from the
-scene anchor. The emulator closes a stats window at the first frame boundary after 0.5 s, so the
-80 windows cover `40 + 80/fps` seconds; the run records the emulator-measured duration
-(`Σ frames/fps`) and the validator requires it within 2 s of the scenario's 40 s. The first and
-last sample timestamps and the runner-observed duration are recorded as well, so a claimed 40 s
-window that really lasted 0.65 s is rejected.
+scene anchor. Each window closes at the first frame boundary after 0.5 s, and a GPU hitch inside
+a window is part of it, so the measured span is 40 s plus quantization and stalls. The run
+records the emulator-measured duration (`Σ frames/fps`); the validator accepts 39.0–48.5 s for
+this 40 s scenario and rejects a claimed 40 s that really lasted 0.65 s.
 
 ## Files
 
@@ -165,5 +164,16 @@ the old reference in history.
   120 FPS target, which need a worn headset and a real session.
 * The scene reference is one reviewed frame; a large lighting change in the scene would require
   re-reviewing the reference, not lowering the threshold.
-* RenderDoc capture is a separate step (`runner.ps1 -RdocCapture <s>` plus `renderdoccmd`); the
-  `.rdc` is not produced by the runner itself.
+* The validator checks the screenshot against the reference and every in-window sample against a
+  90 %-of-window entry gate plus a 250 draws / 250 Mpx floor; it does not recognise objects, and
+  the overlay presence comes from matching a reference that contains it.
+* The run records the emulator's frame-stats series and the raw log, but the validator hashes the
+  log rather than re-parsing it. The runner counts frame-stats lines it could not read whole in
+  `timing.incomplete_stats_lines`; a partial line inside the measured window would shorten the
+  series without being separately detected.
+* RenderDoc capture is a separate step: `runner.ps1 -RenderDocCaptureDir <dir> -RdocCapture <s>`
+  launches the app through `renderdoccmd capture`, finds the capture in the app's own
+  `user\captures\CUSA11919_frameNNN.rdc` location, copies it into the run, extracts its final
+  backbuffer image, and records both in `run.json`; the validator checks the capture hash and the
+  extracted image against the classroom reference. The injected attempt on this machine
+  device-lost before it could capture.

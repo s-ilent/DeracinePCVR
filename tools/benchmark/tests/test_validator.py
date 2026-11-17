@@ -464,6 +464,59 @@ class ValidatorTests(unittest.TestCase):
         self.fixture.write(document)
         self.assert_invalid("no per-window frame count")
 
+    def test_claimed_duration_must_match_the_frame_counts(self) -> None:
+        document = self.fixture.reload()
+        document["timing"]["window_elapsed_s"] = round(
+            document["timing"]["window_elapsed_s"] + 1.5, 3)
+        self.fixture.write(document)
+        self.assert_invalid("emulator-measured")
+
+    def test_log_hash_is_checked(self) -> None:
+        (self.run_dir / "shad_log.txt").write_text("tampered after the manifest\n",
+                                                   encoding="utf-8")
+        self.assert_invalid("session log sha256")
+
+    def test_run_id_must_match_its_directory(self) -> None:
+        document = self.fixture.reload()
+        document["run_id"] = "some-other-run"
+        self.fixture.write(document)
+        self.assert_invalid("does not match the directory name")
+
+    def test_window_upper_bound_is_enforced(self) -> None:
+        document = self.fixture.reload()
+        rows = [s for s in document["timing"]["per_sample"] if s["in_window"]]
+        for row in rows:
+            row["frames"] = max(1, round(row["frames"] * 1.30))
+        measured = sum(row["frames"] / row["fps"] for row in rows)
+        document["timing"]["window_elapsed_s"] = round(measured, 3)
+        document["timing"]["unique_fps"] = round(
+            sum(row["frames"] for row in rows) / measured, 3)
+        self.fixture.write(document)
+        self.assert_invalid("allowed 39.0-")
+
+    def test_built_from_head_must_exist_in_the_worktree(self) -> None:
+        import subprocess
+        repo = self.root / "git-worktree"
+        repo.mkdir()
+        subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+        (repo / "a").write_text("a\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "a"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "init"], check=True)
+        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, check=True).stdout.strip()
+        document = self.fixture.reload()
+        document["source"]["worktree"] = str(repo)
+        document["executable"]["built_from_head"] = head
+        self.fixture.write(document)
+        self.assertTrue(validator.validate_run(self.run_dir)["valid"])
+
+        document = self.fixture.reload()
+        document["executable"]["built_from_head"] = "f" * 40
+        self.fixture.write(document)
+        self.assert_invalid("not a commit of this worktree")
+
     def test_actual_presentation_must_match_requested(self) -> None:
         document = self.fixture.reload()
         document["scenario"]["presentation"]["actual"] = (

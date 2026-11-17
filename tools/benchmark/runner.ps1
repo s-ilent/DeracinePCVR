@@ -368,7 +368,12 @@ $statsRegex = [regex]'frame stats at\s+(?<at>\d+)\s+s(?:\s+\[(?<ab>[A-Z+]+)\])?:
 function Update-Samples {
     for ($i = $script:statsCursor; $i -lt $script:logLines.Count; $i++) {
         $match = $statsRegex.Match($script:logLines[$i])
-        if (-not $match.Success) { continue }
+        if (-not $match.Success) {
+            # A line that announced a stats report but could not be read whole is counted, not
+            # silently dropped: the manifest should say when the series had holes.
+            if ($script:logLines[$i] -match 'frame stats at') { $script:incompleteStats++ }
+            continue
+        }
         # A stats line that was cut short (no trailing frame count) is not a sample: skipping it
         # keeps the frame-count-derived duration honest instead of mixing in an unverifiable row.
         if (-not $match.Groups['frames'].Success) { $script:incompleteStats++; continue }
@@ -696,6 +701,7 @@ $document = [ordered]@{
     run_id         = $runName
     label          = $Label
     created_utc    = $startedUtc
+    runner_command = [Environment]::CommandLine
     scenario       = [ordered]@{
         id       = 'deracine-classroom-menu-300-msaa2-vblank60'
         game     = [ordered]@{
@@ -735,6 +741,11 @@ $document = [ordered]@{
             min_draws           = $SceneMinDraws
             min_mpx             = $SceneMinMpx
             consecutive_samples = $SceneSamples
+        }
+        renderdoc      = [ordered]@{
+            requested_seconds = $(if ($RdocCapture) { $RdocCapture } else { $null })
+            capture_dir       = $(if ($RenderDocCaptureDir) { $RenderDocCaptureDir } else { $null })
+            backend           = $(if ($RenderDocCaptureDir) { 'renderdoccmd capture' } else { $null })
         }
     }
     source         = [ordered]@{
