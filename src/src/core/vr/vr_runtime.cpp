@@ -1135,9 +1135,12 @@ DeviceState Runtime::GetHand(int hand_idx) {
         position = {anchor.x + assumed.x, anchor.y + assumed.y, anchor.z + assumed.z};
     }
     if (hand_idx == 1) {
-        // The other hand mirrors the first about the player: one pose, two hands.
+        // The other hand mirrors the first about the player: one pose, two hands. A mirrored
+        // rotation negates its yaw and roll, so the same scripted aim turns both hands the same
+        // way (the pointer hand can then be pitched up to the menu by the same pad= line).
         position.x = 2.0f * current_head.pose.position.x - position.x;
-        orientation = {};
+        orientation.y = -orientation.y;
+        orientation.z = -orientation.z;
     }
     const float pitch = pitch_deg * (3.14159265358979323846f / 180.0f);
     const Quat calibration{std::sin(pitch * 0.5f), 0.0f, 0.0f, std::cos(pitch * 0.5f)};
