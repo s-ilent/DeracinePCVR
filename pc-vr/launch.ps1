@@ -219,6 +219,38 @@ function Get-GameInfo([string]$eboot) {
     return Read-Sfo ([System.IO.Path]::Combine($folder, "sce_sys", "param.sfo"))
 }
 
+# What the optional patches of a title say they apply to, and which of them the version this
+# copy declares selects. A patch that names another version is skipped by the emulator, which
+# leaves the executable as it is: that is not a reason to call the game incompatible.
+function Get-PatchReport([string]$patchDir, [string]$titleId, [string]$appVer) {
+    $result = @()
+    if ($titleId -eq "") { return $result }
+    $path = [System.IO.Path]::Combine($patchDir, $titleId + ".xml")
+    if (-not [System.IO.File]::Exists($path)) { return $result }
+    try { [xml]$xml = Get-Content -LiteralPath $path -Raw } catch { return $result }
+    foreach ($metadata in @($xml.Patch.Metadata)) {
+        if ($null -eq $metadata) { continue }
+        $name = [string]$metadata.Name
+        if ($name -eq "") { continue }
+        $wants = [string]$metadata.AppVer
+        $enabled = ([string]$metadata.isEnabled) -eq "true"
+        $state = if (-not $enabled) {
+            "disabled"
+        } elseif ($wants -eq $appVer) {
+            "applies"
+        } else {
+            "skipped"
+        }
+        $result += [pscustomobject]@{
+            Name = $name
+            AppVer = $wants
+            Enabled = $enabled
+            State = $state
+        }
+    }
+    return $result
+}
+
 # The unpacked game under a folder: the one this is made for, if there are several. (A folder
 # named after a game with -UPDATE, -patch or -mods at the end is not a game: the emulator lays
 # what is in it over the game's own files.)
@@ -816,10 +848,27 @@ if ($info.Count -eq 0) {
     Say "sce_sys\param.sfo is missing next to it: this is not a complete copy of the game, and the emulator may not know it." "Yellow"
 } elseif ($madeFor -notcontains $info["TITLE_ID"]) {
     Say ("This is " + $info["TITLE"] + ", " + $info["TITLE_ID"] + ". DeracinePCVR is made for Déraciné in its European or American release, " + ($madeFor -join " or ") + ": its fixes for the game's speed and picture do not apply to another, and it may not run.") "Yellow"
-} elseif (@("01.00", "01.04") -notcontains $info["APP_VER"]) {
-    # (What decides is the executable itself, which the emulator looks at as it loads it and
-    # names below; what the game says its version is can be wrong.)
-    Say ("This copy of the game says it is version " + $info["APP_VER"] + ". DeracinePCVR knows versions 01.00 and 01.04 from inside: another plays in slow motion where frames take long, and at the console's resolution.") "Yellow"
+} else {
+    $appVer = if ($info.ContainsKey("APP_VER")) { [string]$info["APP_VER"] } else { "unknown" }
+    Say ("The game is " + $info["TITLE"] + " (" + $info["TITLE_ID"] + "), version " + $appVer + ".")
+    # The declared version selects optional executable patches; it does not decide whether the
+    # emulator loads the game. (The executable itself is what the emulator identifies when it
+    # loads the image, which is more reliable than the version text.)
+    Say ("  The executable is identified at load time; the declared version only selects optional patches, not whether the game runs.")
+    Say ("  Version-specific build data: none is known for this title; the version is not treated as a compatibility failure.")
+    $patchReport = @(Get-PatchReport (Join-Path $here "user\patches") ([string]$info["TITLE_ID"]) $appVer)
+    if ($patchReport.Count -eq 0) {
+        Say "  Optional executable patches: none installed."
+    }
+    foreach ($patch in $patchReport) {
+        if ($patch.State -eq "applies") {
+            Say ("  Optional executable patch: " + $patch.Name + " is enabled for this version.")
+        } elseif ($patch.State -eq "skipped") {
+            Say ("  Optional executable patch: " + $patch.Name + " targets version " + $patch.AppVer + "; it is skipped on " + $appVer + " and the executable is left unchanged.") "DarkGray"
+        } else {
+            Say ("  Optional executable patch: " + $patch.Name + " is disabled in user\patches\" + $info["TITLE_ID"] + ".xml.")
+        }
+    }
 }
 $gameFolder = [System.IO.Path]::GetDirectoryName($game)
 if ($madeFor -contains $info["TITLE_ID"] -and -not [System.IO.File]::Exists([System.IO.Path]::Combine($gameFolder, "sce_module", "libc.prx"))) {

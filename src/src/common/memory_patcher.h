@@ -55,6 +55,10 @@ struct PatchLine {
     PatchLineType type{PatchLineType::Byte};
     std::string address;
     std::string value;
+    /// Optional bytes, in memory order, that the loaded executable must already have at the
+    /// patch address. A fixed-address write is refused when they do not match, so a patch can
+    /// never silently land in a build whose code moved or differs.
+    std::string expected;
     std::string target;
     std::string size;
     int mask_offset{0};
@@ -118,7 +122,8 @@ void AddPatchToQueue(patchInfo patchToAdd);
 
 bool PatchMemory(std::string modNameStr, std::string offsetStr, std::string valueStr,
                  std::string targetStr, std::string sizeStr, bool isOffset, bool littleEndian,
-                 PatchMask patchMask = PatchMask::None, int maskOffset = 0);
+                 PatchMask patchMask = PatchMask::None, int maskOffset = 0,
+                 const std::string& expected = {});
 
 static std::vector<int32_t> PatternToByte(const std::string& pattern);
 uintptr_t PatternScan(const std::string& signature);
