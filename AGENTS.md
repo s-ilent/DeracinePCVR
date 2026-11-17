@@ -1,50 +1,58 @@
-# AGENTS.md — Instrucciones Críticas para Agentes de IA
+# AGENTS.md
 
-Bienvenido a **DeracinePCVR**. Este repositorio es un port para PCVR del juego exclusivo de PlayStation VR *Déraciné* (CUSA11919), basado en **shadPS4** con soporte nativo de **OpenXR** y emulación 6DoF de mandos **PlayStation Move**.
+Agent notes for **Déraciné PCVR** — a fork of shadPS4 that adds native OpenXR output and
+PlayStation Move emulation for *Déraciné* (CUSA11919). Windows x86_64 only. Engineering rules
+for the C++ tree live in `src/AGENTS.md` and override inherited upstream guidance.
 
----
+- Player-facing docs: `README.md`
+- Architecture, PSVR library mapping, memory offsets, porting history: `DEVELOPMENT.md`
+- v0.21.0 merge log and resolved build/runtime errors: `HANDOFF_V0.21.0.md`
 
-## 1. Reglas Inviolables
+## Autonomous engineering contract
 
-1. **Idioma**: Todas las respuestas e interacciones con el usuario deben ser en **español**.
-2. **Identidad Git (CRÍTICO)**:
-   Siempre configurar y usar la dirección oficial noreply para evitar el rechazo `GH007`:
-   ```bash
-   git config user.name "stefan0704"
-   git config user.email "26739250+stefan0704@users.noreply.github.com"
-   ```
-3. **Control de Ramas**:
-   - Rama activa actual: `actualizacion-v0.21.0` (actualización a shadPS4 v0.21.0 "Until Mavethee Dawn").
-   - **NUNCA tocar ni hacer push a `optimizacion-graficos`**.
-4. **Mapeo de Mandos**:
-   - Mantener siempre `swap_hands=1` en `pc-vr/settings.txt`.
-5. **Documentos de Referencia Obligatoria**:
-   - [HANDOFF_V0.21.0.md](file:///e:/DeracinePCVR/HANDOFF_V0.21.0.md): Detalles técnicos de la actualización v0.21.0, errores resueltos y guía de solución.
-   - [DEVELOPMENT.md](file:///e:/DeracinePCVR/DEVELOPMENT.md): Historia completa del proyecto, arquitectura OpenXR, parches de sonido y calibración 6DoF de Move.
+`docs/AUTONOMOUS_ENGINEERING.md` is mandatory for autonomous work, benchmarks, captures and any
+automated operation near `pc-vr/` or the shared lab. Its executable enforcement lives in
+`tools/benchmark/`: an independent validity gate, protected-path preflight/postflight hashes, a
+path guard for automated copies/deletes, and a provenance manifest. A build, a menu screenshot or
+a single run is not a verification.
 
----
+## Layout
 
-## 2. Estructura Rápida de Archivos
+- `pc-vr/` — runtime folder: `shadps4.exe`, `launch.ps1`, `settings.txt` (user config), and
+  `user/` (config, patches, input maps).
+- `Play Deracine VR.bat` — end-user launcher; reads `pc-vr/settings.txt`.
+- `src/` — the shadPS4 tree; the CMake root is `src/`, not the repo root. Sources are one level
+  deeper, in `src/src/`:
+  - `src/src/core/vr/` — OpenXR session and host link (`openxr_host.cpp`, `vr_runtime.cpp`,
+    `vr_host_link.cpp`).
+  - `src/src/core/libraries/move/` — `libSceMove` (`move.cpp`).
+  - `src/src/core/libraries/vr_tracker/` — `libSceVrTracker` (`vr_tracker.cpp`).
+  - `src/src/video_core/renderer_vulkan/` — `vk_presenter.cpp`, `vk_vr_exporter.cpp`.
+- `tools/` — helper scripts, including `download-artifact.py` and `fetch-submodules.py`.
+- `.github/workflows/build-windows.yml` — Windows x86_64 CI build.
 
-- `pc-vr/`: Carpeta de ejecución en Windows.
-  - `shadps4.exe`: Binario activo (v0.21.0).
-  - `launch.ps1`: Script de inicio que configura variables y OpenXR.
-  - `settings.txt`: Configuración de usuario (`swap_hands=1`, `readbacks=relaxed`, etc.).
-- `Play Deracine VR.bat`: Acceso directo para que el usuario inicie el juego en VR.
-- `src/`: Código C++ de shadPS4 con las extensiones VR:
-  - `src/core/vr/`: Módulos de OpenXR y distorsión (`hmd.cpp`, `hmd_reprojection.cpp`, `openxr_host.cpp`, etc.).
-  - `src/core/libraries/move/`: Emulación de mandos PlayStation Move (`move.cpp`).
-  - `src/core/libraries/vr_tracker/`: Emulación de tracking VR (`vr_tracker.cpp`).
-  - `src/video_core/renderer_vulkan/`: Presenter y exportador de texturas VR a OpenXR (`vk_presenter.cpp`, `vk_vr_exporter.cpp`).
-- `tools/download-artifact.py`: Herramienta para descargar el artefacto compilado por GitHub Actions sin errores de autenticación 401.
-- `.github/workflows/build-windows.yml`: Flujo de CI que compila Windows x86_64 con LLVM/Clang o MSVC.
+## Rules
 
----
+- Keep `swap_hands=1` in `pc-vr/settings.txt`; the game's Move mapping depends on it.
+- Engineering rules for the C++ tree are in `src/AGENTS.md`: title-specific compatibility work is
+  allowed there when justified, and automated tests are expected.
+- Match the surrounding code and `src/CONTRIBUTING.md` style; avoid new external dependencies in
+  Core. The VR/OpenXR and Move code is deliberately platform-specific and lives under
+  `src/src/core/`.
+- Keep changes focused. Do not refactor or reformat unrelated code.
+- Treat `optimizacion-graficos` as read-only: do not push to or rewrite it unless asked.
 
-## 3. Flujo de Trabajo para Nuevas Correcciones
+## Building
 
-1. Editar el código mínimo necesario en `src/`.
-2. Commit y push a `actualizacion-v0.21.0`.
-3. Esperar que GitHub Actions termine el workflow `build-windows.yml`.
-4. Ejecutar `python tools/download-artifact.py` para descargar y extraer el ejecutable a `pc-vr/shadps4.exe`.
-5. Probar con el usuario a través de `Play Deracine VR.bat`.
+- Externals: run `python tools/fetch-submodules.py` from the repo root. `git submodule update`
+  does nothing here; `src/.gitmodules` is only the fetch list.
+- CI: `.github/workflows/build-windows.yml` builds with LLVM/Clang or MSVC;
+  `python tools/download-artifact.py` pulls the result into `pc-vr/`.
+- Local Windows build quirks (clang-cl, LLVM 23, `-DHAVE_ENDIAN_H:INTERNAL=`, pinned
+  `magic_enum` v0.9.7, `ENABLE_TESTS=ON` replacing the emulator target) are documented in
+  `_build/SETUP.md` in the parent worktree, which is not tracked here.
+
+## Running
+
+`Play Deracine VR.bat` reads `pc-vr/settings.txt` and launches `pc-vr/shadps4.exe`. The game dump
+lives in `games/` or is selected in the launcher.
