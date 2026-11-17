@@ -865,6 +865,13 @@ void Image::CopyImage(Image& src_image) {
     if (std::addressof(src_image) == this) {
         return;
     }
+    // Diagnostic only, default off: reverse the layer<->slice order of the 32-cubed colour LUT
+    // so a headset test can tell whether the classroom's red patches come from the axis order of
+    // the 2D-array <-> 3D-volume alias. Not a fix; not enabled by default.
+    static const bool lut_flip = [] {
+        const char* value = std::getenv("SHADPS4_DBG_LUT_AXIS");
+        return value != nullptr && (value[0] == 'f' || value[0] == 'F');
+    }();
     Core::Vr::FrameTimeline::MarkStr("img_copy", "", static_cast<u32>(info.size.width), static_cast<u32>(info.size.height));
     {
         // SHADPS4_DBG_IMGCOPY=1: what each full-surface copy is, for judging whether it
@@ -946,6 +953,7 @@ void Image::CopyImage(Image& src_image) {
         region.dstSubresource.mipLevel = mip;
         region.dstSubresource.baseArrayLayer = 0;
 
+        bool produced = false;
         if (is_same_type) {
             // 2D->2D OR 3D->3D
             if (src_is_3d) {
@@ -972,9 +980,38 @@ void Image::CopyImage(Image& src_image) {
             region.extent = vk::Extent3D(mip_w, mip_h, dst_layers);
         }
 
-        regions.push_back(region);
-        copy_bytes += static_cast<u64>(region.extent.width) * region.extent.height *
-                      region.extent.depth * (info.num_bits / 8);
+        if (lut_flip && mip_d == 32 &&
+            (src_info.guest_address == 0x2008f80000 || info.guest_address == 0x2008f80000) &&
+            (is_2d_to_3d || is_3d_to_2d)) {
+            for (u32 s = 0; s < mip_d; ++s) {
+                vk::ImageCopy flipped{};
+                flipped.srcSubresource = region.srcSubresource;
+                flipped.dstSubresource = region.dstSubresource;
+                flipped.extent = vk::Extent3D(mip_w, mip_h, 1);
+                if (is_2d_to_3d) {
+                    flipped.srcSubresource.baseArrayLayer = s;
+                    flipped.srcSubresource.layerCount = 1;
+                    flipped.dstSubresource.baseArrayLayer = 0;
+                    flipped.dstSubresource.layerCount = 1;
+                    flipped.dstOffset = {0, 0, static_cast<int32_t>(mip_d - 1 - s)};
+                } else {
+                    flipped.srcSubresource.baseArrayLayer = 0;
+                    flipped.srcSubresource.layerCount = 1;
+                    flipped.srcOffset = {0, 0, static_cast<int32_t>(mip_d - 1 - s)};
+                    flipped.dstSubresource.baseArrayLayer = s;
+                    flipped.dstSubresource.layerCount = 1;
+                }
+                regions.push_back(flipped);
+                copy_bytes += static_cast<u64>(mip_w) * mip_h * (info.num_bits / 8);
+            }
+            produced = true;
+        }
+
+        if (!produced) {
+            regions.push_back(region);
+            copy_bytes += static_cast<u64>(region.extent.width) * region.extent.height *
+                          region.extent.depth * (info.num_bits / 8);
+        }
     }
     ImageStats::NoteCopy(copy_bytes);
 
@@ -1396,3 +1433,4 @@ void Image::SetBackingSamples(u32 num_samples, bool copy_backing) {
 }
 
 } // namespace VideoCore
+

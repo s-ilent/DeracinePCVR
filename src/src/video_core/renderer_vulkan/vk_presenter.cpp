@@ -1922,7 +1922,14 @@ void Presenter::DumpGpuImages(std::string_view folder) {
             const u32 h = std::max(info.size.height >> level, 1u);
             const u32 units_w = block ? (w + 3) / 4 : w;
             const u32 units_h = block ? (h + 3) / 4 : h;
-            const u64 bytes = u64{units_w} * units_h * unit * info.resources.layers;
+            // A 3D image has one layer and `size.depth` slices; the layer-based dump below would
+            // read only slice 0 of it. Dump the whole volume so a 3D LUT can be compared with the
+            // 2D-array form it is aliased with.
+            const bool volume = info.size.depth > 1;
+            const u32 slices = volume ? std::max(info.size.depth >> level, 1u) : 1u;
+            const u32 dumped_layers = volume ? 1u : info.resources.layers;
+            const u64 bytes =
+                u64{units_w} * units_h * unit * (volume ? slices : info.resources.layers);
             VideoCore::Buffer buffer{instance,
                                      draw_scheduler,
                                      VideoCore::MemoryUsage::Download,
@@ -1943,17 +1950,17 @@ void Presenter::DumpGpuImages(std::string_view folder) {
                                                           : vk::ImageAspectFlagBits::eColor,
                         .mipLevel = level,
                         .baseArrayLayer = 0,
-                        .layerCount = info.resources.layers,
+                        .layerCount = dumped_layers,
                     },
                 .imageOffset = {0, 0, 0},
-                .imageExtent = {w, h, 1},
+                .imageExtent = {w, h, volume ? slices : 1u},
             };
             cmdbuf.copyImageToBuffer(image->GetImage(), vk::ImageLayout::eTransferSrcOptimal,
                                      buffer.Handle(), region);
             draw_scheduler.Finish();
             const auto path =
                 dump_dir / fmt::format("image_{:x}_level{}_{}x{}x{}_{}.bin", info.guest_address,
-                                       level, w, h, info.resources.layers,
+                                       level, w, h, volume ? slices : info.resources.layers,
                                        vk::to_string(info.pixel_format));
             std::ofstream out{path, std::ios::binary};
             out.write(reinterpret_cast<const char*>(buffer.mapped_data.data()),
