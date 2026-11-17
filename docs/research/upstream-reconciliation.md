@@ -17,20 +17,29 @@ ports from (`699009c`, `d3ff0e0`, `ee0364a`, `6add101`, `851c9ff`) are also pres
 the `upstream` remote, which is what let the *claims* be checked against the real upstream diffs
 rather than against the commit messages.
 
-**Note — the candidate branch moved during the analysis.** At the start of this session
-`wt-crossfork-int` was at `2498976` with one uncommitted file; while the analysis ran, another
-agent committed that work, then more diagnostics, then a recycler fix, and rewrote the tail of the
-branch more than once (tips observed: `e813b58`, then `de64a7a`+`3d375a4`, then `117a3bb`). All
-line numbers cited here are for the three-commit state `2498976` that the brief describes. None of
-those later commits changes anything quoted below: they touch `image_stats.h`, `vk_scheduler.cpp`,
-`vk_image_recycler.{h,cpp}`, and — in `image.cpp`/`image.h` — only the `UniqueImage`
-recycler-lifetime code (`UniqueImage::{~,Destroy,Create,operator=}`, roughly `image.cpp:111-200`,
-`image.h:57-95`), not `Image`'s flags, `mip_hashes`, `Upload`, `CopyImage` or `SetBackingSamples`.
-They do shift line numbers, and at the time of writing the tree also carried another agent's
-uncommitted edit to `vk_image_recycler.cpp`. Applicability was therefore re-checked against a
-scratch clone pinned at `2498976`
+**Note — the candidate branch moved during the analysis, and kept moving.** At the start of this
+session `wt-crossfork-int` was at `2498976` with one uncommitted file; another agent then committed
+that work and rewrote the tail of the branch repeatedly while this document was being written (tips
+observed: `e813b58`, `de64a7a`+`3d375a4`, `117a3bb`, `d3123a8`, `98888e2`). All line numbers cited
+here are for the three-commit state `2498976` that the brief describes, unless a passage says "at
+the tip". What the later commits change in the files this document reasons about:
+
+* `image_stats.h`, `vk_scheduler.cpp`, `vk_image_recycler.{h,cpp}` — diagnostics and the recycler,
+  not the texture-cache semantics below;
+* `image.cpp` / `image.h` — only the `UniqueImage` recycler-lifetime code
+  (`UniqueImage::{~,Destroy,Create,operator=}`, roughly `image.cpp:111-200`, `image.h:57-95`), not
+  `Image`'s `flags`, `mip_hashes`, `Upload`, `CopyImage` or `SetBackingSamples`;
+* `src/tests/CMakeLists.txt` — `d3123a8` adds three include-path lines to A1's coverage-test block;
+* `texture_cache.cpp` — `7a2b042` adds the `ASSERT` and the port comment in `ExpandImage` that
+  §3.3/§3.6 refer to as already landed, and an earlier commit adds `ImageStats::SetAllocator` at
+  line ~191.
+
+So no quoted region is contradicted; the later commits shift line numbers and, in two places this
+document points at explicitly, add exactly the invariant it recommends. Applicability was therefore
+re-checked against a scratch clone pinned at `2498976`
 (`%TEMP%\deracine-int-2498976`, a `--shared` clone, so no tree under `M:\` was touched or
-dirtied by the checks).
+dirtied by the checks), and the two conflicted commits were re-checked once more at the final tip
+(same result, §1).
 
 Method for item 2: `git -C <tree> show <sha> -- src | git -C <tree> apply --check --3way -`.
 `--check` never writes the working tree, and the index was verified untouched by comparing
@@ -418,13 +427,12 @@ array type, since `NumLayers()` for `Color2DMsaa` is 1) but not excluded by any 
    The alternative (make `RefreshImage` upload multisampled images) is a different, larger change
    and outside this reconciliation.
 
-An invariant worth adding with them, so the composition cannot silently rot:
-
-```cpp
-    ASSERT(carries_contents || covered.CoversNothing());
-```
-
-It is exactly the property the unguarded adoption violates, and it costs nothing in release.
+The invariant is no longer hypothetical: while this analysis was being written, commit `7a2b042`
+added `ASSERT(carries_contents || covered.CoversNothing());` to `ExpandImage` and spelled the
+required port expression out in the comment above `carries_contents` (now
+`texture_cache.cpp:1011` at the tip, which still reads `const bool carries_contents = true;`). The
+assert is inert while `carries_contents` is `true`; it exists to turn an unguarded adoption of
+#5444 into a debug abort instead of the silent undefined destination described by rows (b)–(g).
 
 ### 3.4 Why the unguarded adoption is not caught today
 
@@ -497,7 +505,7 @@ candidate's block and make three edits, in the candidate's own layout (line numb
     const bool carries_contents = src_has_gpu_data || src_image.info.num_samples > 1;
 ```
 
-2. Before the copy at `1046`, make the composition checkable:
+2. Before the copy at `1046`, make the composition checkable — **already landed**, as `7a2b042`:
 
 ```cpp
     ASSERT(carries_contents || covered.CoversNothing());
@@ -572,11 +580,12 @@ coverage path. Everything else is about keeping conflicted or semantically entan
 * `src/tests/CMakeLists.txt` — **conflicts, and should not be cherry-picked as-is.** The patch
   inserts its block after `gtest_discover_tests(shadps4_image_subresource_test …)`, which is
   exactly where A1 already inserted `shadps4_image_coverage_test`
-  (`src/tests/CMakeLists.txt:1091-1121` at `2498976`). Two merge regions result (the header +
-  `add_executable` block, and the link/`TEST_TARGETS` block). The resolution is mechanical: keep
-  A1's block and add the mip block after it; both use the same
-  `list(APPEND TEST_TARGETS …)` + `gtest_discover_tests` pattern, so the merged file is a plain
-  concatenation.
+  (`src/tests/CMakeLists.txt:1091-1121` at `2498976`; `d3123a8` later added three include-path
+  lines to that same block, which does not move the anchor). Two merge regions result (the header +
+  `add_executable` block, and the link/`TEST_TARGETS` block), and re-checking at the final tip
+  gives the same two-region conflict. The resolution is mechanical: keep A1's block and add the
+  mip block after it; both use the same `list(APPEND TEST_TARGETS …)` + `gtest_discover_tests`
+  pattern, so the merged file is a plain concatenation.
 
 What needs adapting: essentially nothing beyond that insertion point. Every library the patch
 links (`GTest::gtest_main`, `Vulkan::Headers`, `fmt::fmt`, `spdlog::spdlog`,
@@ -660,10 +669,11 @@ ported commit does not contain it.
 
 ## 8. Git cleanliness
 
-No tree was modified by this analysis. `git apply --check --3way` was verified index-neutral by
-comparing `git write-tree` before and after the batch (identical, `8c63985d…`), and every real
-application was done in `%TEMP%\deracine-int-2498976`, a `--shared` clone, never in a worktree
-under `M:\`. The scratch clone was reset with `git reset --hard` between checks and ended clean.
+No source tree was modified by this analysis; the only file created or edited is this document.
+`git apply --check --3way` was verified index-neutral by comparing `git write-tree` before and
+after the batch (identical, `8c63985d…`), and every real application was done in
+`%TEMP%\deracine-int-2498976`, a `--shared` clone, never in a worktree under `M:\`. The scratch
+clone was reset with `git reset --hard` between checks and ended clean.
 
 Final `git status --porcelain` (taken at the end of the analysis):
 
@@ -671,9 +681,13 @@ Final `git status --porcelain` (taken at the end of the analysis):
 |---|---|---|
 | `DeracinePCVR` | `de9c78c` | pre-existing only, untouched by me: ` M pc-vr/shadps4.exe` and six untracked files (`docs/AUTONOMOUS.md`, `o`, `pc-vr/render-config.ps1`, `pc-vr/shadps4.exe.before-r58`, `pc-vr/shadps4.v0.21.0-bundled.bak`, `pc-vr/user/config.json.bak`) |
 | `wt-sync` | `24b8620` | clean |
-| `wt-crossfork-int` | `117a3bb` (was `2498976` when the brief was written) | `?? docs/research/` — this document, the only file I created — plus ` M src/src/video_core/renderer_vulkan/vk_image_recycler.cpp`, which is another agent's in-flight edit in the same worktree, not mine |
+| `wt-crossfork-int` | `98888e2` (was `2498976` when the brief was written) | ` M docs/research/upstream-reconciliation.md` — this document, and nothing else. Another agent committed an earlier revision of it in `98888e2` (`docs(research): …`) while the analysis was finishing; the modification shown is the accuracy pass applied afterwards (the already-landed `7a2b042` assert, the final tip, two corrected line citations). No source file was touched by me. |
 
-The candidate worktree is shared with an agent that is actively rewriting the branch (see §0), so
+So the only dirtiness this analysis leaves anywhere is the deliverable itself, in a tree shared
+with an agent that also edits it.
+
+The candidate worktree is shared with an agent that rewrote the branch repeatedly while this was
+being written (tips observed: `e813b58`, `de64a7a`+`3d375a4`, `117a3bb`, `d3123a8`, `98888e2`), so
 its `HEAD` and dirty set change independently of this document; the values above are a snapshot,
 not a guarantee. Nothing in this analysis staged, committed, rebased, checked out or reverted
-anything in any tree.
+anything in any tree; I never ran a git command that writes.

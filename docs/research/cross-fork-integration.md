@@ -72,21 +72,31 @@ behaviour" means for a change whose benefit is CPU-side and whose risk is anothe
 
 Full document: [upstream-reconciliation.md](upstream-reconciliation.md). Summary:
 
-- **None of the five are in `de9c78c`.** All are in `wt-sync` `24b8620` (unmerged), and all but
-  #4953 apply to this candidate — four cleanly, #5444 with one insertion-point conflict in
-  `ExpandImage` because this branch grew its coverage block in exactly the place the patch anchors.
+- **None of the five are in `de9c78c`.** All are in `wt-sync` `24b8620` (unmerged). Applied to this
+  candidate: `7ec75b2`, `09c7ecc`, `6be27a6` and `e94f26d` apply cleanly; `8ccb420` and `24b8620`
+  apply cleanly once their predecessors are in; `9af68f2` conflicts in one hunk (an insertion-point
+  collision with this branch's `carries_contents` block in `ExpandImage`) and `4610df7`'s CMake
+  block collides with the `shadps4_image_coverage_test` block at the same anchor (its test file
+  applies cleanly). `8ccb420` is worth noting as *not* an upstream port: it fixes a hazard that
+  `e94f26d` itself introduces (a slot-vector reallocation invalidating a held image reference).
 - **#5444 must not be adopted without moving the coverage gate with it.** The reconciliation works
   through every dirty/GPU-modified state combination; with the copy made conditional and the
   coverage not, destination levels are never written. The failure would be invisible today (the skip
   is opt-in), which is the worst kind. `7a2b042` adds the assertion and spells out the expression the
   port needs: `src_image.SafeToDownload() || src_image.info.num_samples > 1` (the second term because
-  `RefreshImage` declines multisampled images, making the copy the only writer there).
+  `RefreshImage` declines multisampled images, making the copy the only writer there). A1's predicate
+  and #5444 are complementary, not contradictory: A1 answers *where* the copy writes, #5444 *whether*
+  it runs. The brief's premise that upstream #5444 carries "overwrites reasoning" does not hold —
+  upstream's change is 11 lines and a `HasGpuValidData()` gate, with no coverage logic at all.
 - **#5433 needs a companion edit**: after `CopyMip` into a freshly created parent, the parent holds
   GPU-authored texels but `GpuModified` is clear, so a later expansion under #5444's gate would drop
   what #5433 just preserved. Mark it (or gate that copy) in a separate, labelled commit.
-- **Recommended order**: #5453 (mip bounds) → #5599 (trailing GPU-written images) → #5444 with the
-  coverage guard → #5433 + the `GpuModified` companion → #5495 (physical-area carving) → then the
-  A1 coverage switch may be considered for a title that needs it. #4953 stays deferred.
+- **Recommended order** (each step's reason is in the reconciliation's table): `7ec75b2` → `24b8620`
+  → `09c7ecc` → `6be27a6` → `e94f26d` → `8ccb420` → `9af68f2` **with both guards in the same
+  commit** → the optional #5433 `GpuModified` companion → `4610df7`. Only real constraints:
+  `7ec75b2` before `24b8620`, `e94f26d` before `8ccb420`, `6be27a6` before `9af68f2` (it keeps the
+  new gate from copying planes whose truth is in the buffer cache), `7ec75b2` before any enabled
+  coverage path. #4953 stays deferred.
 - Not adopted here: adopting behaviour-changing renderer fixes needs the same matched-scene and
   gameplay gates, and the machine is unavailable for them. Duplicating them would also violate the
   "do not duplicate existing local fixes" instruction — they live in `wt-sync` and must be taken from
