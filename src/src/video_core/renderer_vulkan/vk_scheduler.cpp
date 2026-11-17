@@ -32,15 +32,56 @@
 #include <renderdoc_app.h>
 
 namespace {
-/// SHADPS4_DBG_RDOC_CAPTURE=<seconds>: with the process started under RenderDoc, asks it for one
-/// capture of the first frame presented that long after the first one. A scene can then be captured
-/// without a key being pressed, which the frame a benchmark measures needs.
-void MaybeTriggerRenderDocCapture() {
-    static const double at_seconds = [] {
-        const char* value = std::getenv("SHADPS4_DBG_RDOC_CAPTURE");
-        return value != nullptr ? std::atof(value) : 0.0;
+/// RenderDoc capture request. One capture can be asked for in two ways:
+///
+///   SHADPS4_DBG_RDOC_CAPTURE=<seconds>
+///       the first frame presented that long after the first one;
+///   SHADPS4_DBG_RDOC_CAPTURE_SCENE=<draws>,<mpx>
+///       only once a frame-stats window has reported at least that many draws and that much target
+///       area per frame, so the capture lands on the scene a benchmark measures instead of on
+///       whatever the title happens to show at a chosen second. Needs SHADPS4_FRAME_STATS=1, and a
+///       short SHADPS4_FRAME_STATS_EVERY so the window that matches is the scene's first one.
+///
+/// Both may be given, and then both have to hold. Nothing fires unless the process was started
+/// under RenderDoc (renderdoc.dll loaded); the emulator disables RenderDoc's own capture keys, so
+/// this request is the only way a capture is taken from inside the title.
+struct RdocCaptureRequest {
+    double at_seconds{};
+    u32 scene_draws{};
+    double scene_mpx{};
+
+    bool WantsScene() const {
+        return scene_draws != 0;
+    }
+    bool Wants() const {
+        return at_seconds > 0.0 || WantsScene();
+    }
+};
+
+/// Set by the frame-stats window when it saw the scene the request describes.
+std::atomic<bool> g_rdoc_scene_matched{};
+
+const RdocCaptureRequest& RdocCapture() {
+    static const RdocCaptureRequest request = [] {
+        RdocCaptureRequest parsed{};
+        if (const char* value = std::getenv("SHADPS4_DBG_RDOC_CAPTURE"); value != nullptr) {
+            parsed.at_seconds = std::atof(value);
+        }
+        if (const char* value = std::getenv("SHADPS4_DBG_RDOC_CAPTURE_SCENE"); value != nullptr) {
+            const char* comma = std::strchr(value, ',');
+            if (comma != nullptr) {
+                parsed.scene_draws = static_cast<u32>(std::strtoul(value, nullptr, 10));
+                parsed.scene_mpx = std::atof(comma + 1);
+            }
+        }
+        return parsed;
     }();
-    if (at_seconds <= 0.0) {
+    return request;
+}
+
+void MaybeTriggerRenderDocCapture() {
+    const RdocCaptureRequest& request = RdocCapture();
+    if (!request.Wants()) {
         return;
     }
     static RENDERDOC_API_1_6_0* api = []() -> RENDERDOC_API_1_6_0* {
@@ -70,12 +111,37 @@ void MaybeTriggerRenderDocCapture() {
     }
     const double since =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-    if (since < at_seconds) {
+    if (request.at_seconds > 0.0 && since < request.at_seconds) {
+        return;
+    }
+    if (request.WantsScene() && !g_rdoc_scene_matched.load(std::memory_order_relaxed)) {
         return;
     }
     api->TriggerCapture();
     fired = true;
-    LOG_INFO(Render_Vulkan, "RDOC capture triggered {:.1f} s after the first frame", since);
+    LOG_INFO(Render_Vulkan, "RDOC capture triggered {:.1f} s after the first frame{}", since,
+             request.WantsScene() ? ", on a frame-stats window that matched the scene gate"
+                                  : "");
+}
+
+/// The frame-stats window has enough of the scene for the request's gate: arm the capture for the
+/// next frame. Called with the window's own averages, before the log line consumes the counters.
+void NoteRdocSceneWindow(u64 draws_in_window, u64 pixels_in_window, u64 frames_in_window) {
+    const RdocCaptureRequest& request = RdocCapture();
+    if (!request.WantsScene() || frames_in_window == 0 ||
+        g_rdoc_scene_matched.load(std::memory_order_relaxed)) {
+        return;
+    }
+    const double draws_per_frame = static_cast<double>(draws_in_window) / frames_in_window;
+    const double mpx_per_frame =
+        static_cast<double>(pixels_in_window) / frames_in_window / 1e6;
+    if (draws_per_frame < static_cast<double>(request.scene_draws) ||
+        mpx_per_frame < request.scene_mpx) {
+        return;
+    }
+    g_rdoc_scene_matched.store(true, std::memory_order_relaxed);
+    LOG_INFO(Render_Vulkan, "RDOC scene gate met: {:.0f} draws and {:.1f} Mpx a frame",
+             draws_per_frame, mpx_per_frame);
 }
 } // Anonymous namespace
 
@@ -94,6 +160,11 @@ struct Tally {
 
     void Add(u64 amount = 1) {
         value.store(value.load(std::memory_order_relaxed) + amount, std::memory_order_relaxed);
+    }
+
+    /// What has been added since the last Take(), without taking it.
+    u64 PeekWindow() const {
+        return value.load(std::memory_order_relaxed) - taken;
     }
 
     u64 Take() {
@@ -590,6 +661,7 @@ void FrameStats::EndFrame() {
         }
     }
     const double n = static_cast<double>(frames);
+    NoteRdocSceneWindow(c.draws.PeekWindow(), c.pass_pixels.PeekWindow(), frames);
     static const auto start = now;
     std::string ab;
     if (ab_period > 0.0) {
