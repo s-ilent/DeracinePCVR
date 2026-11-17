@@ -13,6 +13,7 @@
 #include "core/vr/vr_runtime.h"
 #include "imgui/renderer/imgui_core.h"
 #include "input/controller.h"
+#include "input/guest_frame.h"
 #include "pad.h"
 
 #include <algorithm>
@@ -23,6 +24,66 @@ namespace Libraries::Pad {
 using Input::GameController;
 using Input::GameControllers;
 using namespace Libraries::UserService;
+
+namespace {
+
+/// Test-only (SHADPS4_VR_MOVE_FROM_PAD): with no OpenXR host feeding the Move controllers, the
+/// emulated DualShock stands in for both, so a headless run can drive a Move-pointer menu. The
+/// bits are the ones the OpenXR path gives the title, and the same meaning libSceMove reads:
+///   1 trigger digital click, 2 Move button (teleport/crouch), 3 options, 4 triangle,
+///   5 circle, 6 cross, 7 square.
+void UpdateMoveInputFromPad(const OrbisPadData& pad) {
+    auto& vr = Core::Vr::Runtime::Instance();
+    if (vr.ScriptedHandInputActive()) {
+        return;
+    }
+    const auto held = [&](OrbisPadButtonDataOffset button) {
+        return True(pad.buttons & button);
+    };
+    const auto axis = [](int value) { return static_cast<u8>(std::clamp(value, 0, 255)); };
+    const int right_x = static_cast<int>(pad.rightStick.x) - 128;
+    const int right_y = static_cast<int>(pad.rightStick.y) - 128;
+
+    u16 right = 0;
+    // The right Move (the one that points): trigger, centre Move button, inspect, turn.
+    if (pad.analogButtons.r2 > 31) {
+        right |= (1 << 1); // trigger digital click: grab / interact
+        right |= (1 << 2); // Move button
+    }
+    if (held(OrbisPadButtonDataOffset::Cross) || held(OrbisPadButtonDataOffset::Square)) {
+        right |= (1 << 7) | (1 << 4); // Square + Triangle: inspect / interact
+    }
+    if (held(OrbisPadButtonDataOffset::Options)) {
+        right |= (1 << 3); // Start / Options
+    }
+    if (right_x < -63) {
+        right |= (1 << 6); // Cross: snap turn left
+    }
+    if (right_x > 63) {
+        right |= (1 << 5); // Circle: snap turn right
+    }
+    if (right_y < -63) {
+        right |= (1 << 2); // Move button: teleport
+    }
+
+    u16 left = 0;
+    // The left Move: trigger, Circle (object menu) and Triangle (watch / inspect).
+    if (pad.analogButtons.l2 > 31) {
+        left |= (1 << 1);
+        left |= (1 << 2); // Move button: crouch
+    }
+    if (held(OrbisPadButtonDataOffset::Circle)) {
+        left |= (1 << 6); // Cross: inventory
+    }
+    if (held(OrbisPadButtonDataOffset::Triangle)) {
+        left |= (1 << 7) | (1 << 4); // Square + Triangle: watch / inspect
+    }
+
+    vr.UpdateHandInput(0, right, axis(pad.analogButtons.r2));
+    vr.UpdateHandInput(1, left, axis(pad.analogButtons.l2));
+}
+
+} // namespace
 
 struct HandleKey {
     OrbisUserServiceUserId id;
@@ -419,6 +480,9 @@ int PS4_SYSV_ABI scePadOutputReport() {
 
 int ProcessStates(s32 handle, OrbisPadData* pData, Input::GameController& controller,
                   Input::State* states, s32 num, bool connected, u32 connected_count) {
+    // A guest frame for scripted tests: the title polling its pads is the clock a frame-relative
+    // script counts on (see Input::GuestFrame).
+    Input::NoteGuestFrame();
     if (!connected) {
         pData[0] = {};
         pData[0].orientation = {0.0f, 0.0f, 0.0f, 1.0f};
@@ -553,6 +617,16 @@ int ProcessStates(s32 handle, OrbisPadData* pData, Input::GameController& contro
         pData[i].timestamp = states[i].time;
         pData[i].connectedCount = connected_count;
         pData[i].deviceUniqueDataLen = 0;
+    }
+
+    // Test-only: with no OpenXR host the Move controllers get none of what the pad does; a
+    // headless run that needs them (the title's Move-pointer menu) asks for this mapping.
+    static const bool move_from_pad = [] {
+        const char* value = std::getenv("SHADPS4_VR_MOVE_FROM_PAD");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    if (move_from_pad && num > 0) {
+        UpdateMoveInputFromPad(pData[num - 1]);
     }
 
     // SHADPS4_PAD_TOUCH_TRACE=1: what the title is given of the touchpad, read by read, for

@@ -282,6 +282,12 @@ public:
     DeviceState GetHand(int hand_idx);
     void UpdateHandInput(int hand_idx, u16 buttons, u8 trigger);
     HandInputState GetHandInput(int hand_idx);
+    /// Test-only (SHADPS4_VR_MOVE_FROM_PAD / a script's move0= / move1=): hand buttons and
+    /// trigger that win over UpdateHandInput until cleared. Lets a headless run drive the Move
+    /// while no OpenXR host feeds one.
+    void SetScriptedHandInput(int hand_idx, u16 buttons, u8 trigger);
+    void ClearScriptedHandInput(int hand_idx);
+    bool ScriptedHandInputActive() const;
     void SetHandVibration(int hand_idx, u8 intensity);
     u8 GetHandVibration(int hand_idx);
 
@@ -375,6 +381,10 @@ private:
     u32 frame_counter{};
     std::array<DeviceState, 2> hands{};
     std::array<HandInputState, 2> hand_inputs{};
+    std::array<HandInputState, 2> scripted_hand_inputs{};
+    std::array<bool, 2> scripted_hand_input_set{};
+    /// Sample counters for hands a host never fed (SHADPS4_VR_HANDS), so a title sees them move.
+    std::array<u64, 2> synthetic_hand_sequences{};
     std::array<u8, 2> hand_vibrations{};
 };
 
