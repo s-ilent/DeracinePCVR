@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 
 #include "video_core/renderer_vulkan/vk_foveation.h"
@@ -11,6 +12,7 @@
 #include "video_core/texture_cache/blit_helper.h"
 #include "video_core/texture_cache/image.h"
 
+#include "video_core/host_shaders/color_to_depth32_frag.h"
 #include "video_core/host_shaders/color_to_ms_depth_frag.h"
 #include "video_core/host_shaders/fs_tri_vert.h"
 #include "video_core/host_shaders/ms_image_blit_frag.h"
@@ -32,6 +34,7 @@ BlitHelper::~BlitHelper() {
     const auto device = instance.GetDevice();
     device.destroy(fs_tri_vertex);
     device.destroy(color_to_ms_depth_frag);
+    device.destroy(color_to_depth32_frag);
     device.destroy(src_msaa_copy_frag);
     device.destroy(src_non_msaa_copy_frag);
     device.destroy(resolve_aa_frag);
@@ -367,12 +370,214 @@ void BlitHelper::SmoothInto(u32 width, u32 height, vk::Format src_pixel_format,
     scheduler.GetDynamicState().Invalidate();
 }
 
+namespace {
+/// GPU time of the colour-to-depth passes, reported once a second under SHADPS4_DBG_XFER.
+struct ColorToDepthTiming {
+    static constexpr u32 Capacity = 512;
+    vk::QueryPool pool{};
+    u32 used{};
+    long long last_report{};
+};
+ColorToDepthTiming g_color_to_depth_timing;
+} // Anonymous namespace
+
+void BlitHelper::CopyColorToDepth32(u32 width, u32 height, vk::Image source,
+                                    vk::Format src_pixel_format, vk::Image dest,
+                                    vk::Format dst_pixel_format) {
+    // Like an image copy, this starts a pass of its own: whatever pass was open is closed first.
+    scheduler.EndRendering();
+
+    // The stencil plane is not part of what is being written, so it is loaded and stored as it is.
+    // Its view has to cover it all the same: the same view is handed to the pass as both the depth
+    // and the stencil attachment, and a stencil attachment needs a view with the stencil aspect.
+    // A pass that names both aspects must use the combined layout: the depth-only layout is not a
+    // valid layout for a stencil attachment.
+    const bool has_stencil = dst_pixel_format == vk::Format::eD32SfloatS8Uint ||
+                             dst_pixel_format == vk::Format::eD24UnormS8Uint ||
+                             dst_pixel_format == vk::Format::eD16UnormS8Uint;
+    const vk::ImageAspectFlags depth_aspects =
+        has_stencil ? vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil
+                    : vk::ImageAspectFlagBits::eDepth;
+    const vk::ImageLayout depth_layout =
+        has_stencil ? vk::ImageLayout::eDepthStencilAttachmentOptimal
+                    : vk::ImageLayout::eDepthAttachmentOptimal;
+
+    const vk::ImageViewUsageCreateInfo color_usage_ci{.usage = vk::ImageUsageFlagBits::eSampled};
+    const vk::ImageViewCreateInfo color_view_ci = {
+        .pNext = &color_usage_ci,
+        .image = source,
+        .viewType = vk::ImageViewType::e2D,
+        .format = src_pixel_format,
+        .subresourceRange{
+            .aspectMask = vk::ImageAspectFlagBits::eColor,
+            .baseMipLevel = 0U,
+            .levelCount = 1U,
+            .baseArrayLayer = 0U,
+            .layerCount = 1U,
+        },
+    };
+    const auto [color_view_result, color_view] =
+        instance.GetDevice().createImageView(color_view_ci);
+    ASSERT_MSG(color_view_result == vk::Result::eSuccess, "Failed to create image view: {}",
+               vk::to_string(color_view_result));
+
+    const vk::ImageViewUsageCreateInfo depth_usage_ci{
+        .usage = vk::ImageUsageFlagBits::eDepthStencilAttachment};
+    const vk::ImageViewCreateInfo depth_view_ci = {
+        .pNext = &depth_usage_ci,
+        .image = dest,
+        .viewType = vk::ImageViewType::e2D,
+        .format = dst_pixel_format,
+        .subresourceRange{
+            .aspectMask = depth_aspects,
+            .baseMipLevel = 0U,
+            .levelCount = 1U,
+            .baseArrayLayer = 0U,
+            .layerCount = 1U,
+        },
+    };
+    const auto [depth_view_result, depth_view] =
+        instance.GetDevice().createImageView(depth_view_ci);
+    ASSERT_MSG(depth_view_result == vk::Result::eSuccess, "Failed to create image view: {}",
+               vk::to_string(depth_view_result));
+    scheduler.DeferOperation([device = instance.GetDevice(), color_view, depth_view] {
+        device.destroyImageView(color_view);
+        device.destroyImageView(depth_view);
+    });
+
+    Vulkan::RenderState state{};
+
+    state.width = width;
+    state.height = height;
+    state.num_layers = 1;
+    state.depth_stencil_attachment.image_view = depth_view;
+    state.depth_stencil_attachment.image_layout = depth_layout;
+    state.depth_stencil_attachment.has_depth = true;
+    state.depth_stencil_attachment.depth_clear = false;
+    state.depth_stencil_attachment.has_stencil = has_stencil;
+    state.depth_stencil_attachment.stencil_clear = false;
+    scheduler.BeginRendering(state);
+
+    const auto cmdbuf = scheduler.CommandBuffer();
+    const vk::DescriptorImageInfo image_info = {
+        .sampler = VK_NULL_HANDLE,
+        .imageView = color_view,
+        .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+    };
+    const vk::WriteDescriptorSet texture_write = {
+        .dstSet = VK_NULL_HANDLE,
+        .dstBinding = 0U,
+        .dstArrayElement = 0U,
+        .descriptorCount = 1U,
+        .descriptorType = vk::DescriptorType::eSampledImage,
+        .pImageInfo = &image_info,
+    };
+    if (uses_push_descriptors) {
+        cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eGraphics, *single_texture_pl_layout, 0U,
+                                    texture_write);
+    } else {
+        const auto desc_set = desc_heap.Commit(*single_texture_descriptor_set_layout);
+        vk::WriteDescriptorSet set_write = texture_write;
+        set_write.dstSet = desc_set;
+        instance.GetDevice().updateDescriptorSets(set_write, {});
+        cmdbuf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *single_texture_pl_layout, 0U,
+                                  desc_set, {});
+    }
+
+    vk::Pipeline* pipeline = nullptr;
+    for (auto& [format, owned] : color_to_depth32_pl) {
+        if (format == dst_pixel_format) {
+            pipeline = &*owned;
+            break;
+        }
+    }
+    if (pipeline == nullptr) {
+        CreateColorToDepth32Pipeline(dst_pixel_format);
+        pipeline = &*color_to_depth32_pl.back().second;
+    }
+    cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline);
+
+    const vk::Viewport viewport = {
+        .x = 0,
+        .y = 0,
+        .width = float(state.width),
+        .height = float(state.height),
+        .minDepth = 0.f,
+        .maxDepth = 1.f,
+    };
+    cmdbuf.setViewportWithCount(viewport);
+
+    const vk::Rect2D scissor = {
+        .offset = {0, 0},
+        .extent = {state.width, state.height},
+    };
+    cmdbuf.setScissorWithCount(scissor);
+
+    static const bool time_pass = [] {
+        const char* value = std::getenv("SHADPS4_DBG_XFER");
+        return value != nullptr && value[0] == '1';
+    }();
+    auto& timing = g_color_to_depth_timing;
+    const bool timed = time_pass && timing.used + 2 <= ColorToDepthTiming::Capacity;
+    if (timed) {
+        if (!timing.pool) {
+            timing.pool = instance.GetDevice()
+                              .createQueryPool(vk::QueryPoolCreateInfo{
+                                  .queryType = vk::QueryType::eTimestamp,
+                                  .queryCount = ColorToDepthTiming::Capacity})
+                              .value;
+        }
+        cmdbuf.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, timing.pool, timing.used);
+    }
+
+    cmdbuf.draw(3, 1, 0, 0);
+
+    if (timed) {
+        cmdbuf.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, timing.pool,
+                              timing.used + 1);
+        timing.used += 2;
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now().time_since_epoch())
+                             .count();
+        if (timing.used >= ColorToDepthTiming::Capacity || now - timing.last_report >= 1000) {
+            std::array<u64, ColorToDepthTiming::Capacity> stamps{};
+            const auto read = instance.GetDevice().getQueryPoolResults(
+                timing.pool, 0, timing.used, timing.used * sizeof(u64), stamps.data(),
+                sizeof(u64), vk::QueryResultFlagBits::e64);
+            if (read == vk::Result::eSuccess) {
+                u64 total = 0;
+                u32 n = 0;
+                for (u32 q = 0; q + 1 < timing.used; q += 2) {
+                    if (stamps[q + 1] > stamps[q]) {
+                        total += stamps[q + 1] - stamps[q];
+                        ++n;
+                    }
+                }
+                if (n > 0) {
+                    LOG_INFO(Render_Vulkan,
+                             "XFER_PASS passes={} avg={:.3f} ms total={:.3f} ms", n,
+                             static_cast<double>(total) / n / 1e6,
+                             static_cast<double>(total) / 1e6);
+                }
+            }
+            instance.GetDevice().resetQueryPool(timing.pool, 0, ColorToDepthTiming::Capacity);
+            timing.used = 0;
+            timing.last_report = now;
+        }
+    }
+
+    scheduler.EndRendering();
+    scheduler.GetDynamicState().Invalidate();
+}
+
 void BlitHelper::CreateShaders() {
     const auto device = instance.GetDevice();
     fs_tri_vertex =
         Vulkan::Compile(HostShaders::FS_TRI_VERT, vk::ShaderStageFlagBits::eVertex, device);
     color_to_ms_depth_frag = Vulkan::Compile(HostShaders::COLOR_TO_MS_DEPTH_FRAG,
                                              vk::ShaderStageFlagBits::eFragment, device);
+    color_to_depth32_frag = Vulkan::Compile(HostShaders::COLOR_TO_DEPTH32_FRAG,
+                                            vk::ShaderStageFlagBits::eFragment, device);
     src_msaa_copy_frag = Vulkan::Compile(HostShaders::MS_IMAGE_BLIT_FRAG,
                                          vk::ShaderStageFlagBits::eFragment, device, {"SRC_MSAA"});
     src_non_msaa_copy_frag = Vulkan::Compile(HostShaders::MS_IMAGE_BLIT_FRAG,
@@ -616,6 +821,82 @@ void BlitHelper::CreateColorToMSDepthPipeline(const MsPipelineKey& key) {
                           vk::to_string(key.samples));
 
     color_to_ms_depth_pl.emplace_back(key, std::move(pipeline));
+}
+
+void BlitHelper::CreateColorToDepth32Pipeline(vk::Format depth_format) {
+    const bool has_stencil = depth_format == vk::Format::eD32SfloatS8Uint ||
+                             depth_format == vk::Format::eD24UnormS8Uint ||
+                             depth_format == vk::Format::eD16UnormS8Uint;
+    const vk::PipelineInputAssemblyStateCreateInfo input_assembly = {
+        .topology = vk::PrimitiveTopology::eTriangleList,
+    };
+    const vk::PipelineMultisampleStateCreateInfo multisampling = {
+        .rasterizationSamples = vk::SampleCountFlagBits::e1,
+    };
+    // Every pixel is written by the fragment shader, so the comparison has to pass whatever the
+    // destination holds and the value has to be stored as it was read.
+    const vk::PipelineDepthStencilStateCreateInfo depth_state = {
+        .depthTestEnable = true,
+        .depthWriteEnable = true,
+        .depthCompareOp = vk::CompareOp::eAlways,
+        .depthBoundsTestEnable = false,
+        .stencilTestEnable = false,
+    };
+    const std::array dynamic_states = {vk::DynamicState::eViewportWithCount,
+                                       vk::DynamicState::eScissorWithCount};
+    const vk::PipelineDynamicStateCreateInfo dynamic_info = {
+        .dynamicStateCount = static_cast<u32>(dynamic_states.size()),
+        .pDynamicStates = dynamic_states.data(),
+    };
+
+    std::array<vk::PipelineShaderStageCreateInfo, 2> shader_stages;
+    shader_stages[0] = {
+        .stage = vk::ShaderStageFlagBits::eVertex,
+        .module = fs_tri_vertex,
+        .pName = "main",
+    };
+    shader_stages[1] = {
+        .stage = vk::ShaderStageFlagBits::eFragment,
+        .module = color_to_depth32_frag,
+        .pName = "main",
+    };
+
+    // A format without a stencil component must leave the stencil attachment format undefined.
+    const vk::PipelineRenderingCreateInfo pipeline_rendering_ci = {
+        .colorAttachmentCount = 0U,
+        .pColorAttachmentFormats = nullptr,
+        .depthAttachmentFormat = depth_format,
+        .stencilAttachmentFormat = has_stencil ? depth_format : vk::Format::eUndefined,
+    };
+
+    const vk::PipelineColorBlendStateCreateInfo color_blending{};
+    const vk::PipelineViewportStateCreateInfo viewport_info{};
+    const vk::PipelineVertexInputStateCreateInfo vertex_input_info{};
+    const vk::PipelineRasterizationStateCreateInfo raster_state{.lineWidth = 1.f};
+
+    const vk::GraphicsPipelineCreateInfo pipeline_info = {
+        .pNext = &pipeline_rendering_ci,
+        .stageCount = static_cast<u32>(shader_stages.size()),
+        .pStages = shader_stages.data(),
+        .pVertexInputState = &vertex_input_info,
+        .pInputAssemblyState = &input_assembly,
+        .pViewportState = &viewport_info,
+        .pRasterizationState = &raster_state,
+        .pMultisampleState = &multisampling,
+        .pDepthStencilState = &depth_state,
+        .pColorBlendState = &color_blending,
+        .pDynamicState = &dynamic_info,
+        .layout = *single_texture_pl_layout,
+    };
+
+    auto [pipeline_result, pipeline] =
+        instance.GetDevice().createGraphicsPipelineUnique(VK_NULL_HANDLE, pipeline_info);
+    ASSERT_MSG(pipeline_result == vk::Result::eSuccess, "Failed to create graphics pipeline: {}",
+               vk::to_string(pipeline_result));
+    Vulkan::SetObjectName(instance.GetDevice(), *pipeline, "Color to depth {}",
+                          vk::to_string(depth_format));
+
+    color_to_depth32_pl.emplace_back(depth_format, std::move(pipeline));
 }
 
 void BlitHelper::CreateMsCopyPipeline(const MsPipelineKey& key) {
