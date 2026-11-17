@@ -1,0 +1,18 @@
+# M2 winner input (scene-eng m2-confirm-1, confirmed by the Lead).
+#
+# Headless menu -> Continue -> loading -> classroom gameplay, no physical headset.
+# Pose: arm's reach until 45 s, then the pointer hand at +0.30,-0.12,-0.5 from 46 s; Move button +
+# trigger (bits 1+2 = 6, trigger 255) for one second at 60, 63 and 66 s. The confirm lands at ~65 s.
+# Confirmed timing: loading 66-84 s, classroom gameplay from ~90 s, ~1866 draws / 624.6 Mpx /
+# 42-46 passes / 30-35 fps; menu 485 draws / 480 Mpx / 65 passes.
+#
+# Run with: -Gate gameplay (the harness defaults to this script for that gate),
+# -SyntheticHands on -Autopress -AutopressSeconds 45 -Env SHADPS4_MOVE_PITCH=0.
+# The harness freezes the pose at the scene anchor, so nothing is pressed during the measured
+# window.
+0 900 head=0,0,0,0,0,0
+0 45 pad=0,-0.17,-0.5,0,0,0
+46 900 pad=0.30,-0.12,-0.5,0,0,0
+60 1 move1=6,255
+63 1 move1=6,255
+66 1 move1=6,255
