@@ -54,11 +54,13 @@ struct UniqueImage {
         : allocator{std::exchange(other.allocator, VK_NULL_HANDLE)},
           allocation{std::exchange(other.allocation, VK_NULL_HANDLE)},
           image{std::exchange(other.image, VK_NULL_HANDLE)}, image_ci{std::move(other.image_ci)},
-          view_formats{std::move(other.view_formats)} {}
+          view_formats{std::move(other.view_formats)},
+          allocation_bytes{std::exchange(other.allocation_bytes, 0)} {}
     UniqueImage& operator=(UniqueImage&& other) {
         image = std::exchange(other.image, VK_NULL_HANDLE);
         allocator = std::exchange(other.allocator, VK_NULL_HANDLE);
         allocation = std::exchange(other.allocation, VK_NULL_HANDLE);
+        allocation_bytes = std::exchange(other.allocation_bytes, 0);
         image_ci = std::move(other.image_ci);
         view_formats = std::move(other.view_formats);
         return *this;
@@ -92,6 +94,9 @@ public:
     VmaAllocation allocation{};
     vk::Image image{};
     vk::ImageCreateInfo image_ci{};
+    /// Size of the VMA allocation behind `image`, kept so the image can be handed to the recycler
+    /// without asking the allocator about it again.
+    u64 allocation_bytes{};
     /// Empty when views may have any compatible format.
     boost::container::static_vector<vk::Format, 4> view_formats;
 };

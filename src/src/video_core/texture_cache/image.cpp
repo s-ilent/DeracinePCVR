@@ -13,6 +13,7 @@
 #include "video_core/renderer_vulkan/vk_foveation.h"
 #include "video_core/renderer_vulkan/vk_gpu_profile.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_vulkan/vk_image_recycler.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/texture_cache/blit_helper.h"
 #include "video_core/texture_cache/image.h"
@@ -95,18 +96,35 @@ static vk::FormatFeatureFlags2 FormatFeatureFlags(const vk::ImageUsageFlags usag
 UniqueImage::~UniqueImage() {
     if (image) {
         ScopedTimer timed{ImageStats::destroy_ns};
-        ImageStats::NoteImageDestroyed();
-        vmaDestroyImage(allocator, image, allocation);
+        ImageRecycler::Entry entry;
+        entry.image_ci = image_ci;
+        entry.view_formats.assign(view_formats.begin(), view_formats.end());
+        entry.image = image;
+        entry.allocation = allocation;
+        entry.allocator = allocator;
+        entry.bytes = allocation_bytes;
+        image = vk::Image{};
+        allocation = {};
+        ImageRecycler::Get().Release(std::move(entry));
+        const auto pool = ImageRecycler::Get().Snapshot();
+        ImageStats::SetRecyclerPool(pool.images, pool.bytes, pool.destroyed);
     }
 }
 
 void UniqueImage::Destroy() {
     if (image) {
         ScopedTimer timed{ImageStats::destroy_ns};
-        ImageStats::NoteImageDestroyed();
-        vmaDestroyImage(allocator, image, allocation);
+        ImageRecycler::Entry entry;
+        entry.image_ci = image_ci;
+        entry.view_formats.assign(view_formats.begin(), view_formats.end());
+        entry.image = image;
+        entry.allocation = allocation;
+        entry.allocator = allocator;
+        entry.bytes = allocation_bytes;
         image = vk::Image{};
         allocation = {};
+        allocation_bytes = 0;
+        ImageRecycler::Get().Release(std::move(entry));
     }
 }
 
@@ -136,6 +154,23 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci,
     }
     VkImage unsafe_image{};
     VmaAllocationInfo alloc_info_out{};
+    // Same shape as an image the cache let go of a moment ago? Take it back instead of asking the
+    // driver to create another one. Its contents are the previous owner's and are never read: the
+    // new owner starts at eUndefined and discards them with its first barrier.
+    if (ImageRecycler::Enabled()) {
+        ImageRecycler::Entry recycled;
+        if (ImageRecycler::Get().Acquire(image_ci, view_formats, recycled)) {
+            image = recycled.image;
+            allocation = recycled.allocation;
+            allocator = recycled.allocator;
+            allocation_bytes = recycled.bytes;
+            ImageStats::NoteRecyclerHit();
+            const auto pool = ImageRecycler::Get().Snapshot();
+            ImageStats::SetRecyclerPool(pool.images, pool.bytes, pool.destroyed);
+            return;
+        }
+        ImageStats::NoteRecyclerMiss();
+    }
     VkResult result;
     {
         ScopedTimer timed{ImageStats::create_ns};
@@ -145,6 +180,7 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci,
     ASSERT_MSG(result == VK_SUCCESS, "Failed allocating image with error {}",
                vk::to_string(vk::Result{result}));
     ImageStats::NoteImageCreated(alloc_info_out.size);
+    allocation_bytes = alloc_info_out.size;
     image = vk::Image{unsafe_image};
 }
 
