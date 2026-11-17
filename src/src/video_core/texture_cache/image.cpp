@@ -566,10 +566,12 @@ void Image::Transit(vk::ImageLayout dst_layout, vk::AccessFlags2 dst_mask,
         // Recording the first kind inside the pass instead of breaking it is what keeps a frame from
         // storing and reloading a whole 5760x3240 target for every texture the guest moves between
         // uses: measured 89 -> 65 passes and 556 -> 481 Mpx a frame on the title screen.
-        // SHADPS4_DBG_BARRIER_IN_PASS=0 puts the old behaviour back.
+        // Off unless SHADPS4_DBG_BARRIER_IN_PASS=1: that was a synthetic 400% measurement, and
+        // the +2.6% it showed has not been reproduced in gameplay. Unset keeps ending the pass for
+        // every barrier, which is what shipped before this experiment.
         static const bool in_pass = [] {
             const char* value = std::getenv("SHADPS4_DBG_BARRIER_IN_PASS");
-            return value == nullptr || value[0] != '0';
+            return value != nullptr && value[0] == '1';
         }();
         if (!in_pass || scheduler->IsAttachmentImage(GetImage())) {
             // When using external cmdbuf you are responsible for ending rp.
