@@ -24,7 +24,7 @@ Create a smooth, "plug-and-play" PCVR experience for *Déraciné* (PS4 VR exclus
 ## 2. Directory Layout & Critical File Paths
 
 ```
-e:\DeracinePCVR\
+DeracinePCVR\
 ├── games\
 │   └── CUSA11919\                 # [IGNORED BY GIT] User's decrypted PS4 game dump (eboot.bin, gameproject-ps4.pak)
 │       └── PUT YOUR GAME HERE.txt

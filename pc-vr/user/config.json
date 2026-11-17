@@ -11,12 +11,12 @@
     "sdl_padSpk_output_device": "Default Device"
   },
   "Debug": {
-    "config_version": "e3dfdd6c942cc1ffb1d61c4f636783c65524ad84",
+    "config_version": "refs/heads/test/v0.21.0-plus-fixes",
     "debug_dump": false,
     "shader_collect": false
   },
   "GPU": {
-    "copy_gpu_buffers": true,
+    "copy_gpu_buffers": false,
     "direct_memory_access_enabled": false,
     "dump_shaders": false,
     "fast_shader_math": false,
@@ -32,7 +32,7 @@
     "present_mode": "Mailbox",
     "rcas_attenuation": 250,
     "rcas_enabled": true,
-    "readback_linear_images_enabled": false,
+    "readback_linear_images_enabled": true,
     "readbacks_mode": 1,
     "userfaultfd": false,
     "vblank_frequency": 60,

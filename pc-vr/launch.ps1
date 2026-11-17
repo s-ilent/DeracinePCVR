@@ -876,8 +876,12 @@ if ((Setting "fov_of" "headset") -ne "psvr") { $env:SHADPS4_VR_FOV_OF = "headset
 # fps: the most frames a second. (pace, the older way to say it: refreshes of the headset a
 # frame is given, 1 or more.)
 $fpsSetting = Setting "fps" "60"
-$env:SHADPS4_VR_FPS_CAP = "60"
 $env:SHADPS4_VR_REFRESH_RATE = "120"
+$fpsWanted = 60.0
+if (-not [double]::TryParse($fpsSetting, [ref]$fpsWanted)) { $fpsWanted = 60.0 }
+$env:SHADPS4_VR_FPS_CAP = "$([int][math]::Min($fpsWanted, 120.0))"
+# A frame per 120 Hz refresh (the only way past the console's 60) has to be allowed explicitly.
+if ($fpsWanted -ge 120.0) { $env:SHADPS4_VR_FASTEST_PACE = "1" }
 $pace = Setting "pace" ""
 if ($pace -eq "1") { $env:SHADPS4_VR_FASTEST_PACE = "1"; $env:SHADPS4_VR_FPS_CAP = "" } elseif ($pace -ne "" -and $pace -ne "2") { $env:SHADPS4_VR_PACE = $pace }
 if ((Setting "headset" "1") -eq "0") { $env:SHADPS4_OPENXR = "0" }
@@ -1008,6 +1012,30 @@ try {
     }
 } catch {}
 
+# --- the size the game draws its scene at -------------------------------------------------------
+# render_percent, through the engine's own Engine.ini (render-config.ps1): 100 to 300 percent of
+# a PlayStation VR's 960x1080 an eye. The headset's pictures are the resolution setting above;
+# this is the size the game itself draws. Applied on this start, never while the game runs.
+$renderOut = @()
+$renderPercent = Setting "render_percent" ""
+if ((Setting "render_restore" "0") -eq "1") {
+    $renderOut = @(& (Join-Path $here "render-config.ps1") -Eboot $game -Restore -Quiet)
+} elseif ($renderPercent -ne "") {
+    $renderOut = @(& (Join-Path $here "render-config.ps1") -Eboot $game -Percent $renderPercent -Quiet)
+}
+foreach ($line in $renderOut) {
+    if ($line -match '^render-config: (\S+) (.*)$') {
+        $state = $matches[1]
+        $detail = $matches[2]
+        switch ($state) {
+            "read-only" { Say ("The game's own settings could not be changed: " + $detail) "Yellow" }
+            "error"     { Say ("The game's render resolution was not set: " + $detail) "Yellow" }
+            "applied"   { Say ("The game draws its scene at " + $renderPercent + " percent: " + $detail) }
+            "restored"  { Say ("The game's own render settings are back: " + $detail) }
+            "nothing-to-restore" { Say "There was no copy of the game's own render settings to put back." "Yellow" }
+        }
+    }
+}
 # --- run --------------------------------------------------------------------------------------
 $logDir = Join-Path $here "user\log"
 $log = Join-Path $logDir "shad_log.txt"

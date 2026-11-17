@@ -447,12 +447,16 @@ int ProcessStates(s32 handle, OrbisPadData* pData, Input::GameController& contro
             const char* value = std::getenv("SHADPS4_DBG_AUTOPRESS");
             return value != nullptr && value[0] == '1';
         }();
+        static const long long auto_press_until = [] {
+            const char* value = std::getenv("SHADPS4_DBG_AUTOPRESS_TO");
+            return value != nullptr ? std::atoll(value) : 45000LL;
+        }();
         if (auto_press) {
             static const auto auto_start = std::chrono::steady_clock::now();
             const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                                      std::chrono::steady_clock::now() - auto_start)
                                      .count();
-            if (elapsed >= 8000 && elapsed < 45000 && (elapsed % 3000) < 600) {
+            if (elapsed >= 8000 && elapsed < auto_press_until && (elapsed % 3000) < 600) {
                 pData[i].buttons |= OrbisPadButtonDataOffset::Cross;
                 static long long last_note{};
                 if (elapsed - last_note >= 1000) {

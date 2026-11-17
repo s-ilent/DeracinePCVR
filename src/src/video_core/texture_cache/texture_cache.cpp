@@ -487,13 +487,13 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
                 const char* value = std::getenv("SHADPS4_DBG_COPY_VIA_BUFFER");
                 return value != nullptr && value[0] == '1';
             }();
-            // SHADPS4_DBG_DEPTH_PASS=1: carry a colour picture into a depth image by writing it
-            // through the depth unit instead of copying it. The words are the same 32-bit floats,
-            // but a copy from a colour format into a depth one makes the driver detile and
-            // decompress the whole depth surface first.
+            // Carry a colour picture into a depth image by writing it through the depth unit
+            // instead of copying it: the words are the same 32-bit floats, but a copy from a
+            // colour format into a depth one makes the driver detile and decompress the whole
+            // depth surface first. SHADPS4_DBG_DEPTH_PASS=0 puts the image copy back.
             static const bool via_depth_pass = [] {
                 const char* value = std::getenv("SHADPS4_DBG_DEPTH_PASS");
-                return value != nullptr && value[0] == '1';
+                return value == nullptr || value[0] != '0';
             }();
             const bool color_into_depth = !source_image.info.props.is_depth &&
                                           new_info.props.is_depth &&

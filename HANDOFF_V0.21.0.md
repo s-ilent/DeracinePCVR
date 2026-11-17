@@ -10,19 +10,9 @@
 
 ## 1. Reglas Críticas para Nuevos Agentes
 
-1. **Idioma de comunicación**: Siempre en **español** con el usuario.
-2. **Autor y Committer de Git**: Siempre usar obligatoriamente:
-   ```bash
-   git config user.name "stefan0704"
-   git config user.email "26739250+stefan0704@users.noreply.github.com"
-   ```
-   *(GitHub rechaza pushes si el email no es el noreply oficial de la cuenta, error `GH007`).*
-3. **Aislamiento de Ramas**:
-   - Todo el trabajo de esta versión está en `actualizacion-v0.21.0`.
-   - **NUNCA** modificar ni hacer push directo a la rama `optimizacion-graficos` salvo petición explícita del usuario.
-4. **Mapeo de Mandos**:
-   - Nunca alterar `swap_hands=1` en `pc-vr/settings.txt`. El juego exige este orden específico para los mandos PS Move emulados.
-5. **Enfoque paso a paso**: Un cambio lógico por commit, verificando compilación o comportamiento.
+1. **Mapeo de Mandos**: Nunca alterar `swap_hands=1` en `pc-vr/settings.txt`. El juego exige este orden específico para los mandos PS Move emulados.
+2. **Ramas compartidas**: No modificar ni hacer push directo a `optimizacion-graficos` salvo petición explícita del usuario.
+3. **Enfoque paso a paso**: Un cambio lógico por commit, verificando compilación o comportamiento.
 
 ---
 
