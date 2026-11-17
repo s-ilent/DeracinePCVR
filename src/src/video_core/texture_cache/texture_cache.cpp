@@ -989,9 +989,8 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
         }
     }
 
-    // The copy below replaces everything the old image covers. When that is all of the new
-    // image, uploading it from guest memory first is work the copy immediately throws away,
-    // so only the parts the copy does not reach are refreshed.
+    // An existing measuring aid: when the copy is known to reach everything, the whole refresh can
+    // be skipped. Kept as it was; the coverage below is the predicate that can actually prove it.
     const bool copy_covers_all =
         src_image.info.size.width >= new_image.info.size.width &&
         src_image.info.size.height >= new_image.info.size.height &&
@@ -999,10 +998,54 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
         src_image.info.resources.layers >= new_image.info.resources.layers;
     static const bool skip_covered_refresh =
         std::getenv("SHADPS4_DBG_SKIP_COVERED_REFRESH") != nullptr;
-    if (!copy_covers_all || !skip_covered_refresh) {
-        RefreshImage(new_image);
+    // Whether the new image takes the old image's contents at all. Written as one condition
+    // because the coverage below is only sound while the copy that follows really runs: upstream
+    // #5444 gates this copy on the source holding GPU-written data (src_image.SafeToDownload()).
+    // If that is ported, gate this condition with it and the skip stays sound.
+    const bool carries_contents = true;
+    // What the copy is going to write, level by level. Only levels it does not reach are read
+    // from guest memory: the rest would be overwritten before anything could read them.
+    // SHADPS4_DBG_COVERED_REFRESH=1 turns it on; the shapes it decides on are logged once each.
+    static const bool covered_refresh = [] {
+        const char* value = std::getenv("SHADPS4_DBG_COVERED_REFRESH");
+        return value != nullptr && value[0] == '1';
+    }();
+    const CopyCoverage covered = covered_refresh && carries_contents
+                                     ? CoveringCopyOf(src_image.info, new_image.info)
+                                     : CopyCoverage{};
+    ImageStats::NoteExpand(!covered.CoversNothing());
+    if (covered_refresh) {
+        const u64 key = 0xC0DE0000ull ^ (static_cast<u64>(src_image.info.pixel_format) << 8) ^
+                        (static_cast<u64>(new_image.info.pixel_format) << 16) ^
+                        (static_cast<u64>(src_image.info.size.width) << 24) ^
+                        (static_cast<u64>(src_image.info.size.height) << 40) ^
+                        (static_cast<u64>(src_image.info.resources.levels) << 56) ^
+                        (static_cast<u64>(new_image.info.resources.levels) << 60);
+        if (AliasTrace::FirstTime(key)) {
+            LOG_INFO(Render_Vulkan,
+                     "COVERED_REFRESH src={:#x} dst={:#x} src={}x{} levels={} layers={} "
+                     "dst={}x{} levels={} layers={} fmt={}/{} mips={} layers={} depth={}/{}",
+                     src_image.info.guest_address, new_image.info.guest_address,
+                     src_image.info.size.width, src_image.info.size.height,
+                     src_image.info.resources.levels, src_image.info.resources.layers,
+                     new_image.info.size.width, new_image.info.size.height,
+                     new_image.info.resources.levels, new_image.info.resources.layers,
+                     vk::to_string(src_image.info.pixel_format),
+                     vk::to_string(new_image.info.pixel_format), covered.mips, covered.layers,
+                     static_cast<int>(src_image.info.props.is_depth),
+                     static_cast<int>(new_image.info.props.is_depth));
+        }
     }
-    new_image.CopyImage(src_image);
+    if (covered.CoversNothing()) {
+        if (!copy_covers_all || !skip_covered_refresh) {
+            RefreshImage(new_image);
+        }
+    } else {
+        RefreshImage(new_image, &covered);
+    }
+    if (carries_contents) {
+        new_image.CopyImage(src_image);
+    }
 
     if (src_image.binding.is_bound || src_image.binding.is_target) {
         src_image.binding.needs_rebind = 1u;
@@ -1368,7 +1411,8 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
     return image.FindView(view_info, false);
 }
 
-void TextureCache::RefreshImage(Image& image) {
+void TextureCache::RefreshImage(Image& image, const CopyCoverage* covered) {
+    ScopedTimer timed{ImageStats::refresh_ns};
     if (False(image.flags & ImageFlagBits::Dirty) || image.info.num_samples > 1) {
         return;
     }
@@ -1402,12 +1446,27 @@ void TextureCache::RefreshImage(Image& image) {
     const bool is_gpu_dirty = True(image.flags & ImageFlagBits::GpuDirty);
 
     boost::container::small_vector<vk::BufferImageCopy, 14> image_copies;
+    u32 uploaded_mips = 0;
+    u32 skipped_mips = 0;
+    u64 uploaded_bytes = 0;
+    u64 skipped_bytes = 0;
     for (u32 m = 0; m < num_mips; m++) {
+        const auto [mip_size, mip_pitch, mip_height, mip_offset] = image.info.mips_layout[m];
+
+        // A copy that follows this refresh writes this level whole. What guest memory holds for
+        // it would never be read: the copy overwrites it first. Only the levels the copy does
+        // not reach are uploaded. See CopyCoverage, and ExpandImage, the only caller that can
+        // pass a coverage.
+        if (covered != nullptr && covered->CoversLevel(m, num_layers)) {
+            ++skipped_mips;
+            skipped_bytes += mip_size;
+            continue;
+        }
+
         const u32 width = std::max(image.info.size.width >> m, 1u);
         const u32 height = std::max(image.info.size.height >> m, 1u);
         const u32 depth =
             image.info.props.is_volume ? std::max(image.info.size.depth >> m, 1u) : 1u;
-        const auto [mip_size, mip_pitch, mip_height, mip_offset] = image.info.mips_layout[m];
 
         // Protect GPU modified resources from accidental CPU reuploads.
         if (is_gpu_modified && !is_gpu_dirty) {
@@ -1434,7 +1493,11 @@ void TextureCache::RefreshImage(Image& image) {
             .imageOffset = {0, 0, 0},
             .imageExtent = {extent_width, extent_height, depth},
         });
+        ++uploaded_mips;
+        uploaded_bytes += static_cast<u64>(extent_width) * extent_height * depth * num_layers *
+                          (image.info.num_bits / 8);
     }
+    ImageStats::NoteRefresh(uploaded_mips, uploaded_bytes, skipped_mips, skipped_bytes);
 
     if (image_copies.empty()) {
         image.flags &= ~ImageFlagBits::Dirty;

@@ -17,6 +17,7 @@
 #include "video_core/multi_level_page_table.h"
 #include "video_core/texture_cache/blit_helper.h"
 #include "video_core/texture_cache/image.h"
+#include "video_core/texture_cache/image_coverage.h"
 #include "video_core/texture_cache/image_view.h"
 #include "video_core/texture_cache/sampler.h"
 #include "video_core/texture_cache/tile_manager.h"
@@ -145,8 +146,9 @@ public:
     /// Creates a new image with provided image info and copies subresources from image_id
     [[nodiscard]] ImageId ExpandImage(const ImageInfo& info, ImageId image_id);
 
-    /// Reuploads image contents.
-    void RefreshImage(Image& image);
+    /// Reuploads image contents. Levels that `covered` says a following copy overwrites are left
+    /// alone: reading them from guest memory would be work the copy throws away.
+    void RefreshImage(Image& image, const CopyCoverage* covered = nullptr);
 
     /// Retrieves the sampler that matches the provided S# descriptor.
     [[nodiscard]] vk::Sampler GetSampler(const AmdGpu::Sampler& sampler,
