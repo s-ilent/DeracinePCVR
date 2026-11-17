@@ -834,6 +834,8 @@ set(DEV_TOOLS src/core/devtools/layer.cpp
               src/core/devtools/widget/reg_popup.h
               src/core/devtools/widget/reg_view.cpp
               src/core/devtools/widget/reg_view.h
+              src/core/devtools/widget/unreal_objects.cpp
+              src/core/devtools/widget/unreal_objects.h
               src/core/devtools/widget/shader_list.cpp
               src/core/devtools/widget/shader_list.h
               src/core/devtools/widget/text_editor.cpp
@@ -1023,6 +1025,23 @@ set(CORE src/core/aerolib/stubs.cpp
          src/core/linker.h
          src/core/memory.cpp
          src/core/memory.h
+         src/core/unreal/guest_memory.cpp
+         src/core/unreal/guest_memory.h
+         src/core/unreal/component_probe.cpp
+         src/core/unreal/component_probe.h
+         src/core/unreal/hand_override.cpp
+         src/core/unreal/hand_override.h
+         src/core/unreal/hand_retarget.cpp
+         src/core/unreal/hand_retarget.h
+         src/core/unreal/transform_validation.cpp
+         src/core/unreal/transform_validation.h
+         src/core/unreal/inspector.cpp
+         src/core/unreal/inspector.h
+         src/core/unreal/report.cpp
+         src/core/unreal/report.h
+         src/core/unreal/snapshot.cpp
+         src/core/unreal/snapshot.h
+         src/core/unreal/snapshot_live.cpp
          src/core/module.cpp
          src/core/module.h
          src/core/platform.h

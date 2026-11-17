@@ -1226,3 +1226,144 @@ gtest_discover_tests(shadps4_libc_cxa_test
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     DISCOVERY_TIMEOUT 60
 )
+# ===========================================================================
+# Unreal guest memory snapshots (ps4-unreal-dumper layout)
+# ===========================================================================
+
+add_executable(shadps4_unreal_snapshot_test
+    core/test_unreal_snapshot.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/unreal/snapshot.cpp
+)
+
+target_include_directories(shadps4_unreal_snapshot_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/tests
+)
+target_compile_features(shadps4_unreal_snapshot_test PRIVATE cxx_std_23)
+target_compile_definitions(shadps4_unreal_snapshot_test PRIVATE NOMINMAX)
+
+target_link_libraries(shadps4_unreal_snapshot_test PRIVATE
+    GTest::gtest_main
+    nlohmann_json::nlohmann_json
+)
+
+list(APPEND TEST_TARGETS shadps4_unreal_snapshot_test)
+
+gtest_discover_tests(shadps4_unreal_snapshot_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)
+# ===========================================================================
+# Unreal object inspector (read-only)
+# ===========================================================================
+
+add_executable(shadps4_unreal_inspector_test
+    core/test_unreal_inspector.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/unreal/inspector.cpp
+)
+
+target_include_directories(shadps4_unreal_inspector_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/tests
+)
+target_compile_features(shadps4_unreal_inspector_test PRIVATE cxx_std_23)
+target_compile_definitions(shadps4_unreal_inspector_test PRIVATE NOMINMAX)
+
+target_link_libraries(shadps4_unreal_inspector_test PRIVATE
+    GTest::gtest_main
+)
+
+list(APPEND TEST_TARGETS shadps4_unreal_inspector_test)
+
+gtest_discover_tests(shadps4_unreal_inspector_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)
+# ===========================================================================
+# Unreal inspector diagnostic report
+# ===========================================================================
+
+add_executable(shadps4_unreal_report_test
+    core/test_unreal_report.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/unreal/inspector.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/unreal/report.cpp
+)
+
+target_include_directories(shadps4_unreal_report_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/tests
+)
+target_compile_features(shadps4_unreal_report_test PRIVATE cxx_std_23)
+target_compile_definitions(shadps4_unreal_report_test PRIVATE NOMINMAX)
+
+target_link_libraries(shadps4_unreal_report_test PRIVATE
+    GTest::gtest_main
+    nlohmann_json::nlohmann_json
+)
+
+list(APPEND TEST_TARGETS shadps4_unreal_report_test)
+
+gtest_discover_tests(shadps4_unreal_report_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)
+# ===========================================================================
+# OpenXR hand joint retargeting (pure math)
+# ===========================================================================
+
+add_executable(shadps4_hand_retarget_test
+    core/test_hand_retarget.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/unreal/hand_retarget.cpp
+)
+
+target_include_directories(shadps4_hand_retarget_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/tests
+)
+target_compile_features(shadps4_hand_retarget_test PRIVATE cxx_std_23)
+target_compile_definitions(shadps4_hand_retarget_test PRIVATE NOMINMAX)
+
+target_link_libraries(shadps4_hand_retarget_test PRIVATE
+    GTest::gtest_main
+)
+
+list(APPEND TEST_TARGETS shadps4_hand_retarget_test)
+
+gtest_discover_tests(shadps4_hand_retarget_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)
+# ===========================================================================
+# Live hand discovery: transform validation, component probe, override session
+# ===========================================================================
+
+add_executable(shadps4_hand_live_test
+    core/test_hand_live.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/unreal/transform_validation.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/unreal/component_probe.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/unreal/hand_override.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/unreal/hand_retarget.cpp
+)
+
+target_include_directories(shadps4_hand_live_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/tests
+)
+target_compile_features(shadps4_hand_live_test PRIVATE cxx_std_23)
+target_compile_definitions(shadps4_hand_live_test PRIVATE NOMINMAX)
+
+target_link_libraries(shadps4_hand_live_test PRIVATE
+    GTest::gtest_main
+)
+
+list(APPEND TEST_TARGETS shadps4_hand_live_test)
+
+gtest_discover_tests(shadps4_hand_live_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)
