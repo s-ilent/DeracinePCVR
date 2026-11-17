@@ -723,7 +723,9 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
     // the copy that replaces it is going to run. #5444 states the condition as
     // SafeToDownload() || num_samples > 1 (the second term because RefreshImage declines
     // multisampled images, so for those the copy is the only writer); this tree already gates the
-    // copy on SafeToDownload() alone, and carries_contents is that gate.
+    // copy on SafeToDownload() alone, and carries_contents is that gate: when it is false the
+    // coverage below collapses to "skip nothing", which is what the assertion after the refresh
+    // enforces.
     const bool carries_contents = src_has_gpu_data;
     // What the copy is going to write, level by level. Only levels it does not reach are read
     // from guest memory: the rest would be overwritten before anything could read them.
@@ -763,6 +765,11 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
     } else {
         RefreshImage(new_image, &covered);
     }
+    // The property that keeps this coherent: a level whose upload was skipped is a level the copy
+    // is about to write. Adopting #5444 without moving the coverage gate with it breaks exactly
+    // this, and breaks it silently - the skip is opt-in, so the corruption would only appear when
+    // someone turned the measurement switch on.
+    ASSERT(carries_contents || covered.CoversNothing());
     if (carries_contents) {
         new_image.CopyImage(src_image);
     }
