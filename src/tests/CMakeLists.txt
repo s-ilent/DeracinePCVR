@@ -1181,6 +1181,7 @@ add_executable(shadps4_vr_presentation_size_test
 target_include_directories(shadps4_vr_presentation_size_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/tests
 )
 
 target_compile_features(shadps4_vr_presentation_size_test PRIVATE cxx_std_23)
