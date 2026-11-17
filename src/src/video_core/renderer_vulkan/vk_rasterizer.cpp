@@ -1612,6 +1612,7 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
             is_clear ? LiverpoolToVK::ColorBufferClearValue(col_buf) : vk::ClearValue{};
         auto& attachment = state.color_attachments[cb];
         attachment.image_view = *image_view.image_view;
+        attachment.image = image->GetImage();
         attachment.image_layout = image->backing->state.layout;
         attachment.clear_value = clear_value.color.uint32;
         attachment.is_clear = is_clear;
@@ -1686,6 +1687,7 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
 
         auto& attachment = state.depth_stencil_attachment;
         attachment.image_view = *image_view.image_view;
+        attachment.image = image.GetImage();
         attachment.image_layout = image.backing->state.layout;
         attachment.clear_value = {};
 
