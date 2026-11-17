@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
+#include <atomic>
+#include <cstdlib>
 #include <cstring>
 #include "common/logging/log.h"
 #include "core/devtools/autopress.h"
@@ -89,6 +92,23 @@ s32 PS4_SYSV_ABI sceMoveReadStateLatest(s32 handle, OrbisMoveData* data) {
     const auto input = Core::Vr::Runtime::Instance().GetHandInput(hand);
     data->button_data.button_data = input.buttons;
     data->button_data.trigger_data = input.trigger;
+    // Test-only SHADPS4_DBG_MOVE_TRACE=1: what the title is actually being told of a Move when it
+    // reads one, so a scripted run can prove its presses reach the guest instead of guessing from
+    // the screen. Logs each change of (buttons, trigger), at most 120 of them.
+    static const bool trace = [] {
+        const char* value = std::getenv("SHADPS4_DBG_MOVE_TRACE");
+        return value != nullptr && value[0] == '1';
+    }();
+    if (trace) {
+        static std::array<std::atomic<u32>, 2> seen{{0xffffffffu, 0xffffffffu}};
+        static std::atomic<u32> traced{};
+        const u32 packed = (static_cast<u32>(input.buttons) << 8) | input.trigger;
+        if (seen[hand].exchange(packed, std::memory_order_relaxed) != packed &&
+            traced.fetch_add(1, std::memory_order_relaxed) < 120) {
+            LOG_INFO(Lib_Move, "read trace: handle {:#x} (hand {}): buttons {:#x}, trigger {}", handle,
+                     hand, input.buttons, input.trigger);
+        }
+    }
     // Development harness: presses the Move button and sets the trigger to full for the headless
     // benchmark. Off unless SHADPS4_DBG_AUTOPRESS asks for it; the button is added to the real
     // state, the trigger is overridden while the burst lasts (it is a test input, not a merge).
