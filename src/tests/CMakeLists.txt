@@ -1111,6 +1111,9 @@ target_link_libraries(shadps4_image_coverage_test PRIVATE
     GTest::gtest_main
     Vulkan::Headers
     magic_enum::magic_enum
+    fmt::fmt
+    spdlog::spdlog
+    Boost::headers
 )
 
 list(APPEND TEST_TARGETS shadps4_image_coverage_test)
