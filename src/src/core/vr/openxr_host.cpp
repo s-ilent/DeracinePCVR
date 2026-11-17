@@ -398,6 +398,8 @@ struct OpenXrHost::Impl {
     XrTime space_change_time{};
     u32 max_swapchain_width{};
     u32 max_swapchain_height{};
+    std::mutex eye_sizes_mutex;
+    ViewSizes eye_sizes;
     Clock::time_point last_search;
     bool search_reported{};
 
@@ -683,6 +685,7 @@ struct OpenXrHost::Impl {
         fov_samples = 0;
         max_swapchain_width = properties.graphicsProperties.maxSwapchainImageWidth;
         max_swapchain_height = properties.graphicsProperties.maxSwapchainImageHeight;
+        NoteEyeSizes(system, properties);
         // (Asked every time: a headset that comes back may track hands where it did not.)
         const bool hands = hand_extension && hand_properties.supportsHandTracking == XR_TRUE;
 
@@ -751,6 +754,43 @@ struct OpenXrHost::Impl {
         has_hand_tracking = hands;
         FindAudioDevices();
         return true;
+    }
+
+    /// What the runtime asks an eye to be, and what an image may be at most. The presenter sizes
+    /// the picture it hands the headset from these, while the title keeps drawing whatever it
+    /// draws: the two are separate questions and neither is derived from the other.
+    void NoteEyeSizes(XrSystemId system, const XrSystemProperties& properties) {
+        ViewSizes sizes{};
+        sizes.max_image_width = properties.graphicsProperties.maxSwapchainImageWidth;
+        sizes.max_image_height = properties.graphicsProperties.maxSwapchainImageHeight;
+        uint32_t view_count = 0;
+        if (XR_SUCCEEDED(xrEnumerateViewConfigurationViews(
+                instance, system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &view_count,
+                nullptr)) &&
+            view_count > 0) {
+            std::vector<XrViewConfigurationView> views(
+                view_count, XrViewConfigurationView{XR_TYPE_VIEW_CONFIGURATION_VIEW});
+            if (XR_SUCCEEDED(xrEnumerateViewConfigurationViews(
+                    instance, system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, view_count,
+                    &view_count, views.data()))) {
+                sizes.recommended_width = views[0].recommendedImageRectWidth;
+                sizes.recommended_height = views[0].recommendedImageRectHeight;
+                sizes.max_width = views[0].maxImageRectWidth;
+                sizes.max_height = views[0].maxImageRectHeight;
+                sizes.recommended_sample_count = views[0].recommendedSwapchainSampleCount;
+                sizes.max_sample_count = views[0].maxSwapchainSampleCount;
+                sizes.known = true;
+                LOG_INFO(Core_Vr,
+                         "The runtime asks for {}x{} an eye (up to {}x{}, {} samples down to {}), "
+                         "{} view{}; an image of up to {}x{} holds both eyes",
+                         sizes.recommended_width, sizes.recommended_height, sizes.max_width,
+                         sizes.max_height, sizes.max_sample_count, sizes.recommended_sample_count,
+                         view_count, view_count == 1 ? "" : "s", sizes.max_image_width,
+                         sizes.max_image_height);
+            }
+        }
+        std::scoped_lock lock{eye_sizes_mutex};
+        eye_sizes = sizes;
     }
 
     /// Where the headset's sound goes and comes from, by the names Windows lists the devices
@@ -3201,6 +3241,11 @@ bool OpenXrHost::IsAvailable() const {
 
 bool OpenXrHost::HasHeadset() const {
     return impl->found_at_connect;
+}
+
+OpenXrHost::ViewSizes OpenXrHost::EyeSizes() const {
+    std::scoped_lock lock{impl->eye_sizes_mutex};
+    return impl->eye_sizes;
 }
 
 std::vector<std::string> OpenXrHost::VulkanInstanceExtensions() const {
