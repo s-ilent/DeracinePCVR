@@ -1,0 +1,244 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deracine.invalid/benchmark/run.schema.json",
+  "title": "Déraciné classroom benchmark run",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version", "run_id", "created_utc", "scenario", "source", "executable",
+    "host", "env", "timing", "scene", "artifacts", "provenance"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "run_id": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$" },
+    "label": { "type": "string" },
+    "created_utc": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z$" },
+    "scenario": {
+      "type": "object",
+      "required": ["id", "game", "guest", "presentation", "vblank_hz", "autopress",
+                   "warmup_s", "window_s", "stats_every_s", "scene_gate"],
+      "properties": {
+        "id": { "type": "string", "enum": ["deracine-classroom-menu-300-msaa2-vblank60"] },
+        "game": {
+          "type": "object",
+          "required": ["title_id", "eboot", "eboot_sha256", "root"],
+          "properties": {
+            "title_id": { "type": "string" },
+            "eboot": { "type": "string" },
+            "eboot_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "root": { "type": "string" },
+            "content_source": { "type": "string" },
+            "engine_ini": { "type": "string" }
+          }
+        },
+        "guest": {
+          "type": "object",
+          "required": ["screen_percentage", "msaa_requested", "eye_width", "eye_height",
+                       "stereo_width"],
+          "properties": {
+            "screen_percentage": { "type": "number" },
+            "msaa_requested": { "type": "integer" },
+            "eye_width": { "type": "integer" },
+            "eye_height": { "type": "integer" },
+            "stereo_width": { "type": "integer" },
+            "eye_width_actual_observed": { "type": ["integer", "null"] }
+          }
+        },
+        "presentation": {
+          "type": "object",
+          "required": ["vr_scale", "guest_eye", "actual"],
+          "properties": {
+            "vr_scale": { "type": "number" },
+            "guest_eye": { "type": "string" },
+            "actual": { "type": ["string", "null"] }
+          }
+        },
+        "vblank_hz": { "type": "integer", "minimum": 30, "maximum": 240 },
+        "autopress": {
+          "type": "object",
+          "required": ["enabled", "value", "devices", "schedule", "bursts_logged"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "value": { "type": ["string", "null"] },
+            "devices": { "type": "string" },
+            "schedule": { "type": "string" },
+            "bursts_logged": { "type": "integer" }
+          }
+        },
+        "warmup_s": { "type": "number", "minimum": 1 },
+        "window_s": { "type": "number", "minimum": 1 },
+        "stats_every_s": { "type": "number", "minimum": 0.1 },
+        "scene_gate": {
+          "type": "object",
+          "required": ["min_draws", "min_mpx", "consecutive_samples"],
+          "properties": {
+            "min_draws": { "type": "number", "minimum": 400 },
+            "min_mpx": { "type": "number", "minimum": 500 },
+            "consecutive_samples": { "type": "integer", "minimum": 2 }
+          }
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": ["worktree", "branch", "head_sha", "dirty_files", "dirty_count"],
+      "properties": {
+        "worktree": { "type": "string" },
+        "branch": { "type": "string" },
+        "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "dirty_files": { "type": "array", "items": { "type": "string" } },
+        "dirty_count": { "type": "integer", "minimum": 0 },
+        "status_porcelain_sha256": { "type": "string" }
+      }
+    },
+    "executable": {
+      "type": "object",
+      "required": ["path", "sha256", "bytes", "lab_path", "lab_sha256"],
+      "properties": {
+        "path": { "type": "string" },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "lab_path": { "type": "string" },
+        "lab_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "built_from_head": { "type": ["string", "null"] }
+      }
+    },
+    "host": {
+      "type": "object",
+      "required": ["gpu", "driver", "os", "cpu", "xr_runtime", "headset"],
+      "properties": {
+        "gpu": { "type": "string", "minLength": 1 },
+        "driver": { "type": "string", "minLength": 1 },
+        "os": { "type": "string" },
+        "cpu": { "type": "string" },
+        "xr_runtime": { "type": "string", "minLength": 1 },
+        "headset": { "type": "string" }
+      }
+    },
+    "env": {
+      "type": "object",
+      "required": ["SHADPS4_FRAME_STATS", "SHADPS4_FRAME_STATS_EVERY", "SHADPS4_VR_SCALE",
+                   "SHADPS4_DBG_AUTOPRESS"],
+      "additionalProperties": { "type": ["string", "null"] }
+    },
+    "timing": {
+      "type": "object",
+      "required": ["source", "source_id", "samples_total", "samples_window",
+                   "warmup_samples", "window_start_s", "window_end_s", "window_elapsed_s",
+                   "warmup_start_s", "warmup_end_s", "unique_fps", "frame_ms", "per_sample"],
+      "properties": {
+        "source": { "const": "framestats" },
+        "source_id": { "type": "string" },
+        "samples_total": { "type": "integer", "minimum": 1 },
+        "samples_window": { "type": "integer", "minimum": 1 },
+        "warmup_samples": { "type": "integer", "minimum": 0 },
+        "window_start_s": { "type": "number" },
+        "window_end_s": { "type": "number" },
+        "window_elapsed_s": { "type": "number" },
+        "window_observed_s": { "type": "number" },
+        "warmup_start_s": { "type": "number" },
+        "warmup_end_s": { "type": "number" },
+        "unique_fps": { "type": "number", "minimum": 1 },
+        "frame_ms": {
+          "type": "object",
+          "required": ["p50", "p90", "p95", "p99", "mean", "min", "max"],
+          "properties": {
+            "p50": { "type": "number", "minimum": 0.1 },
+            "p90": { "type": "number", "minimum": 0.1 },
+            "p95": { "type": "number", "minimum": 0.1 },
+            "p99": { "type": "number", "minimum": 0.1 },
+            "mean": { "type": "number", "minimum": 0.1 },
+            "min": { "type": "number", "minimum": 0.1 },
+            "max": { "type": "number", "minimum": 0.1 }
+          }
+        },
+        "compositor_cadence": { "type": ["object", "null"] },
+        "per_sample": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["sample", "at_s", "fps", "frame_ms", "draws", "mpx", "in_window"],
+            "properties": {
+              "sample": { "type": "integer", "minimum": 0 },
+              "at_s": { "type": "number" },
+              "fps": { "type": "number", "minimum": 0.01 },
+              "frames": { "type": "integer", "minimum": 1 },
+              "frame_ms": { "type": "number", "minimum": 0.01 },
+              "draws": { "type": "number" },
+              "mpx": { "type": "number" },
+              "passes": { "type": "number" },
+              "gpu_busy": { "type": "number" },
+              "in_window": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "scene": {
+      "type": "object",
+      "required": ["classification", "overlay_present", "anchor_sample", "anchor_at_s",
+                   "draws", "mpx", "passes", "screenshot"],
+      "properties": {
+        "classification": { "type": "string" },
+        "overlay_present": { "type": "boolean" },
+        "gameplay_reached": { "type": "boolean" },
+        "anchor_sample": { "type": "integer", "minimum": 0 },
+        "anchor_at_s": { "type": "number" },
+        "draws": { "type": "number" },
+        "mpx": { "type": "number" },
+        "passes": { "type": "number" },
+        "screenshot": {
+          "type": "object",
+          "required": ["path", "sha256", "width", "height", "taken_at_s",
+                       "from_scene_anchor_s", "role", "signature_similarity"],
+          "properties": {
+            "path": { "type": "string" },
+            "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "width": { "type": "integer", "minimum": 16 },
+            "height": { "type": "integer", "minimum": 16 },
+            "taken_at_s": { "type": "number" },
+            "from_scene_anchor_s": { "type": "number" },
+            "role": { "type": "string", "enum": ["scene"] },
+            "signature_similarity": { "type": "number" },
+            "reference": { "type": "string" }
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "required": ["log", "log_sha256", "frames_csv"],
+      "properties": {
+        "log": { "type": "string" },
+        "log_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "frames_csv": { "type": "string" },
+        "console": { "type": ["string", "null"] },
+        "screenshots": { "type": "array", "items": { "type": "string" } },
+        "rdc": { "type": ["string", "null"] },
+        "rdc_sha256": { "type": ["string", "null"] },
+        "rdc_png": { "type": ["string", "null"] },
+        "rdc_png_similarity": { "type": ["number", "null"] }
+      }
+    },
+    "cleanup": {
+      "type": ["object", "null"],
+      "required": ["root", "paths"],
+      "properties": {
+        "root": { "type": "string" },
+        "paths": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["preflight_manifest", "protected_unchanged"],
+      "properties": {
+        "preflight_manifest": { "type": ["string", "null"] },
+        "protected_unchanged": { "type": "boolean" },
+        "protected_drift": { "type": "array", "items": { "type": "string" } },
+        "validator_version": { "type": "integer" }
+      }
+    },
+    "validation": { "type": ["object", "null"] }
+  }
+}
