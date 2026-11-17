@@ -1,9 +1,12 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <numbers>
 #include <optional>
@@ -18,8 +21,10 @@
 #include "common/thread.h"
 #include "core/vr/vr_runtime.h"
 #include "input/controller.h"
-#include "input/scripted_input.h"
+#include "input/guest_frame.h"
 #include "input/pad_gestures.h"
+#include "input/scripted_input.h"
+#include "input/scripted_timeline.h"
 #include "input/stick_finger.h"
 
 namespace Input {
@@ -32,8 +37,7 @@ std::atomic<float> microphone_level{0.0f};
 std::atomic<bool> blowing{false};
 
 struct Step {
-    double start;
-    double end;
+    Scripted::StepTiming timing;
     Buttons buttons{Buttons::None};
     // Left x, left y, right x, right y; negative means "leave centred".
     std::array<int, 4> sticks{-1, -1, -1, -1};
@@ -43,6 +47,14 @@ struct Step {
     // Where a host sees the hands hold the controller: x, y, z and heading in degrees.
     std::optional<std::array<float, 4>> hands;
     bool hands_lost{};
+    // A Move controller's buttons and trigger, as the title's libSceMove sees them: for a
+    // headless run where the pad mapping is not what the scene needs. 0 is the right hand,
+    // 1 the left (see SHADPS4_VR_MOVE_FROM_PAD).
+    struct MoveInput {
+        u16 buttons{};
+        u8 trigger{};
+    };
+    std::array<std::optional<MoveInput>, 2> move;
     // A finger on the touchpad, 0..1 across and down.
     std::optional<std::array<float, 2>> touch;
     // The right stick as it stands in for that finger (Input::StickFinger), -1..1 to the right
@@ -92,13 +104,27 @@ std::optional<Core::Vr::Pose> ParsePose(const std::string& text) {
 }
 
 const std::unordered_map<std::string, Buttons> ButtonNames = {
-    {"cross", Buttons::Cross},       {"circle", Buttons::Circle}, {"square", Buttons::Square},
-    {"triangle", Buttons::Triangle}, {"up", Buttons::Up},         {"down", Buttons::Down},
-    {"left", Buttons::Left},         {"right", Buttons::Right},   {"l1", Buttons::L1},
-    {"r1", Buttons::R1},             {"l2", Buttons::L2},         {"r2", Buttons::R2},
-    {"l3", Buttons::L3},             {"r3", Buttons::R3},         {"options", Buttons::Options},
-    {"touchpad", Buttons::TouchPad},
+    {"cross", Buttons::Cross},     {"circle", Buttons::Circle},
+    {"square", Buttons::Square},   {"triangle", Buttons::Triangle},
+    {"up", Buttons::Up},           {"down", Buttons::Down},
+    {"left", Buttons::Left},       {"right", Buttons::Right},
+    {"l1", Buttons::L1},           {"r1", Buttons::R1},
+    {"l2", Buttons::L2},           {"r2", Buttons::R2},
+    {"l3", Buttons::L3},           {"r3", Buttons::R3},
+    {"options", Buttons::Options}, {"touchpad", Buttons::TouchPad},
 };
+
+std::optional<double> ParseNumber(const std::string& text) {
+    if (text.empty()) {
+        return std::nullopt;
+    }
+    char* end = nullptr;
+    const double value = std::strtod(text.c_str(), &end);
+    if (end != text.c_str() + text.size()) {
+        return std::nullopt;
+    }
+    return value;
+}
 
 std::vector<Step> ParseScript(const std::filesystem::path& script) {
     std::vector<Step> steps;
@@ -108,15 +134,33 @@ std::vector<Step> ParseScript(const std::filesystem::path& script) {
         if (line.empty() || line[0] == '#') {
             continue;
         }
-        std::istringstream tokens{line};
-        double start = 0.0;
-        double hold = 0.0;
-        if (!(tokens >> start >> hold)) {
+        std::istringstream stream{line};
+        std::vector<std::string> tokens;
+        for (std::string word; stream >> word;) {
+            tokens.push_back(std::move(word));
+        }
+        if (tokens.empty()) {
             continue;
         }
-        Step step{.start = start, .end = start + hold};
-        std::string token;
-        while (tokens >> token) {
+        Step step;
+        size_t first = 0;
+        // The two times come first, unless the line begins with a frame number or an input: a
+        // frame-numbered line is timed by the title's own frames instead of the clock.
+        if (const auto at = ParseNumber(tokens[0]); at && tokens.size() >= 2) {
+            if (const auto hold = ParseNumber(tokens[1]); hold) {
+                step.timing.start = *at;
+                step.timing.end = *at + *hold;
+                first = 2;
+            }
+        }
+        for (size_t index = first; index < tokens.size(); ++index) {
+            const std::string& token = tokens[index];
+            if (Scripted::ParseFrameToken(token, step.timing.frame)) {
+                continue;
+            }
+            if (Scripted::ParseFramesToken(token, step.timing.frames)) {
+                continue;
+            }
             if (const auto it = ButtonNames.find(token); it != ButtonNames.end()) {
                 step.buttons |= it->second;
                 continue;
@@ -188,8 +232,36 @@ std::vector<Step> ParseScript(const std::filesystem::path& script) {
                 }
                 continue;
             }
-            static constexpr std::array<std::string_view, 4> AxisNames = {"lx=", "ly=", "rx=",
-                                                                           "ry="};
+            // "move0=<buttons>,<trigger>" / "move1=...": the title's own view of the hand's
+            // buttons, for a scripted run that needs exact bits (decimal or 0x hex).
+            static constexpr std::array<std::string_view, 2> MoveNames = {"move0=", "move1="};
+            bool move_parsed = false;
+            for (size_t hand = 0; hand < MoveNames.size() && !move_parsed; ++hand) {
+                if (!token.starts_with(MoveNames[hand])) {
+                    continue;
+                }
+                const std::string value = token.substr(MoveNames[hand].size());
+                const char* at = value.c_str();
+                char* end = nullptr;
+                const unsigned long buttons = std::strtoul(at, &end, 0);
+                if (end == at || *end != ',') {
+                    continue;
+                }
+                at = end + 1;
+                const unsigned long trigger = std::strtoul(at, &end, 0);
+                if (end == at) {
+                    continue;
+                }
+                step.move[hand] =
+                    Step::MoveInput{static_cast<u16>(std::min<unsigned long>(buttons, 0xffff)),
+                                    static_cast<u8>(std::min<unsigned long>(trigger, 0xff))};
+                move_parsed = true;
+            }
+            if (move_parsed) {
+                continue;
+            }
+            static constexpr std::array<std::string_view, 4> AxisNames = {
+                "lx=", "ly=", "rx=", "ry="};
             for (size_t axis = 0; axis < AxisNames.size(); ++axis) {
                 if (token.starts_with(AxisNames[axis])) {
                     step.sticks[axis] = std::stoi(token.substr(AxisNames[axis].size()));
@@ -206,7 +278,7 @@ void Replay(std::vector<Step> steps, std::filesystem::path live_script) {
     const auto begin = std::chrono::steady_clock::now();
     double last_end = 0.0;
     for (const Step& step : steps) {
-        last_end = std::max(last_end, step.end);
+        last_end = std::max(last_end, step.timing.end);
     }
 
     // The script's poses are counted from where the player sits.
@@ -232,32 +304,35 @@ void Replay(std::vector<Step> steps, std::filesystem::path live_script) {
         }
         const double now =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+        const std::uint64_t frame = Input::GuestFrame();
 
         Buttons buttons{Buttons::None};
         std::array<int, 6> axes{128, 128, 128, 128, 0, 0};
         const Step* head_step = nullptr;
         const Step* pad_step = nullptr;
         const Step* hands_step = nullptr;
+        std::array<std::optional<Step::MoveInput>, 2> move_override;
         std::optional<std::array<float, 2>> touch;
         std::array<float, 2> finger{};
         PadGestures::Controls controls;
         float microphone = 0.0f;
         for (const Step& step : steps) {
-            if (now >= step.start) {
+            if (Scripted::Begun(step.timing, now, frame)) {
                 // Poses persist, the most recently started line wins.
-                if (step.head && (head_step == nullptr || step.start >= head_step->start)) {
+                if (step.head &&
+                    (head_step == nullptr || Scripted::Later(step.timing, head_step->timing))) {
                     head_step = &step;
                 }
                 if ((step.pad || step.pad_rotation) &&
-                    (pad_step == nullptr || step.start >= pad_step->start)) {
+                    (pad_step == nullptr || Scripted::Later(step.timing, pad_step->timing))) {
                     pad_step = &step;
                 }
                 if ((step.hands || step.hands_lost) &&
-                    (hands_step == nullptr || step.start >= hands_step->start)) {
+                    (hands_step == nullptr || Scripted::Later(step.timing, hands_step->timing))) {
                     hands_step = &step;
                 }
             }
-            if (now < step.start || now >= step.end) {
+            if (!Scripted::Active(step.timing, now, frame)) {
                 continue;
             }
             if (step.touch) {
@@ -265,6 +340,11 @@ void Replay(std::vector<Step> steps, std::filesystem::path live_script) {
             }
             if (step.finger) {
                 finger = *step.finger;
+            }
+            for (size_t hand = 0; hand < step.move.size(); ++hand) {
+                if (step.move[hand]) {
+                    move_override[hand] = step.move[hand];
+                }
             }
             controls.press = controls.press || step.gestures.press;
             controls.swipe = controls.swipe || step.gestures.swipe;
@@ -295,7 +375,7 @@ void Replay(std::vector<Step> steps, std::filesystem::path live_script) {
             vr.UpdateHead({.pose = *head_step->head, .tracked = true});
         }
         for (size_t i = 0; i < steps.size(); ++i) {
-            if (now < steps[i].start || started[i]) {
+            if (started[i] || !Scripted::Begun(steps[i].timing, now, frame)) {
                 continue;
             }
             // Things that happen once, when their line starts.
@@ -311,8 +391,8 @@ void Replay(std::vector<Step> steps, std::filesystem::path live_script) {
                 vr.SwitchPadPlace();
             }
             if (steps[i].worn) {
-                LOG_INFO(Input, "Scripted: the headset is {}", *steps[i].worn ? "put on"
-                                                                              : "taken off");
+                LOG_INFO(Input, "Scripted: the headset is {}",
+                         *steps[i].worn ? "put on" : "taken off");
                 vr.SetHeadsetWorn(*steps[i].worn);
             }
         }
@@ -331,6 +411,17 @@ void Replay(std::vector<Step> steps, std::filesystem::path live_script) {
                 vr.UpdatePadYawReference(hands[3] * std::numbers::pi_v<float> / 180.0f);
             } else {
                 vr.ClearPadPosition();
+            }
+        }
+
+        // A scripted Move controller beats the mapping from the gamepad while its line lasts;
+        // without one the mapping (or the host) is what the title sees.
+        for (size_t hand = 0; hand < move_override.size(); ++hand) {
+            if (move_override[hand]) {
+                vr.SetScriptedHandInput(static_cast<int>(hand), move_override[hand]->buttons,
+                                        move_override[hand]->trigger);
+            } else {
+                vr.ClearScriptedHandInput(static_cast<int>(hand));
             }
         }
 
