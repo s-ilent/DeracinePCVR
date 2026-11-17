@@ -77,13 +77,13 @@ Evidence of the verification: `_run/lead-headless/PROBE.md`,
 - **M1 (done):** headless launch and front-end. Committed as `feature/headless-vr-harness` @
   `6417f36` (`tools/headless-vr/`). Any agent can boot the game to the classroom front end with the
   GPU lock and no headset.
-- **M2 (done, single lab):** scripted Move movement and inputs, so the front end can be walked into
+- **M2 (done, two labs):** scripted Move movement and inputs, so the front end can be walked into
   gameplay (`Continue` on the saved stage `m00_00_10_10`). Committed as
   `feature/headless-vr-scene` @ `a21109c` and integrated into the unified branch; the dedicated
   benchmark is `tools/benchmark/headless-gameplay.ps1` with `reference/scene-gameplay.json` and
-  `gameplay_gate.py`, and the record is `HEADLESS-M2.md`. **Single-lab verified**: a second
-  independently constructed lab has not passed yet, so do not call gameplay cells fully
-  reproducible. All M2 behaviour is test-only and off unless its env variable is set.
+  `gameplay_gate.py`, and the record is `HEADLESS-M2.md`. **Two-lab verified** (`m2-off-fixed-1`,
+  `m3-portable-2`); a benchmark cell is still a live measurement and the gameplay band must not be
+  derived by projection. All M2 behaviour is test-only and off unless its env variable is set.
 - **M3 (after M2):** A–E renderer validation on the gameplay scene (recycler A/B/A, R3 pixel
   compare, R6 clean shutdown, scene-gated RenderDoc, 100 %/120 Hz).
 

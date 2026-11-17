@@ -296,12 +296,12 @@ $document = [ordered]@{
     log             = [ordered]@{ path = $logCopy; sha256 = $logSha }
     shutdown        = [ordered]@{ exit_code = $exitCode; seconds = [math]::Round($ranSeconds, 1); timed_out = $timedOut }
     verdict         = $verdict
-    reproducibility = 'single-lab: M2 has been proven in one independently constructed lab only'
+    reproducibility = 'two-lab: M2 gameplay entry reproduced in two independently constructed labs (m2-off-fixed-1, m3-portable-2)'
     limitations     = @(
         'No physical headset: no latency, comfort, distortion or compositor claims.',
         'unique FPS is the emulator''s own rendered-frame series, not compositor cadence.',
         'The save is game/user data; the manifest pins it but the files are not committed.',
-        'M2 is not yet reproducible from a second independently constructed lab.'
+        'The band bounds draws tightly and Mpx/passes loosely because renderer state changes them at the same scene; re-derive it only from a live cell.'
     )
 }
 $document | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $Out 'run.json') -Encoding utf8

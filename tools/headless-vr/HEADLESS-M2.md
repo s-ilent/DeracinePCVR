@@ -1,9 +1,9 @@
 # Headless gameplay — M2 integration record and benchmark
 
 Status: **integrated into `integration/deracine-unified-2026-11`; the C++ tests and the benchmark
-gate are green offline.** The gameplay entry itself is **single-lab verified** (one independently
-constructed lab). It is **not** yet claimed reproducible from a second independently constructed
-lab; a cell produced here is single-lab evidence until that passes.
+gate are green offline.** The gameplay entry is **two-lab verified**: the independently constructed
+labs `m2-off-fixed-1` and `m3-portable-2` both reached the same gameplay scene. A benchmark cell is
+still a live measurement, never a projected one.
 
 This document covers the M2 milestone only. M1 (headless front end) is in
 [`README.md`](README.md) and [`HEADLESS-ONLY.md`](HEADLESS-ONLY.md). M3 (A–E renderer validation) is
@@ -114,10 +114,18 @@ pwsh -File tools\headless-vr\headless-vr-launch.ps1 -Exe <build>\shadPS4.exe `
 The dedicated gameplay benchmark (`headless-gameplay.ps1`) does this by default and is the
 recommended entry point.
 
-## Evidence already recorded (single lab)
+## Evidence already recorded (two labs)
 
-- Gameplay entry: `_build/headless/probe-scene/evidence/m2-confirm-1` (`run.cmd`, `input-script.txt`,
-  `shad_log.txt`, eye dumps) — menu → Continue → loading → gameplay in ~49–65 s, from the slot-1 save.
+- Gameplay entry (lab 1): `_build/headless/probe-scene/evidence/m2-confirm-1` (`run.cmd`,
+  `input-script.txt`, `shad_log.txt`, eye dumps) — menu → Continue → loading → gameplay in ~49–65 s,
+  from the slot-1 save.
+- Gameplay entry (lab 1, run): `_build/headless/runs/m2-off-fixed-1` — gate 64 s, 1866.3 draws /
+  606.2 Mpx / 41.4 passes, fps p50 33.5, 77 frames.
+- Gameplay entry (lab 2, independently constructed): `_build/headless/runs/m3-portable-2` — gate
+  63 s, 1865.8 / 550.2 / 38.4, fps p50 31.8, 76 frames, gameplay capture visually checked.
+- Unified-build live cell (scene confirmation, not a benchmark cell): 1866.3 draws, 2880×3240 RGBA8
+  eye, 860 Mpx / 55.7 passes, 35.7 fps. The larger target area is a renderer-state difference at the
+  same scene; the band now bounds draws tightly and Mpx/passes loosely so this is accepted.
 - Workload and bands: `_build/headless/validation/results/RESULTS.md` §2 (M2-confirmed).
 - Save provenance and hashes: `_build/headless/validation/results/SAVE.json` and
   [`save-slot/MANIFEST.json`](save-slot/MANIFEST.json).
@@ -146,8 +154,8 @@ unified branch (gcn `_NOT_BUILT`, usbd `_NOT_BUILT`, `ReadConstSnapshotDiag.Isol
 
 ## Limits
 
-- Single lab only; the second independently constructed lab has not been run. Do not quote a cell
-  from this infrastructure as generally reproducible yet.
+- Two labs verified the gameplay entry; a benchmark cell is still a live measurement and the band
+  must not be derived by projection. A second lab has not measured this exact benchmark profile yet.
 - No physical headset: no latency, comfort, distortion or compositor claims.
 - Synthetic hands and scripted input are test-only; they must never become a production default.
 - The private game shadow's `saved/engine.ini` carries the 300 % preset; the benchmark records the

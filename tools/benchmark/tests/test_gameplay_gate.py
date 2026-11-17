@@ -132,6 +132,14 @@ class VerdictTests(unittest.TestCase):
         self.assertFalse(verdict["valid"])
         self.assertEqual(verdict["phase"], "unknown")
 
+    def test_unified_renderer_signature_is_valid(self) -> None:
+        # The unified renderer reaches the same scene with more target area and passes:
+        # 1866 draws / 860 Mpx / 55.7 passes (headless handoff, 2026-11-18). It must be accepted.
+        series = [make(60.0 + i * 0.5, 1866.3, 860.0, 55.7, fps=35.7, frames=18)
+                  for i in range(8)]
+        verdict = gate.evaluate(series, PROFILE)
+        self.assertTrue(verdict["valid"], verdict["reasons"])
+
     def test_profile_band_contains_the_measured_signature(self) -> None:
         band = PROFILE["band"]
         for draws, mpx, passes in ((1866.0, 620.0, 42.0), (1900.0, 720.0, 46.0)):

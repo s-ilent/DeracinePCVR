@@ -7,8 +7,9 @@
   "measured_2026_11_18": {
     "menu_front_end": {"draws": "465-500", "mpx": "~480", "passes": "~65", "fps": "58-60 (paced)"},
     "loading_dip": {"draws": "42-55"},
-    "gameplay": {"draws": "1866-1900", "mpx": "620-720", "passes": "42-46", "fps": "30-35"},
-    "source": "_build/headless/validation/results/RESULTS.md (M2-confirmed) and the user's handover"
+    "gameplay_candidate_renderer": {"draws": "1866-1900", "mpx": "550-720", "passes": "38-46", "fps": "30-35"},
+    "gameplay_unified_renderer": {"draws": "1866", "mpx": "860", "passes": "55.7", "fps": "35.7"},
+    "source": "M2/M3 headless runs (m2-off-fixed-1, m3-portable-2) and the unified-build live cell recorded in _build/team/INTEGRATION-HANDOFF-headless.md; the user's handover"
   },
   "scene_gate": {
     "min_draws": 800,
@@ -19,16 +20,17 @@
   "band": {
     "min_draws": 1500,
     "max_draws": 2300,
-    "min_mpx": 550,
-    "max_mpx": 750,
-    "min_passes": 35,
-    "max_passes": 55,
+    "min_mpx": 500,
+    "max_mpx": 1000,
+    "min_passes": 25,
+    "max_passes": 80,
     "min_in_band_ratio": 0.9
   },
   "menu_disambiguation": {
     "max_draws": 800,
-    "note": "The menu/front end is ~465-500 draws and cannot pass the 800-draw gate; a run that never leaves it is reported phase=menu, never as gameplay."
+    "note": "The menu/front end is ~465-500 draws and ~480 Mpx and cannot pass either the 800-draw gate or the 1500-draw band; a run that never leaves it is reported phase=menu, never as gameplay."
   },
+  "band_rationale": "Draws per frame is the stable discriminator for this title's gameplay (1866-1900 vs 465-500 in the menu). Mpx and passes depend on the renderer state: the candidate renderer measured 550-720 Mpx / 38-46 passes, the unified renderer 860 Mpx / 55.7 passes at the same scene. Bounding draws tightly and Mpx/passes loosely accepts both without accepting the menu or the loading dip, and the large per-frame area change remains visible in the report. Re-derive this band only with a fresh live cell, never from a projection.",
   "guest": {
     "screen_percentage": 300,
     "msaa_requested": 2,
@@ -61,9 +63,9 @@
     "note": "The script is the M2 confirm sweep: it aims the mirrored Move hand at Continue and presses it. All of it is test-only and off unless these variables are set."
   },
   "image_reference": null,
-  "image_reference_note": "No gameplay eye reference is installed. A candidate exists (_build/headless/validation/evidence/gameplay-reference-candidate/gameplay-eye-m2-confirm-1.png, menu-vs-gameplay SSIM 0.4174) but it was never visually reviewed and installed. Until it is, scene identity rests on the numeric gate+band, which the menu cannot satisfy; an optional reference can be added here and checked by scene_signature.py.",
+  "image_reference_note": "No gameplay eye reference is installed. A candidate exists (_build/headless/validation/evidence/gameplay-reference-candidate/gameplay-eye-m2-confirm-1.png, menu-vs-gameplay SSIM 0.4174) but it was never visually reviewed and installed. Until it is, scene identity rests on the numeric gate+band, which the menu cannot satisfy; an optional reference can be added here and checked by scene_signature.py. Separately, colour correctness must be claimed only through image_validation.py (RGB), never through scene similarity.",
   "reproducibility": {
-    "state": "single-lab",
-    "note": "M2 has been proven in one independently constructed lab (scene-eng's). It is NOT yet reproducible from a second independently constructed lab, so a valid cell here is single-lab evidence until that second lab passes."
+    "state": "two-lab",
+    "note": "M2 gameplay entry has been reproduced in two independently constructed labs: m2-off-fixed-1 (gate 64 s, 1866.3 draws / 606.2 Mpx / 41.4 passes) and m3-portable-2 (gate 63 s, 1865.8 / 550.2 / 38.4, gameplay capture visually checked). The unified build also reached the same scene (1866.3 draws, 860 Mpx / 55.7 passes); that confirms the scene but is not a benchmark cell under the pre-M2 band. Any A/B/A numbers still need matched-scene cells."
   }
 }

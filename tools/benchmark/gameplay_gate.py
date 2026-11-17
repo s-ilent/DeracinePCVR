@@ -6,7 +6,12 @@
 #
 #   menu / front end :  465-500 draws, ~480 Mpx, ~65 passes   (~58-60 fps, paced)
 #   loading dip      :   42-  55 draws, low
-#   gameplay         : 1866-1900 draws, 620-720 Mpx, 42-46 passes (30-35 fps)
+#   gameplay, candidate renderer : 1866-1900 draws, 550-720 Mpx, 38-46 passes (30-35 fps)
+#   gameplay, unified renderer   : 1866 draws, 860 Mpx, 55.7 passes (35.7 fps)
+#
+# Mpx and passes depend on the renderer state at the same scene, so the band bounds draws
+# tightly (1500-2300) and Mpx/passes loosely (500-1000, 25-80). Re-derive the band only from a
+# live cell, never from an estimate.
 #
 # The gate (draws >= 800) cannot be met by the menu; the band catches a window that
 # is not actually gameplay even though it passed the gate. unique_fps is always
