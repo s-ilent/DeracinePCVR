@@ -451,6 +451,33 @@ int ProcessStates(s32 handle, OrbisPadData* pData, Input::GameController& contro
             const char* value = std::getenv("SHADPS4_DBG_AUTOPRESS_TO");
             return value != nullptr ? std::atoll(value) : 45000LL;
         }();
+        // SHADPS4_DBG_AUTOPRESS_MENU=1: keep pressing, by frames rather than by the clock (the clock
+        // does not say which screen the title is on), so the run walks the title screen into the
+        // menu and picks Continue: one press of down moves the cursor off New game, the press of
+        // Cross half a second later picks it. Only the lab's own copy of the game is meant to run
+        // with this: it writes to that copy's save.
+        static const bool auto_press_menu = [] {
+            const char* value = std::getenv("SHADPS4_DBG_AUTOPRESS_MENU");
+            return value != nullptr && value[0] == '1';
+        }();
+        static unsigned long long auto_frames{};
+        if (auto_press_menu) {
+            ++auto_frames;
+            const unsigned long long cycle = auto_frames % 300;
+            if (auto_frames > 1800 && cycle == 0) {
+                pData[i].buttons |= OrbisPadButtonDataOffset::Down;
+            } else if (auto_frames > 1800 && cycle == 30) {
+                pData[i].buttons |= OrbisPadButtonDataOffset::Cross;
+                static long long last_menu_note{};
+                const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        std::chrono::steady_clock::now().time_since_epoch())
+                                        .count();
+                if (now_ms - last_menu_note >= 5000) {
+                    last_menu_note = now_ms;
+                    LOG_INFO(Lib_Pad, "AUTOPRESS menu frame {}: down then cross", auto_frames);
+                }
+            }
+        }
         if (auto_press) {
             static const auto auto_start = std::chrono::steady_clock::now();
             const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
