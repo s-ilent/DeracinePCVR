@@ -274,15 +274,22 @@ void TextureCache::InvalidateMemory(VAddr addr, size_t size) {
 
 void TextureCache::InvalidateMemoryFromGPU(VAddr address, size_t max_size) {
     std::scoped_lock lock{mutex};
-    ForEachImageInRegion(address, max_size, [&](ImageId image_id, Image& image) {
-        // Only consider images that match base address.
-        // TODO: Maybe also consider subresources
-        if (image.info.guest_address != address) {
-            return;
-        }
-        // Ensure image is reuploaded when accessed again.
-        image.flags |= ImageFlagBits::GpuDirty;
-    });
+    // Mark the image at the written address, then follow the images stored right after it
+    // (e.g. the chroma planes after a luma plane), as long as they lie inside the written range.
+    const VAddr end = address + max_size;
+    VAddr next = address;
+    while (next < end) {
+        VAddr next_end = 0;
+        ForEachImageInRegion(next, end - next, [&](ImageId image_id, Image& image) {
+            if (image.info.guest_address != next) {
+                return;
+            }
+            // Ensure the image is reuploaded when accessed again.
+            image.flags |= ImageFlagBits::GpuDirty;
+            next_end = std::max<VAddr>(next_end, next + image.info.guest_size);
+        });
+        next = next_end > next ? next_end : end;
+    }
 }
 
 void TextureCache::UnmapMemory(VAddr cpu_addr, size_t size) {
@@ -653,12 +660,19 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
                     return {merged_image_id, -1, -1};
                 }
 
-                // We need to have a larger, already allocated image to copy this one into
-                if (merged_image_id) {
-                    auto& merged_image = slot_images[merged_image_id];
-                    merged_image.CopyMip(cache_image, mip, slice);
-                    FreeImage(cache_image_id);
+                // If we don't have an allocated image, create one here. Otherwise it is created
+                // later from guest memory, the GPU data of this subresource is lost, and reads
+                // and writes end up in different images.
+                if (!merged_image_id) {
+                    merged_image_id = slot_images.insert(instance, scheduler, blit_helper,
+                                                         slot_image_views, image_info);
+                    RegisterImage(merged_image_id);
+                    RefreshImage(slot_images[merged_image_id]);
+                    TrackImage(merged_image_id);
                 }
+                auto& merged_image = slot_images[merged_image_id];
+                merged_image.CopyMip(slot_images[cache_image_id], mip, slice);
+                FreeImage(cache_image_id);
             }
         }
     }
@@ -674,8 +688,15 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
     auto& src_image = slot_images[image_id];
     auto& new_image = slot_images[new_image_id];
 
+    // Only carry over the old contents when they hold GPU-written data that guest memory lacks.
+    // A CPU-dirty source is stale (e.g. a streamed texture rewritten in a reused pool slot);
+    // copying it would overwrite the fresh upload with old data.
+    const bool src_has_gpu_data = src_image.SafeToDownload();
+
     RefreshImage(new_image);
-    new_image.CopyImage(src_image);
+    if (src_has_gpu_data) {
+        new_image.CopyImage(src_image);
+    }
 
     if (src_image.binding.is_bound || src_image.binding.is_target) {
         src_image.binding.needs_rebind = 1u;
@@ -685,6 +706,9 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
 
     TrackImage(new_image_id);
     new_image.flags &= ~ImageFlagBits::Dirty;
+    if (src_has_gpu_data) {
+        new_image.flags |= ImageFlagBits::GpuModified;
+    }
     return new_image_id;
 }
 
