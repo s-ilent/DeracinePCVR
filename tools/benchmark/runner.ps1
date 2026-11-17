@@ -676,6 +676,24 @@ if ($RenderDocCaptureDir) {
     $rdcPngSimilarity = Round3 (Get-SceneSimilarity $pngPath)
     Write-Output ("RenderDoc capture: {0} ({1:N0} bytes), final image similarity {2:N4}" -f `
             $rdc.Name, $rdc.Length, $rdcPngSimilarity)
+    # A RenderDoc session may die during the readback-heavy render-target dump before the harness
+    # screenshot exists. The capture's own final image is then the scene evidence: use it as the
+    # screenshot, and let the same independent comparison decide whether it is the classroom.
+    if (-not $sceneShot -and $rdcPngSimilarity -ge 0.85) {
+        Invoke-Guard 'write' (Join-Path $Out 'scene.png')
+        Copy-Item -LiteralPath $pngPath -Destination (Join-Path $Out 'scene.png') -Force
+        $sceneShot = Join-Path $Out 'scene.png'
+        $shotSha = Get-Sha256 $sceneShot
+        $shotSimilarity = $rdcPngSimilarity
+        $shotTakenAt = $stopwatch.Elapsed.TotalSeconds
+        $sizeText = & $Python (Join-Path $PSScriptRoot 'scene_signature.py') size $sceneShot 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            $size = $sizeText | ConvertFrom-Json
+            $shotWidth = [int]$size.width
+            $shotHeight = [int]$size.height
+        }
+        Write-Output 'scene screenshot taken from the RenderDoc capture final image'
+    }
 }
 
 # Scene identity for the run: the screenshot must match the reviewed reference.
