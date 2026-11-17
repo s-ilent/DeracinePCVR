@@ -946,6 +946,11 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
                 }
                 auto& merged_image = slot_images[merged_image_id];
                 merged_image.CopyMip(slot_images[cache_image_id], mip, slice);
+                // The parent now holds GPU-authored texels for that subresource, which guest
+                // memory does not have - that is the whole reason #5433 exists. Without the flag,
+                // SafeToDownload() answers false and a later expansion under #5444's gate would
+                // drop exactly what this copy preserved.
+                merged_image.flags |= ImageFlagBits::GpuModified;
                 FreeImage(cache_image_id);
             }
         }
