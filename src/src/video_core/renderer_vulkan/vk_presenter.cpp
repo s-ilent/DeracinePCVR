@@ -1449,10 +1449,19 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
         const char* value = std::getenv("SHADPS4_RESOLVE_AA");
         return value == nullptr || value[0] != '0';
     }();
+    // SHADPS4_VR_DOWNSAMPLE=1: where a picture is larger than the headset's, average the
+    // source texels each output pixel covers instead of reading one point of it (and instead
+    // of FXAA, which works on the source's grid). Off by default: at 1:1 it does nothing, and
+    // where an eye is only a little larger it trades a little sharpness for less moire.
+    static const bool downsample = [] {
+        const char* value = std::getenv("SHADPS4_VR_DOWNSAMPLE");
+        return value != nullptr && value[0] != '0';
+    }();
     auto hmd_settings = pp_settings;
     hmd_settings.sharpen = sharpen;
     hmd_settings.encoded_in = encoded_in ? 1 : 0;
     hmd_settings.antialias = antialias ? 1 : 0;
+    hmd_settings.downsample = downsample ? 1 : 0;
     // Where FSR 1 enlarged the title's scene (TitleUpscale), the picture is crisp already:
     // sharpened by SHADPS4_VR_SHARPEN_FSR there (half of the rest by default).
     if (rasterizer->EyesUpscaled()) {
