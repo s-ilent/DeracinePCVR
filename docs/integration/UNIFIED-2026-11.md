@@ -45,7 +45,7 @@ Toolchain: VS 2022 Build Tools 14.44 + LLVM/clang-cl 23.1.5 + Ninja, Release, CP
 ## B. Integration matrix
 
 Full accounting of every branch and worktree is in [`INTEGRATION-MATRIX.md`](INTEGRATION-MATRIX.md).
-Summary counts over 30 discovered branch lines and 32 worktrees:
+Summary over 45 local branches plus the 4 integration process branches and 32 worktrees:
 
 - Integrated: upstream-sync, guardrails, color fix, frustum fix, openxr native resolution,
   render-quality, hand-rig-live, compat (two commits), crossfork diagnostics/coverage,

@@ -42,6 +42,10 @@ Disposition vocabulary: **INTEGRATED** / **INTEGRATED WITH MODIFICATIONS** / **A
 | 28 | `fix/libc-cxa-hooks` | (no worktree) | `0699f03` | **ALREADY PRESENT** | Its content is in `acda49e` (`224be22` + `8f59dcf`); only unrelated later files differ. |
 | 29 | `audit/stage1-host-guest` | (no worktree) | `e21a9e2` | **ALREADY PRESENT** | All eight fixes were rebased into `acda49e` (`9bdf2bf`, `917fad1`, `9075e12`, `0e810ad`, `c8a0d53`, …); `git cherry` marks them `-`. |
 | 30 | `main`, `origin/*`, `upstream/main` | `DeracinePCVR` (detached refs) | `d7cb924`, `143b58a`, … | **REFERENCE ONLY** | Pre-integration fork/upstream history. Not moved, not pushed, not merged. |
+| 31 | `integration/unified-compat-guardrails` | `wt-unified-compat` | `59ccc93` | **PROCESS BRANCH — MERGED** | Integration branch for rows 5+6; merged as `c6cc31e`. Kept for review/rollback. |
+| 32 | `integration/unified-unreal-quality` | `wt-unified-unreal` | `d075091` | **PROCESS BRANCH — MERGED** | Integration branch for row 15; merged as `73685be`. |
+| 33 | `integration/unified-presentation-perf` | `wt-unified-present` | `98aae10` | **PROCESS BRANCH — MERGED** | Integration branch for rows 7–11, 19 (depth pass) and 22 (barrier); merged as `9a617a2`. |
+| 34 | `integration/unified-crossfork-diag` | `wt-unified-crossfork` | `a2fdd41` | **PROCESS BRANCH — MERGED** | Extraction branch for row 16; merged as `c5bc3f8`. |
 
 ## B. Worktrees and uncommitted work (all left untouched)
 
