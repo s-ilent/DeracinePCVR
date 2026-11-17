@@ -1194,6 +1194,41 @@ gtest_discover_tests(shadps4_mip_chain_test
 )
 
 # ===========================================================================
+# Copy coverage: which mip levels a whole-image copy overwrites
+#
+# Header-only on purpose: the predicate reads ImageInfo fields and must be testable without a
+# Vulkan device, because getting it wrong is how guest data is dropped.
+# ===========================================================================
+
+add_executable(shadps4_image_coverage_test
+    video_core/test_image_coverage.cpp
+)
+
+target_include_directories(shadps4_image_coverage_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/tests
+)
+target_compile_features(shadps4_image_coverage_test PRIVATE cxx_std_23)
+target_compile_definitions(shadps4_image_coverage_test PRIVATE NOMINMAX)
+
+target_link_libraries(shadps4_image_coverage_test PRIVATE
+    GTest::gtest_main
+    Vulkan::Headers
+    magic_enum::magic_enum
+    fmt::fmt
+    spdlog::spdlog
+    Boost::headers
+)
+
+list(APPEND TEST_TARGETS shadps4_image_coverage_test)
+
+gtest_discover_tests(shadps4_image_coverage_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)
+
+# ===========================================================================
 # C++ runtime hooks for libSceLibcInternal (guest static initialization)
 # ===========================================================================
 

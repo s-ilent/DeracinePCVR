@@ -24,6 +24,7 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/staging_diag.h"
 #include "video_core/texture_cache/host_compatibility.h"
+#include "video_core/texture_cache/image_stats.h"
 #include "video_core/texture_cache/image_view.h"
 #include "video_core/texture_cache/texture_cache.h"
 #include "video_core/texture_cache/tile_manager.h"
@@ -121,6 +122,9 @@ TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler&
       buffer_cache{buffer_cache_}, tracker{tracker_}, blit_helper{instance, scheduler},
       tile_manager{instance, scheduler, buffer_cache.GetUtilityBuffer(MemoryUsage::Stream)},
       readback_linear_images{EmulatorSettings.IsReadbackLinearImagesEnabled()} {
+    // The per-second counters report this allocator's own device-memory total; it is the only
+    // place that can see the allocator at report time.
+    ImageStats::SetAllocator(instance.GetAllocator());
     // Create basic null image at fixed image ID.
     const auto null_id = GetNullImage(vk::Format::eR8G8B8A8Unorm);
     ASSERT(null_id.index == NULL_IMAGE_ID.index);
@@ -305,6 +309,7 @@ void TextureCache::UnmapMemory(VAddr cpu_addr, size_t size) {
 
 ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, BindingType binding,
                                           ImageId cache_image_id) {
+    ScopedTimer timed{ImageStats::depth_ns};
     auto& cache_image = slot_images[cache_image_id];
 
     if (!cache_image.info.props.is_depth && !requested_info.props.is_depth) {
@@ -491,6 +496,7 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
                                                            BindingType binding,
                                                            ImageId cache_image_id,
                                                            ImageId merged_image_id) {
+    ScopedTimer timed{ImageStats::overlap_ns};
     auto& cache_image = slot_images[cache_image_id];
     const bool safe_to_delete =
         scheduler.CurrentTick() - cache_image.tick_accessed_last > NumFramesBeforeRemoval;
@@ -718,7 +724,21 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
     return {merged_image_id, -1, -1};
 }
 
+namespace {
+/// Whether a COVERED_REFRESH shape has been logged already. SHADPS4_DBG_COVERED_REFRESH reports
+/// one line per shape rather than one per expansion, so the log stays readable on a scene that
+/// expands the same allocation every frame. (The lineage this was extracted from used its
+/// AliasTrace::FirstTime for this, which this tree does not have.)
+bool FirstCoveredShape(u64 key) {
+    static std::mutex shape_mutex;
+    static std::unordered_set<u64> seen;
+    std::scoped_lock lock{shape_mutex};
+    return seen.insert(key).second;
+}
+} // Anonymous namespace
+
 ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
+    ScopedTimer timed{ImageStats::expand_ns};
     const auto new_image_id =
         slot_images.insert(instance, scheduler, blit_helper, slot_image_views, info);
     RegisterImage(new_image_id);
@@ -731,8 +751,59 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
     // copying it would overwrite the fresh upload with old data.
     const bool src_has_gpu_data = src_image.SafeToDownload();
 
-    RefreshImage(new_image);
-    if (src_has_gpu_data) {
+    // Whether the new image takes the old image's contents at all. Naming the copy's condition
+    // once, here, is what keeps the coverage skip below sound: an upload may only be skipped when
+    // the copy that replaces it is going to run. #5444 states the condition as
+    // SafeToDownload() || num_samples > 1 (the second term because RefreshImage declines
+    // multisampled images, so for those the copy is the only writer); this tree already gates the
+    // copy on SafeToDownload() alone, and carries_contents is that gate: when it is false the
+    // coverage below collapses to "skip nothing", which is what the assertion after the refresh
+    // enforces.
+    const bool carries_contents = src_has_gpu_data;
+    // What the copy is going to write, level by level. Only levels it does not reach are read
+    // from guest memory: the rest would be overwritten before anything could read them.
+    // SHADPS4_DBG_COVERED_REFRESH=1 turns it on; the shapes it decides on are logged once each.
+    static const bool covered_refresh = [] {
+        const char* value = std::getenv("SHADPS4_DBG_COVERED_REFRESH");
+        return value != nullptr && value[0] == '1';
+    }();
+    const CopyCoverage covered = covered_refresh && carries_contents
+                                     ? CoveringCopyOf(src_image.info, new_image.info)
+                                     : CopyCoverage{};
+    ImageStats::NoteExpand(!covered.CoversNothing());
+    if (covered_refresh) {
+        const u64 key = 0xC0DE0000ull ^ (static_cast<u64>(src_image.info.pixel_format) << 8) ^
+                        (static_cast<u64>(new_image.info.pixel_format) << 16) ^
+                        (static_cast<u64>(src_image.info.size.width) << 24) ^
+                        (static_cast<u64>(src_image.info.size.height) << 40) ^
+                        (static_cast<u64>(src_image.info.resources.levels) << 56) ^
+                        (static_cast<u64>(new_image.info.resources.levels) << 60);
+        if (FirstCoveredShape(key)) {
+            LOG_INFO(Render_Vulkan,
+                     "COVERED_REFRESH src={:#x} dst={:#x} src={}x{} levels={} layers={} "
+                     "dst={}x{} levels={} layers={} fmt={}/{} mips={} layers={} depth={}/{}",
+                     src_image.info.guest_address, new_image.info.guest_address,
+                     src_image.info.size.width, src_image.info.size.height,
+                     src_image.info.resources.levels, src_image.info.resources.layers,
+                     new_image.info.size.width, new_image.info.size.height,
+                     new_image.info.resources.levels, new_image.info.resources.layers,
+                     vk::to_string(src_image.info.pixel_format),
+                     vk::to_string(new_image.info.pixel_format), covered.mips, covered.layers,
+                     static_cast<int>(src_image.info.props.is_depth),
+                     static_cast<int>(new_image.info.props.is_depth));
+        }
+    }
+    if (covered.CoversNothing()) {
+        RefreshImage(new_image);
+    } else {
+        RefreshImage(new_image, &covered);
+    }
+    // The property that keeps this coherent: a level whose upload was skipped is a level the copy
+    // is about to write. Adopting #5444 without moving the coverage gate with it breaks exactly
+    // this, and breaks it silently - the skip is opt-in, so the corruption would only appear when
+    // someone turned the measurement switch on.
+    ASSERT(carries_contents || covered.CoversNothing());
+    if (carries_contents) {
         new_image.CopyImage(src_image);
     }
 
@@ -756,6 +827,13 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     if (info.guest_address == 0) [[unlikely]] {
         return GetNullImage(info.pixel_format);
     }
+
+    // Drives the per-second counters. This is the cache's most frequent entry point and the only
+    // one that runs whether or not anything is being created, so the second's totals are written
+    // here rather than from one of the paths that add to them (the tree this was extracted from
+    // reported from its overlap counters, which do not exist here). Off unless
+    // SHADPS4_DBG_OVERLAP is set; ImageStats::Report() then reads one bool and returns.
+    ImageStats::Report();
 
     std::scoped_lock lock{mutex};
     Vulkan::FrameStats::Add(Vulkan::FrameStats::Counter::ImageLookups);
@@ -1103,7 +1181,8 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
     return image.FindView(view_info, false);
 }
 
-void TextureCache::RefreshImage(Image& image) {
+void TextureCache::RefreshImage(Image& image, const CopyCoverage* covered) {
+    ScopedTimer timed{ImageStats::refresh_ns};
     if (False(image.flags & ImageFlagBits::Dirty) || image.info.num_samples > 1) {
         return;
     }
@@ -1137,12 +1216,27 @@ void TextureCache::RefreshImage(Image& image) {
     const bool is_gpu_dirty = True(image.flags & ImageFlagBits::GpuDirty);
 
     boost::container::small_vector<vk::BufferImageCopy, 14> image_copies;
+    u32 uploaded_mips = 0;
+    u32 skipped_mips = 0;
+    u64 uploaded_bytes = 0;
+    u64 skipped_bytes = 0;
     for (u32 m = 0; m < num_mips; m++) {
+        const auto [mip_size, mip_pitch, mip_height, mip_offset] = image.info.mips_layout[m];
+
+        // A copy that follows this refresh writes this level whole. What guest memory holds for
+        // it would never be read: the copy overwrites it first. Only the levels the copy does
+        // not reach are uploaded. See CopyCoverage, and ExpandImage, the only caller that can
+        // pass a coverage.
+        if (covered != nullptr && covered->CoversLevel(m, num_layers)) {
+            ++skipped_mips;
+            skipped_bytes += mip_size;
+            continue;
+        }
+
         const u32 width = std::max(image.info.size.width >> m, 1u);
         const u32 height = std::max(image.info.size.height >> m, 1u);
         const u32 depth =
             image.info.props.is_volume ? std::max(image.info.size.depth >> m, 1u) : 1u;
-        const auto [mip_size, mip_pitch, mip_height, mip_offset] = image.info.mips_layout[m];
 
         // Protect GPU modified resources from accidental CPU reuploads.
         if (is_gpu_modified && !is_gpu_dirty) {
@@ -1169,7 +1263,11 @@ void TextureCache::RefreshImage(Image& image) {
             .imageOffset = {0, 0, 0},
             .imageExtent = {extent_width, extent_height, depth},
         });
+        ++uploaded_mips;
+        uploaded_bytes += static_cast<u64>(extent_width) * extent_height * depth * num_layers *
+                          (image.info.num_bits / 8);
     }
+    ImageStats::NoteRefresh(uploaded_mips, uploaded_bytes, skipped_mips, skipped_bytes);
 
     if (image_copies.empty()) {
         image.flags &= ~ImageFlagBits::Dirty;
