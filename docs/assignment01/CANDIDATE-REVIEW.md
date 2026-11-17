@@ -55,6 +55,25 @@ They are the missing gates, not passes. The candidate's build hash differs from 
 build's `B6830480…` because the evidence build was made at `fcaa02f` before the later
 comment-only source change; the C++ behaviour is the same.
 
+## Deferred gate commands (run only when the headset is free)
+
+```powershell
+$WT = 'M:\Development\Deracine-work\wt-guardrails-candidate'
+$PY = 'C:\Users\Arukas\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe'
+
+# tests-enabled tree, the two new targets, then the full suite
+pwsh -File M:\Development\Deracine-work\_build\build.ps1 -Root $WT -Tests `
+  -Target shadps4_virtual_camera_clock_test
+pwsh -File M:\Development\Deracine-work\_build\build.ps1 -Root $WT -Tests `
+  -Target shadps4_autopress_test
+& "$WT\build-tests\tests\shadps4_virtual_camera_clock_test.exe"
+& "$WT\build-tests\tests\shadps4_autopress_test.exe"
+ctest --test-dir "$WT\build-tests" -j 4 --output-on-failure
+```
+
+Expect the ten inherited Windows failures listed in `EVIDENCE.md`; anything else is new and must
+be reconciled before integration.
+
 ## Integration sequence (proposal, no integration performed)
 
 1. `995e84c` contract docs.

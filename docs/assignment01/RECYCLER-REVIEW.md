@@ -85,4 +85,21 @@ must not be quoted: it compares different scenes. The recycler can be integrated
 gates above, and only as an explicitly switchable default-on candidate with the pool budget
 documented.
 
+## Deferred gate commands (run only when the headset is free)
+
+```powershell
+$WT = 'M:\Development\Deracine-work\wt-recycler-candidate'
+# build the candidate first
+pwsh -File M:\Development\Deracine-work\_build\build.ps1 -Root $WT
+# the counters the A/B needs are not in this extraction (6170df6's ImageStats dependency was
+# stripped); port 49ec266 or add a minimal timer around vmaCreateImage/vmaDestroyImage before
+# claiming a CPU-side number.
+```
+
+Then, with one binary and the HMD slot, interleave
+`SHADPS4_DBG_IMAGE_RECYCLER=0` / `=1` / `=0` / `=1` on the identical classroom scene and settings,
+verify each cell's screenshot identity, and report separately: images created per frame,
+recycler hits/misses/pool bytes, CPU wall in create/destroy, GPU timestamps for the same calls,
+VMA budget/VRAM, and FPS with a same-binary noise floor. A single pair is not evidence.
+
 Candidate: `candidate/image-recycler-2026-11-17` @ `4d244d1`; one commit; no other branch touched.
