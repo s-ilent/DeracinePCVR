@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "description": "Paths the benchmark harness must never treat as a writable game shadow. Active installations, shared game images, the shared harness/evidence stores and any checkout of this repository are protected: game_shadow.py refuses a shadow root or -Game path under one of these prefixes, and path_guard.py denies automated writes to them. The private classroom shadows (D:\\Temp\\Deracine\\CUSA11919-guardrails-*) are deliberately NOT listed; they are the copy the benchmark owns.",
+  "notes": [
+    "Entries are literal prefixes after realpath (junctions, symlinks and reparse points resolved), so a name-squatting sibling such as CUSA11919-quality is refused as well.",
+    "%REPO% expands to this checkout (the worktree this file runs from); %WORKSPACE% expands to its parent, M:\\Development\\Deracine-work, where the shared _build harness and lab live.",
+    "CUSA11919-qual is the shared read-only content source that the private shadow junctions into. Selecting it as -Game would write engine.ini into the shared image, so it is blocked.",
+    "CUSA11919-1.01 and CUSA11919-color are additional shared game images already listed as protected in preflight.ps1's deny roots.",
+    "The recovery evidence store is a protected path from the autonomous-engineering contract; no benchmark shadow may live inside it."
+  ],
+  "deny": [
+    "D:\\Temp\\Deracine\\1.0",
+    "D:\\Temp\\Deracine\\Update",
+    "D:\\Temp\\Deracine\\CUSA11919-1.01",
+    "D:\\Temp\\Deracine\\CUSA11919-color",
+    "D:\\Temp\\Deracine\\CUSA11919-qual",
+    "%REPO%\\pc-vr",
+    "%REPO%\\games",
+    "%WORKSPACE%\\_build\\bench",
+    "%WORKSPACE%\\_build\\headless\\template",
+    "%WORKSPACE%\\lab\\pc-vr-quality",
+    "M:\\Development\\Deracine-recovery-2026-11-17"
+  ]
+}

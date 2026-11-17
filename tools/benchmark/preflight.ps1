@@ -7,6 +7,17 @@
 # The snapshot is detection, not prevention: this process holds the same Windows token as every
 # other process, so it cannot stop a write. It makes an unexpected write visible, and
 # postflight.ps1 refuses to report success when one happened.
+#
+# Optional game-shadow proof (the runner passes both once it has a declared private shadow):
+#   -ShadowRoot <dir>       the declared private game shadow root; game_shadow.py must accept it
+#                           against $Game before any protected file is hashed.
+#   -ShadowManifest <file>  the declaration itself; may be given instead of -ShadowRoot
+#                           (the root is then its parent). It must be named benchmark-shadow.json
+#                           and sit directly in the root.
+#   -Python <exe>           interpreter for game_shadow.py (standard library only; default python).
+# When neither shadow parameter is given the preflight behaves exactly as before. When either is
+# given, an invalid shadow is a terminating error (non-zero exit): the session must not write
+# <Game>\gameproject\saved\config\ps4\engine.ini in a directory it cannot prove is private.
 
 [CmdletBinding()]
 param(
@@ -17,7 +28,10 @@ param(
     [string]$SharedBench = 'M:\Development\Deracine-work\_build\bench',
     [string]$SharedLab = 'M:\Development\Deracine-work\lab\pc-vr-quality',
     [string]$Game = 'D:\Temp\Deracine\CUSA11919-guardrails-2026-11-17',
-    [string]$SharedGame = 'D:\Temp\Deracine\CUSA11919-qual'
+    [string]$SharedGame = 'D:\Temp\Deracine\CUSA11919-qual',
+    [string]$ShadowRoot = '',
+    [string]$ShadowManifest = '',
+    [string]$Python = 'python'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -89,6 +103,53 @@ $worktreeFull = Normalize-Path $Worktree
 $repoFull = Normalize-Path $Repo
 if ($worktreeFull.TrimEnd('\') -eq $repoFull.TrimEnd('\')) {
     throw "the active runtime repository cannot be the benchmark worktree"
+}
+
+# Prove the game shadow before hashing anything: the session rewrites engine.ini inside $Game, so
+# a $Game that is really the active installation or a shared copy must fail here, not afterwards.
+$shadow = [ordered]@{ requested = $false }
+if ($ShadowRoot -or $ShadowManifest) {
+    if (-not $ShadowRoot) {
+        $ShadowManifest = [IO.Path]::GetFullPath($ShadowManifest)
+        $ShadowRoot = Split-Path -Parent $ShadowManifest
+    }
+    $ShadowRoot = [IO.Path]::GetFullPath($ShadowRoot)
+    if (-not $ShadowManifest) { $ShadowManifest = Join-Path $ShadowRoot 'benchmark-shadow.json' }
+    $ShadowManifest = [IO.Path]::GetFullPath($ShadowManifest)
+    if ((Split-Path -Leaf $ShadowManifest) -ne 'benchmark-shadow.json') {
+        throw "the shadow manifest must be named benchmark-shadow.json: $ShadowManifest"
+    }
+    $shadowParent = (Split-Path -Parent $ShadowManifest).TrimEnd('\')
+    if ($shadowParent -ne $ShadowRoot.TrimEnd('\')) {
+        throw "the shadow manifest '$ShadowManifest' is not directly inside '$ShadowRoot'"
+    }
+
+    $shadowGame = [IO.Path]::GetFullPath($Game)
+    $shadowEboot = Join-Path $shadowGame 'eboot.bin'
+    $shadowOutput = & $Python (Join-Path $PSScriptRoot 'game_shadow.py') check `
+        --game $shadowGame --shadow-root $ShadowRoot --eboot $shadowEboot --json 2>&1
+    $shadowExit = $LASTEXITCODE
+    $shadowDoc = $null
+    try { $shadowDoc = ($shadowOutput -join "`n") | ConvertFrom-Json } catch { }
+    if ($shadowExit -ne 0 -or $null -eq $shadowDoc -or -not [bool]$shadowDoc.valid) {
+        $shadowReasons = if ($null -ne $shadowDoc -and $shadowDoc.reasons) {
+            @($shadowDoc.reasons) -join '; '
+        } else {
+            ($shadowOutput -join ' ')
+        }
+        throw "game shadow '$ShadowRoot' is not valid (exit $shadowExit): $shadowReasons"
+    }
+    $shadow = [ordered]@{
+        requested     = $true
+        checker       = (Join-Path $PSScriptRoot 'game_shadow.py')
+        root          = $shadowDoc.shadow_root
+        game_realpath = $shadowDoc.game_realpath
+        manifest_path = $shadowDoc.manifest_path
+        manifest      = $shadowDoc.manifest
+        eboot_sha256  = $shadowDoc.eboot_sha256
+        engine_ini    = $shadowDoc.engine_ini
+        policy        = $shadowDoc.policy
+    }
 }
 
 # Immutable protected files: hash everything whose change would mean the session damaged the
@@ -175,6 +236,8 @@ $protected = [ordered]@{
 
 $guard = [ordered]@{
     schema_version = 1
+    # path_guard.py reads this policy itself and merges it into the deny roots for mutations.
+    protected_policy = (Join-Path $PSScriptRoot 'shadow-policy.json')
     allow_write = @(
         (Join-Path $worktreeFull '_out'),
         (Join-Path $worktreeFull '_lab'),
@@ -214,6 +277,7 @@ $manifest = [ordered]@{
     immutable      = $immutablePaths
     volatile       = $volatile
     guard          = $guard
+    shadow         = $shadow
 }
 
 Write-JsonFile $outFull $manifest
