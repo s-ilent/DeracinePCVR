@@ -89,6 +89,9 @@ public:
     VideoOutDriver(u32 width, u32 height);
     ~VideoOutDriver();
 
+    /// Stops the present thread and waits for it (test-only clean exit, before the presenter goes).
+    void Stop();
+
     int Open(const ServiceThreadParams* params, s32 bus_type);
     void Close(s32 handle);
 

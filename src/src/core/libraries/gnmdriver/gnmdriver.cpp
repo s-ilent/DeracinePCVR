@@ -10,7 +10,6 @@
 #include <thread>
 
 #include "common/assert.h"
-#include "core/vr/frame_timeline.h"
 #include "common/debug.h"
 #include "common/elf_info.h"
 #include "common/logging/log.h"
@@ -27,6 +26,7 @@
 #include "core/libraries/videoout/video_out.h"
 #include "core/memory.h"
 #include "core/platform.h"
+#include "core/vr/frame_timeline.h"
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/amdgpu/pm4_cmds.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
@@ -2902,6 +2902,37 @@ int PS4_SYSV_ABI Func_E51D44DB8151238C() {
 int PS4_SYSV_ABI Func_F916890425496553() {
     LOG_ERROR(Lib_GnmDriver, "(STUBBED) called");
     return ORBIS_OK;
+}
+
+bool ResetPresenter() {
+    // Guest threads are still running after the window loop (the normal exit relies on
+    // quick_exit killing them) and they call into the GPU. Pause them and let the pause settle
+    // first; if it does not, leave the presenter alone: a crash here would be reported as an
+    // emulator fault rather than as the R6 shutdown the caller wanted to test.
+    DebugState.PauseGuestThreads();
+    bool paused = DebugState.IsGuestThreadsPaused();
+    for (int attempt = 0; attempt < 200 && !paused; ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        paused = DebugState.IsGuestThreadsPaused();
+    }
+    if (!paused) {
+        LOG_WARNING(Lib_GnmDriver,
+                    "SHADPS4_CLEAN_EXIT: the guest threads did not pause; the presenter is left "
+                    "alone and the process exits as usual (R6 not exercised)");
+        return false;
+    }
+    LOG_INFO(Lib_GnmDriver, "SHADPS4_CLEAN_EXIT: the guest threads are paused");
+    LOG_INFO(Lib_GnmDriver, "SHADPS4_CLEAN_EXIT: stopping the GPU and present threads");
+    if (liverpool) {
+        liverpool->Stop();
+    }
+    ::Libraries::VideoOut::StopDriver();
+    if (presenter) {
+        LOG_INFO(Lib_GnmDriver, "SHADPS4_CLEAN_EXIT: destroying the presenter");
+        presenter.reset();
+    }
+    LOG_INFO(Lib_GnmDriver, "SHADPS4_CLEAN_EXIT: the presenter is destroyed");
+    return true;
 }
 
 void RegisterLib(Core::Loader::SymbolsResolver* sym) {

@@ -320,11 +320,36 @@ void WindowSDL::SetIcon(const std::filesystem::path& path) {
     SetWindowIcon(window, buf);
 }
 
+void WindowSDL::RequestQuit() {
+    // Wake a loop waiting for an event; the flag covers the paths where the event does not reach
+    // the switch below (ImGui or the mouse consume it first).
+    quit_requested.store(true, std::memory_order_relaxed);
+    SDL_Event event{};
+    event.type = SDL_EVENT_QUIT;
+    SDL_PushEvent(&event);
+}
+
+bool WindowSDL::TakeQuitRequest() {
+    if (!quit_requested.exchange(false, std::memory_order_relaxed)) {
+        return false;
+    }
+    LOG_INFO(Frontend, "The run asked for the normal quit (SHADPS4_EXIT_AFTER)");
+    is_open = false;
+    return true;
+}
+
 void WindowSDL::WaitEvent() {
     // Called on main thread
+    if (TakeQuitRequest()) {
+        return;
+    }
     SDL_Event event;
 
     if (!SDL_WaitEvent(&event)) {
+        return;
+    }
+
+    if (TakeQuitRequest()) {
         return;
     }
 

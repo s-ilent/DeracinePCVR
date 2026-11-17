@@ -95,8 +95,14 @@ Liverpool::Liverpool() {
 }
 
 Liverpool::~Liverpool() {
+    Stop();
+}
+
+void Liverpool::Stop() {
     process_thread.request_stop();
-    process_thread.join();
+    if (process_thread.joinable()) {
+        process_thread.join();
+    }
 }
 
 void Liverpool::ProcessCommands() {

@@ -1,11 +1,14 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <set>
 #include <sstream>
+#include <thread>
 #include <fmt/core.h>
 #include <fmt/xchar.h>
 #include <hwinfo/hwinfo.h>
@@ -14,9 +17,9 @@
 #include "common/debug.h"
 #include "common/logging/log.h"
 #include "common/thread.h"
-#include "core/known_title.h"
 #include "core/emulator_settings.h"
 #include "core/ipc/ipc.h"
+#include "core/known_title.h"
 #ifdef ENABLE_DISCORD_RPC
 #include "common/discord_rpc_handler.h"
 #endif
@@ -34,6 +37,7 @@
 #include "core/file_format/psf.h"
 #include "core/file_format/trp.h"
 #include "core/file_sys/fs.h"
+#include "core/libraries/gnmdriver/gnmdriver.h"
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/np/np_trophy.h"
@@ -195,6 +199,7 @@ std::map<s32, std::string> ExtractTrophies(const std::filesystem::path& npbind_p
 void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
                    std::optional<std::filesystem::path> p_game_folder) {
     Common::SetCurrentThreadName("shadPS4:Main");
+    const auto run_started = std::chrono::steady_clock::now();
     if (waitForDebuggerBeforeRun) {
         Debugger::WaitForDebuggerAttach();
     }
@@ -571,6 +576,24 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     }
 
     window->InitTimers();
+    // Test-only SHADPS4_EXIT_AFTER=<seconds>: ask for the normal quit that long after the
+    // emulator started, so an unattended run ends through the ordinary shutdown path instead of
+    // being killed. The request goes into the window's own event loop; no GUI automation.
+    if (const char* exit_after = std::getenv("SHADPS4_EXIT_AFTER");
+        exit_after != nullptr && *exit_after != '\0') {
+        const double seconds = std::atof(exit_after);
+        if (seconds > 0.0) {
+            LOG_INFO(Loader, "SHADPS4_EXIT_AFTER={:.1f}: the run will ask for the normal quit",
+                     seconds);
+            std::thread{[run_started, seconds] {
+                Common::SetCurrentThreadName("shadPS4:ExitAfter");
+                std::this_thread::sleep_until(run_started + std::chrono::duration<double>(seconds));
+                if (g_window != nullptr) {
+                    g_window->RequestQuit();
+                }
+            }}.detach();
+        }
+    }
     while (window->IsOpen()) {
         window->WaitEvent();
     }
@@ -578,6 +601,17 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
 #ifdef ENABLE_OPENXR_HOST
     Core::Vr::OpenXrHost::Instance().Shutdown();
 #endif
+    // Test-only SHADPS4_CLEAN_EXIT=1: destroy the Vulkan presenter through the normal exit path,
+    // so its destructor (image recycler, allocator) runs instead of being skipped by quick_exit.
+    if (const char* clean_exit = std::getenv("SHADPS4_CLEAN_EXIT");
+        clean_exit != nullptr && *clean_exit != '\0' && *clean_exit != '0') {
+        LOG_INFO(Loader, "SHADPS4_CLEAN_EXIT: destroying the presenter before exiting");
+        if (Libraries::GnmDriver::ResetPresenter()) {
+            LOG_INFO(Loader, "SHADPS4_CLEAN_EXIT: the presenter is gone");
+        } else {
+            LOG_WARNING(Loader, "SHADPS4_CLEAN_EXIT: the presenter was left alone (R6 blocked)");
+        }
+    }
     UpdatePlayTime(id);
     Storage::DataBase::Instance().Close();
 
