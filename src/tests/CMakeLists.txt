@@ -629,6 +629,7 @@ set(PATCH_REPOSITORY_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/common/patch_preset.cpp
     ${CMAKE_SOURCE_DIR}/src/core/file_format/psf.cpp
     ${CMAKE_SOURCE_DIR}/src/common/io_file.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/ntapi.cpp
 
     # EmulatorState is used by OnGameLoaded(); EmulatorSettings is used by log.cpp.
     ${CMAKE_SOURCE_DIR}/src/core/emulator_state.cpp
@@ -691,6 +692,7 @@ set(PATCH_STATE_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/common/patch_preset.cpp
     ${CMAKE_SOURCE_DIR}/src/core/file_format/psf.cpp
     ${CMAKE_SOURCE_DIR}/src/common/io_file.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/ntapi.cpp
 
     # EmulatorState is used by OnGameLoaded(); EmulatorSettings is used by log.cpp.
     ${CMAKE_SOURCE_DIR}/src/core/emulator_state.cpp
@@ -753,6 +755,7 @@ set(PATCH_DOMAIN_SOURCES
     ${CMAKE_SOURCE_DIR}/src/common/memory_patcher.cpp
     ${CMAKE_SOURCE_DIR}/src/core/file_format/psf.cpp
     ${CMAKE_SOURCE_DIR}/src/common/io_file.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/ntapi.cpp
     ${CMAKE_SOURCE_DIR}/src/core/emulator_state.cpp
     ${CMAKE_SOURCE_DIR}/src/common/path_util.cpp
     ${CMAKE_SOURCE_DIR}/src/common/assert.cpp
@@ -837,6 +840,7 @@ set(PATCH_SESSION_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/common/memory_patcher.cpp
     ${CMAKE_SOURCE_DIR}/src/core/file_format/psf.cpp
     ${CMAKE_SOURCE_DIR}/src/common/io_file.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/ntapi.cpp
 
     # EmulatorState is used by OnGameLoaded(); EmulatorSettings is used by log.cpp.
     ${CMAKE_SOURCE_DIR}/src/core/emulator_state.cpp
@@ -903,6 +907,7 @@ set(PRESET_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/common/memory_patcher.cpp
     ${CMAKE_SOURCE_DIR}/src/core/file_format/psf.cpp
     ${CMAKE_SOURCE_DIR}/src/common/io_file.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/ntapi.cpp
 
     # EmulatorState is used by OnGameLoaded(); EmulatorSettings is used by log.cpp.
     ${CMAKE_SOURCE_DIR}/src/core/emulator_state.cpp
