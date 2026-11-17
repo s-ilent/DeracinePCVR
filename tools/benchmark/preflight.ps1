@@ -133,8 +133,8 @@ foreach ($relative in @('eboot.bin', 'title.json', 'gameproject\saved\config\ps4
     $immutablePaths[(Join-Path $SharedGame $relative)] = Get-FileRecord (Join-Path $SharedGame $relative)
 }
 $immutablePaths[[string](Join-Path $Game 'eboot.bin')] = Get-FileRecord (Join-Path $Game 'eboot.bin')
-$immutablePaths[[string](Join-Path $Game 'gameproject\saved\config\ps4\engine.ini')] =
-    Get-FileRecord (Join-Path $Game 'gameproject\saved\config\ps4\engine.ini')
+# The private shadow's engine.ini is this harness's own input, rewritten per session; hashing it
+# would make a fresh shadow fail postflight. The shared copy above stays protected.
 
 # Volatile directories: a running user session legitimately writes logs, caches and screenshots.
 # Their counts are recorded so a change can be told apart from a changed binary; they never fail.

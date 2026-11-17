@@ -89,8 +89,10 @@ s32 PS4_SYSV_ABI sceMoveReadStateLatest(s32 handle, OrbisMoveData* data) {
     const auto input = Core::Vr::Runtime::Instance().GetHandInput(hand);
     data->button_data.button_data = input.buttons;
     data->button_data.trigger_data = input.trigger;
-    // Development harness: presses the Move button and the trigger for the headless benchmark.
-    // Off unless SHADPS4_DBG_AUTOPRESS asks for it, and it only ever adds to the state above.
+    // Development harness: presses the Move button and sets the trigger to full for the headless
+    // benchmark. Off unless SHADPS4_DBG_AUTOPRESS asks for it; the button is added to the real
+    // state, the trigger is overridden while the burst lasts (it is a test input, not a merge).
+    // The Move library has no ImGui-capture gate of its own; pad input is gated separately.
     static const Core::Devtools::AutoPressDevice auto_press_devices =
         Core::Devtools::AutoPressInjector::DevicesFromEnv();
     if (Core::Devtools::AutoPressDevicesInclude(auto_press_devices,
