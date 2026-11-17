@@ -19,7 +19,7 @@ postflight. Do not compare cells across builds, resolutions, MSAA, settings or s
 | cell | build | workload | unique FPS | GPU busy | notes |
 |---|---|---|---|---|---|
 | `classroom-valid-r9` | `B6830480…` (`acda49e` + guardrails) | classroom+menu, 300 %, MSAA 2, presentation `SHADPS4_VR_SCALE=0.5` (2880×1632 window) | **39.83** | 97–100 % | one cell, screenshot 1.0000, 88 passes, 535 Mpx; reference PNG is R/B-swapped |
-| `xf-a2-*` | `A02FB23F…` (`de9c78c` + recycler) | same scene and settings | 58.7 p50 | 51–59 % | **title-capped**, not a controlled comparison; renderer differs (66 passes, depth pass, in-pass barrier) |
+| `xf-a2-*` | `A02FB23F…` (`de9c78c` + recycler) | same scene and settings | 58.7 p50 | 51–59 % | 60 Hz vblank/pacing; limiter **not established** (the earlier "title cap" claim is withdrawn); renderer differs (66 passes, depth pass, in-pass barrier) |
 | `xf` 400 % uncapped | `A02FB23F…` | GPU-bound heavy samples, present = guest 7680×4320 | 26.4 → 35.5 → 40.9 | 95 %+ | depth-write pass +34 %, runtime-size presentation +15 % (reported by the cross-fork work, not yet independently re-validated) |
 
 The target configuration — 300 % guest, authored MSAA, **3036×3036/eye OpenXR output**, gameplay
@@ -58,7 +58,7 @@ the real target workload:
 
 - binary: a clean rebuild from the chosen base with both features env-gated
   (`SHADPS4_DBG_DEPTH_PASS=0/1`, plus an explicit barrier gate if absent), recycler forcibly off;
-- scene: gameplay (uncapped), guest 300 %, authored MSAA, OpenXR 3036×3036/eye;
+- scene: the GPU-bound classroom heavy scene (reachable with autopress), guest 300 %, authored MSAA, OpenXR 3036×3036/eye; gameplay once reachable;
 - measurement: unique FPS per window, 3 repeats per arm, interleaved, same binary/scene/settings;
 - correctness: depth and colour target dumps compared (`mean abs / 255`), 0 VUIDs, visual gate;
 - acceptance: the pass is retained only if the same-workload unique FPS improves beyond the noise
@@ -68,3 +68,4 @@ Hardware status: the headset is not available for a session; the A/B is prepared
 nothing will be claimed until it is measured on the target workload. Where hardware is unavailable,
 safe offline research/implementation continues; no production executable, launcher, shared save or
 SteamVR service is touched.
+
