@@ -111,12 +111,10 @@ UniqueImage::~UniqueImage() {
     }
 }
 
-void UniqueImage::Destroy() {
+void UniqueImage::ReleaseOwned() {
     if (image) {
         ScopedTimer timed{ImageStats::destroy_ns};
         ImageRecycler::Entry entry;
-        entry.image_ci = image_ci;
-        entry.view_formats.assign(view_formats.begin(), view_formats.end());
         entry.image = image;
         entry.allocation = allocation;
         entry.allocator = allocator;
@@ -124,7 +122,30 @@ void UniqueImage::Destroy() {
         image = vk::Image{};
         allocation = {};
         allocation_bytes = 0;
-        ImageRecycler::Get().Release(std::move(entry));
+        ImageRecycler::Get().DestroyNow(std::move(entry));
+    }
+}
+
+void UniqueImage::Destroy() {
+    if (image) {
+        ScopedTimer timed{ImageStats::destroy_ns};
+        // Not pooled, on purpose. This path exists for a caller that wants the image gone now - the
+        // FSR pass destroys its intermediate images between frames, outside the scheduler - and the
+        // pool's safety argument ("the texture cache only erases an image in a deferred operation
+        // the scheduler runs once that tick has completed") says nothing about a caller that
+        // destroys one whenever it likes. Recycling from here would hand a possibly-still-in-flight
+        // image to the next request.
+        ImageRecycler::Entry entry;
+        entry.image = image;
+        entry.allocation = allocation;
+        entry.allocator = allocator;
+        entry.bytes = allocation_bytes;
+        image = vk::Image{};
+        allocation = {};
+        allocation_bytes = 0;
+        ImageRecycler::Get().DestroyNow(std::move(entry));
+        const auto pool = ImageRecycler::Get().Snapshot();
+        ImageStats::SetRecyclerPool(pool.images, pool.bytes, pool.destroyed);
     }
 }
 
@@ -170,12 +191,21 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci,
             return;
         }
         ImageStats::NoteRecyclerMiss();
-    }
-    VkResult result;
-    {
+    }    VkResult result;
+    const auto create_image = [&]() {
         ScopedTimer timed{ImageStats::create_ns};
-        result = vmaCreateImage(allocator, &image_ci_unsafe, &alloc_info, &unsafe_image,
-                                &allocation, &alloc_info_out);
+        return vmaCreateImage(allocator, &image_ci_unsafe, &alloc_info, &unsafe_image,
+                              &allocation, &alloc_info_out);
+    };
+    result = create_image();
+    if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && ImageRecycler::Enabled()) {
+        // The pool is holding memory this allocation needs. Give it back and ask once more before
+        // the ASSERT below turns a recycled-image pool into a process abort: the pool exists to
+        // make allocations cheaper, never to make one fail that would otherwise succeed.
+        ImageRecycler::Get().Drain();
+        const auto pool = ImageRecycler::Get().Snapshot();
+        ImageStats::SetRecyclerPool(pool.images, pool.bytes, pool.destroyed);
+        result = create_image();
     }
     ASSERT_MSG(result == VK_SUCCESS, "Failed allocating image with error {}",
                vk::to_string(vk::Result{result}));

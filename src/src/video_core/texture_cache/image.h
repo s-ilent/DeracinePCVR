@@ -57,12 +57,18 @@ struct UniqueImage {
           view_formats{std::move(other.view_formats)},
           allocation_bytes{std::exchange(other.allocation_bytes, 0)} {}
     UniqueImage& operator=(UniqueImage&& other) {
-        image = std::exchange(other.image, VK_NULL_HANDLE);
-        allocator = std::exchange(other.allocator, VK_NULL_HANDLE);
-        allocation = std::exchange(other.allocation, VK_NULL_HANDLE);
-        allocation_bytes = std::exchange(other.allocation_bytes, 0);
-        image_ci = std::move(other.image_ci);
-        view_formats = std::move(other.view_formats);
+        if (this != &other) {
+            // A move that overwrote what this object holds would leak that image and its
+            // allocation; [container.reqmts] has move-assign destroy the target's value first, and
+            // this one is reachable through a container of BackingImages.
+            ReleaseOwned();
+            image = std::exchange(other.image, VK_NULL_HANDLE);
+            allocator = std::exchange(other.allocator, VK_NULL_HANDLE);
+            allocation = std::exchange(other.allocation, VK_NULL_HANDLE);
+            allocation_bytes = std::exchange(other.allocation_bytes, 0);
+            image_ci = std::move(other.image_ci);
+            view_formats = std::move(other.view_formats);
+        }
         return *this;
     }
 
@@ -79,6 +85,14 @@ struct UniqueImage {
     }
 
     void Destroy();
+
+private:
+    /// Gives up the image this object holds without pooling it. Used where the caller cannot point
+    /// at the scheduler's completion gate: a replaced value in move-assignment, and an explicit
+    /// Destroy() from a subsystem that owns its own lifetime (the FSR pass).
+    void ReleaseOwned();
+
+public:
 
     operator vk::Image() const {
         return image;

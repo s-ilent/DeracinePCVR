@@ -13,7 +13,13 @@ namespace Vulkan {
 bool ImageRecycler::Enabled() {
     static const bool enabled = [] {
         const char* value = std::getenv("SHADPS4_DBG_IMAGE_RECYCLER");
-        return value == nullptr || value[0] != '0';
+        if (value == nullptr || value[0] == '\0') {
+            return true;
+        }
+        // Any spelling of "off" turns it off. "0" alone was the only one that did, which made
+        // SHADPS4_DBG_IMAGE_RECYCLER=false mean "on".
+        const std::string text{value};
+        return !(text == "0" || text == "false" || text == "off" || text == "no");
     }();
     return enabled;
 }
@@ -142,6 +148,31 @@ void ImageRecycler::DestroyReleased(Entry& entry) {
         entry.image = vk::Image{};
         entry.allocation = {};
     }
+}
+
+void ImageRecycler::DestroyNow(Entry&& entry) {
+    if (!entry.image) {
+        return;
+    }
+    std::scoped_lock lock{mutex};
+    ++destroyed;
+    DestroyReleased(entry);
+}
+
+u64 ImageRecycler::Drain() {
+    std::scoped_lock lock{mutex};
+    const u64 freed = pooled_bytes;
+    for (Entry& entry : entries) {
+        ++destroyed;
+        DestroyReleased(entry);
+    }
+    entries.clear();
+    pooled_bytes = 0;
+    if (freed != 0) {
+        LOG_WARNING(Render_Vulkan,
+                    "image recycler drained {:.1f} MiB to satisfy an allocation", freed / 1048576.0);
+    }
+    return freed;
 }
 
 void ImageRecycler::Shutdown() {

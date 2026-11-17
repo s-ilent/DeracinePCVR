@@ -66,9 +66,18 @@ public:
     bool Acquire(const vk::ImageCreateInfo& image_ci, std::span<const vk::Format> view_formats,
                  Entry& out);
 
-    /// Hands an image back. It replaces a pooled image of the same shape (the older one is
-    /// destroyed and this one kept), joins the pool, or is destroyed when the pool is full.
+    /// Hands an image back for reuse. Only for a caller that can prove the GPU is done with it -
+    /// in this tree that means the texture cache's deferred erase; anything else uses DestroyNow.
     void Release(Entry&& entry);
+
+    /// Destroys an image on the spot. For a caller that owns the image's lifetime itself and
+    /// cannot point at the scheduler's completion gate (the FSR pass destroys its intermediates
+    /// between frames), recycling would be a guess.
+    void DestroyNow(Entry&& entry);
+
+    /// Destroys everything pooled and returns the bytes freed. Used when an allocation fails and
+    /// the pool is holding memory that allocation needs.
+    u64 Drain();
 
     /// Destroys everything in the pool and refuses further releases. Must run before the VMA
     /// allocator it hands to `vmaDestroyImage` is destroyed.
