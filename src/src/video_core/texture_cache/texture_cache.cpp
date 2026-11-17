@@ -357,8 +357,38 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
         new_image.info.meta_info.htile_clear_mask = 0;
 
         if (source_image.info.num_samples == 1 && new_info.num_samples == 1) {
-            // Perform depth<->color copy using the intermediate copy buffer.
-            if (instance.IsMaintenance8Supported()) {
+            // SHADPS4_DBG_DEPTH_PASS=0 restores the image copy. Carrying the picture through the
+            // depth unit keeps the words (D32 depth values are the same IEEE floats the guest
+            // wrote as R32F) and avoids the driver's detile and decompress of the whole depth
+            // surface that a colour-to-depth image copy pays.
+            static const bool via_depth_pass = [] {
+                const char* value = std::getenv("SHADPS4_DBG_DEPTH_PASS");
+                return value == nullptr || value[0] != '0';
+            }();
+            const bool same_extent = source_image.info.size.width == new_info.size.width &&
+                                     source_image.info.size.height == new_info.size.height;
+            // The pass writes the value as the fragment's depth, so it must not be clamped to
+            // [0, 1]; the image copy has to stay in use where the extension is unavailable.
+            const bool color_into_depth =
+                !source_image.info.props.is_depth && new_info.props.is_depth &&
+                source_image.info.pixel_format == vk::Format::eR32Sfloat &&
+                (new_info.pixel_format == vk::Format::eD32Sfloat ||
+                 new_info.pixel_format == vk::Format::eD32SfloatS8Uint) &&
+                same_extent && instance.IsDepthRangeUnrestrictedSupported();
+            if (via_depth_pass && color_into_depth) {
+                const bool has_stencil = new_info.pixel_format == vk::Format::eD32SfloatS8Uint;
+                const vk::ImageLayout depth_layout =
+                    has_stencil ? vk::ImageLayout::eDepthStencilAttachmentOptimal
+                                : vk::ImageLayout::eDepthAttachmentOptimal;
+                source_image.Transit(vk::ImageLayout::eShaderReadOnlyOptimal,
+                                     vk::AccessFlagBits2::eShaderRead, {});
+                new_image.Transit(depth_layout,
+                                  vk::AccessFlagBits2::eDepthStencilAttachmentWrite, {});
+                blit_helper.CopyColorToDepth32(new_info.size.width, new_info.size.height,
+                                               source_image.GetImage(),
+                                               source_image.info.pixel_format,
+                                               new_image.GetImage(), new_info.pixel_format);
+            } else if (instance.IsMaintenance8Supported()) {
                 new_image.CopyImage(source_image);
             } else {
                 const auto& copy_buffer = buffer_cache.GetUtilityBuffer(MemoryUsage::DeviceLocal);
