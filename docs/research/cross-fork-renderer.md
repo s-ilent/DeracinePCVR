@@ -87,7 +87,7 @@ One second of that scene (run `xf-diag2`, `diag2-65E40A39.exe`), and the same co
 
 Reading it:
 
-1. **The two `ExpandImage` events per second-frame are tiny reinterpretations of a 32×32 image**
+1. **The two `ExpandImage` events per frame are tiny reinterpretations of a 32×32 image**
    (`0x2008f80000`, `A2B10G10R10UnormPack32`, one side 32 layers, the other 1). They move 0.25 MB
    of guest data a frame. `ExpandImage` is not a cost centre in this title at all.
 2. **The expensive image work is the depth/storage recreation**, which does not go through
@@ -216,10 +216,15 @@ What this does and does not say:
   3.9 ms of an 8.3 ms budget.
 - VRAM cost of the pool: ~250 MB held (the meta files record 6.92–6.94 GB in use either way, inside
   run-to-run noise). The pool is bounded at 768 MB.
-- **Correctness evidence for this cell set**: same passes/frame (64–66), same draws (535), same
-  Mpx (481) in both classroom cells and in the earlier non-recycler classroom run, no new error or
-  warning classes, and the images the title reads are the ones it wrote (a recycled image carries
-  no contents; its layout starts at `eUndefined`).
+- **Correctness evidence for the recycler, and its limit.** Positive: the tests below; identical
+  passes/frame (64–66), draws (535) and Mpx (481) in the recycler cells and the non-recycler
+  classroom cell; no new error or warning classes; and a capture A/B (same binary,
+  `SHADPS4_DBG_IMAGE_RECYCLER=0` vs `1`) in which every render-target dump both runs took of the
+  same image was **bit-identical (9 of 9, 0 differing, `capture-compare.py`)**. Limit: those two
+  capture runs took their dumps at the same offset from the scene marker but landed in different
+  content phases, so only 9 images were dumpable in both and the classroom itself was not captured
+  with the recycler at all. **The capture gate is therefore a partial pass, not a full one** — a
+  matched-scene capture A/B, and any in-headset check, remain to be done.
 
 Two cells were **discarded rather than reported**, and they are worth knowing about:
 
@@ -310,15 +315,28 @@ log, and the executable hash.
 
 | label | binary | arm | scene | n | fps p50 | frame p50 / p90 / p99 | >20 ms | GPU busy | create+destroy |
 |---|---|---|---|---|---|---|---|---|---|
-| `xf-diag2` | `diag2-65E40A39` | baseline + counters | classroom 551/560 | 16 | 58.55 | 17.08 / 17.73 / 18.07 | 0 | 60 % | 4.15 ms* |
+| `xf-diag2` | `diag2-65E40A39` | baseline + counters | classroom 551/560 | 16 | 58.55 | 17.08 / 17.73 / 18.07 | 0 | 60 % | 3.29 ms |
 | `xf-a2-1` | `rec3-A02FB23F` | recycler on | classroom 537/573 | 60 | 58.75 | 17.02 / 17.42 / 18.25 | 0 | 53 % | 0.29 ms |
 | `xf-a2-1-r3` | `rec3-A02FB23F` | recycler on | classroom 527/526 | 60 | 58.65 | 17.05 / 17.48 / 18.44 | 0 | 57 % | 0.32 ms |
 | `xf-a2-0-r2` | `rec3-A02FB23F` | recycler off | calibration 176 | 60 | 58.85 | 16.99 / 17.48 / 36.85 | 3 | 30 % | 4.15 ms |
 
-\* the baseline classroom cell did not run with the recycler, so its create+destroy is the same
-figure the off arm reports (the calls are unconditional in that arm), and it agrees with the
-`xf-diag2` counters: 0.78 ms create + 2.5 ms destroy at 58 fps = 3.3 ms, versus 4.15 ms measured
-for the off arm at 56 fps.
+\* the baseline classroom cell did not run with the recycler, so its create+destroy is what its own
+counters report (0.78 ms create + 2.5 ms destroy at 58 fps = 3.29 ms); the off arm, which has the
+same unconditional calls, measured 4.15 ms at 56 fps. The difference is the scene under it
+(calibration versus classroom), not the code.
+
+### Test suite
+
+`ctest --test-dir build-tests`: **580 of 590 passed, 10 failed — the documented pre-existing Windows
+set** (`shadps4_gcn_test`, `shadps4_usbd_test`, `shadps4_memory_patcher_test`,
+`shadps4_patch_repository_test`, `shadps4_patch_state_test`, `shadps4_patch_domain_test`,
+`shadps4_patch_session_test`, `shadps4_preset_test` do not build on this platform;
+`ReadConstSnapshotDiag.IsolationDisabledAfterTestB` and
+`BachataRuntimeClient.ValidatesSocketPathUnderRuntimeRoot` fail for reasons unrelated to this work —
+see `_build/SETUP.md`). **No new failure**, and the new `ImageCoverage` cases (19) pass inside the
+suite as well as on their own. Negative control: with the extent check removed from
+`CoveringCopyOf`, `NarrowerSourceCoversNothing` and `ShorterSourceCoversNothing` fail, so the tests
+guard the invariant rather than describe it.
 
 **Honest reading of the table**
 
