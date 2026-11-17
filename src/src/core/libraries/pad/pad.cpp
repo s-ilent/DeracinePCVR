@@ -4,6 +4,7 @@
 #include "common/elf_info.h"
 #include "common/logging/log.h"
 #include "common/singleton.h"
+#include "core/devtools/autopress.h"
 #include "core/emulator_settings.h"
 #include "core/known_title.h"
 #include "core/libraries/libs.h"
@@ -441,6 +442,24 @@ int ProcessStates(s32 handle, OrbisPadData* pData, Input::GameController& contro
         }
 
         pData[i].buttons = states[i].buttonsState;
+        // Development harness: presses Cross for the headless benchmark. Off unless
+        // SHADPS4_DBG_AUTOPRESS asks for it, and it only ever adds to the state read above.
+        static const Core::Devtools::AutoPressDevice auto_press_devices =
+            Core::Devtools::AutoPressInjector::DevicesFromEnv();
+        if (Core::Devtools::AutoPressDevicesInclude(auto_press_devices,
+                                                    Core::Devtools::AutoPressDevice::Pad)) {
+            static Core::Devtools::AutoPressInjector auto_press(
+                Core::Devtools::AutoPressDevice::Pad, Core::Devtools::AutoPressInjector::NowMs());
+            bool began = false;
+            const auto now_ms = Core::Devtools::AutoPressInjector::NowMs();
+            if (auto_press.Tick(now_ms, &began)) {
+                pData[i].buttons |= OrbisPadButtonDataOffset::Cross;
+            }
+            if (began) {
+                LOG_INFO(Lib_Pad, "AUTOPRESS pad {} began at {} ms", i,
+                         auto_press.elapsed_ms(now_ms));
+            }
+        }
         pData[i].leftStick.x = states[i].axes[static_cast<int>(Input::Axis::LeftX)];
         pData[i].leftStick.y = states[i].axes[static_cast<int>(Input::Axis::LeftY)];
         pData[i].rightStick.x = states[i].axes[static_cast<int>(Input::Axis::RightX)];

@@ -29,11 +29,63 @@
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
+#include <renderdoc_app.h>
+
 namespace Vulkan {
 
 constexpr u64 MAX_IN_FLIGHT_SUBMISSIONS = 8;
 
 namespace {
+
+#ifdef _WIN32
+/// SHADPS4_DBG_RDOC_CAPTURE=<seconds>: with the process started under RenderDoc, asks it for one
+/// capture of the first frame presented that long after the first one. A scene can then be captured
+/// without a key being pressed, which the frame a benchmark measures needs.
+void MaybeTriggerRenderDocCapture() {
+    static const double at_seconds = [] {
+        const char* value = std::getenv("SHADPS4_DBG_RDOC_CAPTURE");
+        return value != nullptr ? std::atof(value) : 0.0;
+    }();
+    if (at_seconds <= 0.0) {
+        return;
+    }
+    static RENDERDOC_API_1_6_0* api = []() -> RENDERDOC_API_1_6_0* {
+        const HMODULE module = GetModuleHandleA("renderdoc.dll");
+        if (module == nullptr) {
+            LOG_INFO(Render_Vulkan, "RDOC capture was asked for but renderdoc.dll is not loaded");
+            return nullptr;
+        }
+        const auto get_api =
+            reinterpret_cast<pRENDERDOC_GetAPI>(GetProcAddress(module, "RENDERDOC_GetAPI"));
+        if (get_api == nullptr) {
+            return nullptr;
+        }
+        void* out = nullptr;
+        if (get_api(eRENDERDOC_API_Version_1_6_0, &out) != 1) {
+            return nullptr;
+        }
+        return static_cast<RENDERDOC_API_1_6_0*>(out);
+    }();
+    if (api == nullptr) {
+        return;
+    }
+    static const auto started = std::chrono::steady_clock::now();
+    static bool fired = false;
+    if (fired) {
+        return;
+    }
+    const double since =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    if (since < at_seconds) {
+        return;
+    }
+    api->TriggerCapture();
+    fired = true;
+    LOG_INFO(Render_Vulkan, "RDOC capture triggered {:.1f} s after the first frame", since);
+}
+#else
+void MaybeTriggerRenderDocCapture() {}
+#endif
 
 /// A count kept by the thread that draws and read by the one that logs. Adding is a plain add:
 /// an atomic one, a dozen times per draw, cost as much as the rest of a draw's bookkeeping.
@@ -451,6 +503,7 @@ std::chrono::nanoseconds FrameStats::ThreadTime() {
 }
 
 void FrameStats::EndFrame() {
+    MaybeTriggerRenderDocCapture();
     // The A/B measuring aid (AbOff): which way the frames from now on are drawn.
     static const double ab_period = [] {
         const char* value = std::getenv("SHADPS4_DBG_AB");
@@ -561,10 +614,11 @@ void FrameStats::EndFrame() {
     }
     LOG_INFO(Render_Vulkan,
              "frame stats at {:.0f} s{}: {:.1f} fps, per frame {:.1f} passes ({:.1f} loading their "
-             "targets, {:.1f} Mpx), {:.0f} draws, {:.1f} dispatches, {:.1f} submits{}",
+             "targets, {:.1f} Mpx), {:.0f} draws, {:.1f} dispatches, {:.1f} submits{}, {:.0f} "
+             "frames",
              std::chrono::duration<double>(now - start).count(), ab, n / seconds,
              c.passes.Take() / n, c.loading_passes.Take() / n, c.pass_pixels.Take() / n / 1e6,
-             c.draws.Take() / n, c.computes.Take() / n, c.submits.Take() / n, gpu);
+             c.draws.Take() / n, c.computes.Take() / n, c.submits.Take() / n, gpu, n);
     const auto stage_ms = [](Stage stage) {
         const u64 total = g_stage_times.total[static_cast<size_t>(stage)].exchange(0);
         const u64 count = g_stage_times.count[static_cast<size_t>(stage)].exchange(0);

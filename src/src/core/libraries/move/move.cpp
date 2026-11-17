@@ -3,6 +3,7 @@
 
 #include <cstring>
 #include "common/logging/log.h"
+#include "core/devtools/autopress.h"
 #include "core/libraries/error_codes.h"
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/libs.h"
@@ -88,6 +89,26 @@ s32 PS4_SYSV_ABI sceMoveReadStateLatest(s32 handle, OrbisMoveData* data) {
     const auto input = Core::Vr::Runtime::Instance().GetHandInput(hand);
     data->button_data.button_data = input.buttons;
     data->button_data.trigger_data = input.trigger;
+    // Development harness: presses the Move button and sets the trigger to full for the headless
+    // benchmark. Off unless SHADPS4_DBG_AUTOPRESS asks for it; the button is added to the real
+    // state, the trigger is overridden while the burst lasts (it is a test input, not a merge).
+    // The Move library has no ImGui-capture gate of its own; pad input is gated separately.
+    static const Core::Devtools::AutoPressDevice auto_press_devices =
+        Core::Devtools::AutoPressInjector::DevicesFromEnv();
+    if (Core::Devtools::AutoPressDevicesInclude(auto_press_devices,
+                                                Core::Devtools::AutoPressDevice::Move)) {
+        static Core::Devtools::AutoPressInjector auto_press(
+            Core::Devtools::AutoPressDevice::Move, Core::Devtools::AutoPressInjector::NowMs());
+        bool began = false;
+        const auto now_ms = Core::Devtools::AutoPressInjector::NowMs();
+        if (auto_press.Tick(now_ms, &began)) {
+            data->button_data.button_data |= (1 << 2);
+            data->button_data.trigger_data = 255;
+        }
+        if (began) {
+            LOG_INFO(Lib_Move, "AUTOPRESS move began at {} ms", auto_press.elapsed_ms(now_ms));
+        }
+    }
     data->timestamp = Libraries::Kernel::sceKernelGetProcessTime();
     data->count = 1;
     return ORBIS_OK;

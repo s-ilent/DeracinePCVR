@@ -4,9 +4,9 @@
 #include "common/elf_info.h"
 #include "common/logging/log.h"
 #include "core/emulator_settings.h"
-#include "core/guest_cpu/guest_watchdog.h"
 #include "core/libraries/camera/camera.h"
 #include "core/libraries/camera/camera_error.h"
+#include "core/libraries/camera/virtual_camera_clock.h"
 #include "core/libraries/error_codes.h"
 #include "core/libraries/kernel/process.h"
 #include "core/libraries/kernel/time.h"
@@ -34,14 +34,9 @@ OrbisCameraConfigExtention output_config0, output_config1;
 // A connected virtual headset brings a virtual PlayStation Camera along, because titles will not
 // start head tracking without one. It never touches a host webcam: tracking comes from the host
 // headset, so all the guest ever sees are blank frames arriving at the sensor's frame rate.
-static constexpr u64 VirtualFramePeriodUs = 1000000 / 60;
 static std::vector<u8> g_virtual_frame;
 static bool g_virtual_started = false;
-static u64 g_virtual_frame_count = 0;
-static u64 g_virtual_next_frame_time = 0;
-static u64 g_virtual_frame_time = 0;
-/// How many frames the guest had presented when the sensor delivered its latest frame.
-static u64 g_virtual_guest_frames = 0;
+static VirtualCameraClock g_virtual_clock(VirtualCameraPeriodUs(60));
 // Titles read the sensor settings back out of each frame's metadata to tell whether the frame
 // was captured with the exposure tracking needs, so the virtual sensor has to remember them.
 static OrbisCameraExposureGain g_virtual_exposure_gain[ORBIS_CAMERA_MAX_DEVICE_NUM]{};
@@ -59,32 +54,17 @@ static s32 GetVirtualFrameData(OrbisCameraFrameData* frame_data) {
         return ORBIS_CAMERA_ERROR_NOT_START;
     }
 
-    // A read either asks for the frame after the one it got last, and then blocks until the
-    // sensor delivers it, or takes the latest frame as it is.
+    // A read either asks for the frame after the one it got last, and then waits for the sensor
+    // to deliver it, or takes the latest frame as it is. The sensor keeps its own clock, so a
+    // title that reads before it presents still makes progress; see VirtualCameraClock.
     static constexpr u32 ReadModeWaitNextFrame = 1;
-    if ((frame_data->readMode & ReadModeWaitNextFrame) != 0 || g_virtual_frame_count == 0) {
-        const u64 now = Libraries::Kernel::sceKernelGetProcessTime();
-        if (g_virtual_next_frame_time > now) {
-            std::this_thread::sleep_for(
-                std::chrono::microseconds(g_virtual_next_frame_time - now));
-        }
-        // Titles keep what they read in a ring of three entries: one thread reads the camera
-        // into the next entry while the main thread uses the newest complete one, trusting that
-        // it never falls two camera frames behind. A title that is emulated slower than a
-        // console runs it does, and finds the entry it is looking at wiped for reuse. So this
-        // sensor never runs ahead of the title: a frame for every two the title presents. The
-        // time limit keeps the camera alive while the title presents nothing at all.
-        static constexpr auto GuestFrameTimeout = std::chrono::milliseconds{200};
-        g_virtual_guest_frames =
-            Core::GuestCpu::WaitForGuestFrame(g_virtual_guest_frames + 1, GuestFrameTimeout);
-
-        g_virtual_frame_time = Libraries::Kernel::sceKernelGetProcessTime();
-        g_virtual_next_frame_time =
-            std::max(g_virtual_next_frame_time, g_virtual_frame_time) + VirtualFramePeriodUs;
-        ++g_virtual_frame_count;
-    }
-    const u64 timestamp = g_virtual_frame_time;
-    const u64 frame_number = g_virtual_frame_count - 1;
+    const u64 now = Libraries::Kernel::sceKernelGetProcessTime();
+    const bool wait_next_frame = (frame_data->readMode & ReadModeWaitNextFrame) != 0;
+    g_virtual_clock.Read(now, wait_next_frame, [](u64 us) {
+        std::this_thread::sleep_for(std::chrono::microseconds(us));
+    });
+    const u64 timestamp = g_virtual_clock.frame_time_us();
+    const u64 frame_number = g_virtual_clock.frame_count() - 1;
 
     OrbisCameraFrameData frame{};
     const OrbisCameraConfigExtention* configs[ORBIS_CAMERA_MAX_DEVICE_NUM] = {&output_config0,
@@ -1153,8 +1133,10 @@ s32 PS4_SYSV_ABI sceCameraStart(s32 handle, OrbisCameraStartParameter* param) {
         // Large enough for a full resolution frame in any of the 16 bit formats.
         g_virtual_frame.assign(c_width * c_height * 2, 0);
         g_virtual_started = true;
-        g_virtual_next_frame_time = 0;
-        g_virtual_guest_frames = Core::GuestCpu::GuestFrameCount();
+        // A console camera delivers one frame per display refresh; the emulated display is the
+        // clock the title paces itself to, so the sensor follows it.
+        const u32 hz = std::clamp(EmulatorSettings.GetVblankFrequency(), 30u, 240u);
+        g_virtual_clock.Reset(VirtualCameraPeriodUs(hz));
         return ORBIS_OK;
     }
 
@@ -1255,6 +1237,7 @@ s32 PS4_SYSV_ABI sceCameraStop(s32 handle) {
         return ORBIS_CAMERA_ERROR_NOT_OPEN;
     }
     g_virtual_started = false;
+    g_virtual_clock.Reset();
 
     return ORBIS_OK;
 }
