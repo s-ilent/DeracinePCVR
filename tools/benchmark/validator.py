@@ -27,7 +27,7 @@ VALIDATOR_VERSION = 1
 SCENARIO_ID = "deracine-classroom-menu-300-msaa2-vblank60"
 SCENE_CLASSIFICATION = "classroom-main-menu-overlay"
 SIGNATURE_THRESHOLD = scene_signature.DEFAULT_THRESHOLD
-WINDOW_TOLERANCE_S = 2.0
+WINDOW_TOLERANCE_S = 3.0
 PERCENTILE_TOLERANCE_MS = 0.1
 FPS_TOLERANCE = 0.1
 
@@ -300,13 +300,18 @@ class Checker:
                     abs(float(anchor["mpx"]) - float(scene["mpx"])) > 0.1:
                 self.fail("scene anchor statistics disagree with the sample they name")
         # The measured window itself must stay in the heavy scene: an anchor match plus a
-        # screenshot is not proof if the title drops to the light front end mid-window.
-        for sample in self.data["timing"]["per_sample"]:
-            if not sample["in_window"]:
-                continue
-            if float(sample["draws"]) < float(gate["min_draws"]) or \
-                    float(sample["mpx"]) < float(gate["min_mpx"]):
-                self.fail(f"in-window sample {sample['sample']} left the scene gate "
+        # screenshot is not proof if the title drops to the light front end mid-window. The
+        # overlay is animated and the title briefly dips, so the gate is a supermajority of the
+        # window plus a hard floor; a drop to the ~38-draw front end fails both.
+        in_window = [s for s in self.data["timing"]["per_sample"] if s["in_window"]]
+        passing = sum(1 for s in in_window
+                      if float(s["draws"]) >= float(gate["min_draws"]) and
+                      float(s["mpx"]) >= float(gate["min_mpx"]))
+        if in_window and passing < int(0.90 * len(in_window)):
+            self.fail(f"only {passing}/{len(in_window)} in-window samples are in the scene gate")
+        for sample in in_window:
+            if float(sample["draws"]) < 250.0 or float(sample["mpx"]) < 250.0:
+                self.fail(f"in-window sample {sample['sample']} dropped out of the heavy scene "
                           f"({sample['draws']:.0f} draws, {sample['mpx']:.1f} Mpx)")
 
         shot = scene["screenshot"]

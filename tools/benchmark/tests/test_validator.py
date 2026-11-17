@@ -425,11 +425,20 @@ class ValidatorTests(unittest.TestCase):
 
     def test_in_window_workload_must_stay_in_the_scene(self) -> None:
         document = self.fixture.reload()
-        row = next(s for s in document["timing"]["per_sample"] if s["in_window"])
-        row["draws"] = 38.0
-        row["mpx"] = 232.0
+        rows = [s for s in document["timing"]["per_sample"] if s["in_window"]]
+        for row in rows[:16]:
+            row["draws"] = 38.0
+            row["mpx"] = 232.0
         self.fixture.write(document)
-        self.assert_invalid("left the scene gate")
+        self.assert_invalid("dropped out of the heavy scene")
+
+        document = self.fixture.reload()
+        rows = [s for s in document["timing"]["per_sample"] if s["in_window"]]
+        for row in rows[:16]:
+            row["draws"] = 300.0
+            row["mpx"] = 300.0
+        self.fixture.write(document)
+        self.assert_invalid("in-window samples are in the scene gate")
 
     def test_observed_protected_changes_do_not_fail_but_drift_does(self) -> None:
         document = self.fixture.reload()
