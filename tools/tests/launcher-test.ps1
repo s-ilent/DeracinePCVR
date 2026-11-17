@@ -289,6 +289,34 @@ Check "Menu saves stereo again" (Get-DesktopView) "stereo"
 Check "Menu saves Windows' language again" (Setting "language") "windows"
 Check "Menu saves uncropped image again" (Setting "desktop_crop") "0"
 
+# g: a version only selects optional patches; a patch that names another version is reported
+# as skipped and the executable is left unchanged, not as a game that cannot run.
+$patchDir = Join-Path $base "patches"
+[void][System.IO.Directory]::CreateDirectory($patchDir)
+$patchXml = @'
+<Patch>
+    <TitleID><ID>CUSA11919</ID></TitleID>
+    <Metadata Title="Test Game" Name="Applies" Author="a" PatchVer="1.0" AppVer="01.01" AppElf="eboot.bin" isEnabled="true">
+        <PatchList><Line Type="bytes" Address="400000" Value="00"/></PatchList>
+    </Metadata>
+    <Metadata Title="Test Game" Name="Skipped" Author="a" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="true">
+        <PatchList><Line Type="bytes" Address="400000" Value="00"/></PatchList>
+    </Metadata>
+    <Metadata Title="Test Game" Name="Disabled" Author="a" PatchVer="1.0" AppVer="01.01" AppElf="eboot.bin" isEnabled="false">
+        <PatchList><Line Type="bytes" Address="400000" Value="00"/></PatchList>
+    </Metadata>
+</Patch>
+'@
+[System.IO.File]::WriteAllText((Join-Path $patchDir "CUSA11919.xml"), $patchXml)
+$report = @(Get-PatchReport $patchDir "CUSA11919" "01.01")
+Check "g  patch for this version applies" $report[0].State "applies"
+Check "g  patch for another version is skipped" $report[1].State "skipped"
+Check "g  disabled patch is disabled" $report[2].State "disabled"
+Check "g  no patch file gives no report" (@(Get-PatchReport $patchDir "CUSA99999" "01.01")).Count 0
+$bundled = Join-Path $top "pc-vr\user\patches"
+Check "g  bundled SNDX patch is skipped on 01.01" (@(Get-PatchReport $bundled "CUSA11919" "01.01"))[0].State "skipped"
+Check "g  bundled SNDX patch applies on 01.00" (@(Get-PatchReport $bundled "CUSA11919" "01.00"))[0].State "applies"
+
 [System.IO.Directory]::Delete($base, $true)
 "failed: $failed"
 if ($failed -gt 0) { exit 1 }

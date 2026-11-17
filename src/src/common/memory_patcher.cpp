@@ -244,6 +244,7 @@ PatchLine BuildPatchLine(const pugi::xml_node& node) {
 
     line.address = node.attribute("Address").value();
     line.value = node.attribute("Value").value();
+    line.expected = node.attribute("Expected").value();
     line.target = node.attribute("Target").value();
     line.size = node.attribute("Size").value();
     const std::string offset = node.attribute("Offset").value();
@@ -293,7 +294,7 @@ bool ApplyLine(const PatchDefinition& def, const PatchLine& line, bool version_m
     PatchMask patch_mask = ToPatchMask(line.type);
     try {
         if (!PatchMemory(def.name, line.address, line.value, line.target, line.size, false,
-                         line.little_endian, patch_mask, line.mask_offset)) {
+                         line.little_endian, patch_mask, line.mask_offset, line.expected)) {
             error = "memory patch write failed or out of bounds";
             return false;
         }
@@ -449,6 +450,10 @@ PatchApplyResult ApplyManagedPatches(const std::filesystem::path& xml_path,
         if (!version_matches && std::none_of(def.lines.begin(), def.lines.end(), [](const auto& l) {
                 return IsMaskType(l.type);
             })) {
+            LOG_INFO(Loader,
+                     "Patch '{}' skipped: it targets APP_VER {}, but this game is {}; the "
+                     "executable is left unchanged",
+                     def.name, def.app_version, app_version);
             result.records.push_back({def.id, def.name, PatchApplyStatus::VersionMismatch,
                                       "requires app version " + def.app_version});
             continue;
@@ -499,6 +504,24 @@ void ApplyLegacyPatchesFromXML(std::filesystem::path path) {
         const std::string name = it->attribute("Name").value();
         const std::string metadata_app_ver = it->attribute("AppVer").value();
         const bool version_matches = metadata_app_ver == app_version;
+        if (!version_matches) {
+            // Fixed-address lines are skipped below. Say so: a silent skip looks like a patch
+            // that was applied, and "this version is not 01.00" must not look like a broken game.
+            bool has_fixed_address = false;
+            for (auto line_it = it->first_child().children().begin();
+                 line_it != it->first_child().children().end(); ++line_it) {
+                if (!IsMaskType(BuildPatchLine(*line_it).type)) {
+                    has_fixed_address = true;
+                    break;
+                }
+            }
+            if (has_fixed_address) {
+                LOG_INFO(Loader,
+                         "Patch '{}' targets APP_VER {}, but this game is {}: its fixed-address "
+                         "lines are skipped and the executable is left unchanged",
+                         name, metadata_app_ver, app_version);
+            }
+        }
 
         auto patch_list = it->first_child();
         for (auto line_it = patch_list.children().begin(); line_it != patch_list.children().end();
@@ -738,7 +761,7 @@ void ApplyPendingPatches() {
 
 bool PatchMemory(std::string modNameStr, std::string offsetStr, std::string valueStr,
                  std::string targetStr, std::string sizeStr, bool isOffset, bool littleEndian,
-                 PatchMask patchMask, int maskOffset) {
+                 PatchMask patchMask, int maskOffset, const std::string& expected) {
     if (patchMask == PatchMask::None) {
         uint64_t parsedAddress = 0;
         if (!ParseStrictHexAddress(offsetStr, parsedAddress)) {
@@ -765,6 +788,31 @@ bool PatchMemory(std::string modNameStr, std::string offsetStr, std::string valu
 
         if (littleEndian) {
             std::reverse(bytePatch.begin(), bytePatch.end());
+        }
+
+        // A fixed-address patch may name the bytes it expects to find, in memory order. The
+        // write is refused unless they are all there: the APP_VER text is only a claim, and a
+        // build whose code moved must be left untouched rather than corrupted.
+        if (!expected.empty()) {
+            std::vector<unsigned char> expectedBytes;
+            if (!ParseStrictHexBytes(expected, expectedBytes) || expectedBytes.empty()) {
+                LOG_ERROR(Loader, "Invalid expected bytes in patch {}: {}", modNameStr, expected);
+                return false;
+            }
+            if (!IsWithinEbootBounds(cheatAddress, expectedBytes.size())) {
+                LOG_ERROR(Loader,
+                          "Patch {} expected-byte check out of bounds: address=0x{:x}, size={}",
+                          modNameStr, cheatAddress, expectedBytes.size());
+                return false;
+            }
+            if (std::memcmp(reinterpret_cast<const void*>(cheatAddress), expectedBytes.data(),
+                            expectedBytes.size()) != 0) {
+                LOG_ERROR(Loader,
+                          "Patch {} not applied: the bytes at 0x{:x} are not the expected {}; "
+                          "the executable is left unchanged",
+                          modNameStr, cheatAddress, expected);
+                return false;
+            }
         }
 
         if (!IsWithinEbootBounds(cheatAddress, bytePatch.size())) {

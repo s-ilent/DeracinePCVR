@@ -509,11 +509,16 @@ typedef struct _TEB {                             /* win32/win64 */
 static_assert(offsetof(TEB, DeallocationStack) ==
               0x1478); /* The only member we care about at the moment */
 
+// SDK 10.0.26100 declares this enum in processthreadsapi.h when the target is Windows 10
+// 1809 or later (NTDDI_WIN10_MN). Declaring it again is a redefinition error; keep this copy
+// only for older SDKs/targets.
+#if !defined(NTDDI_WIN10_MN) || (NTDDI_VERSION < NTDDI_WIN10_MN)
 typedef enum _QUEUE_USER_APC_FLAGS {
     QueueUserApcFlagsNone,
     QueueUserApcFlagsSpecialUserApc,
     QueueUserApcFlagsMaxValue
 } QUEUE_USER_APC_FLAGS;
+#endif
 
 typedef union _USER_APC_OPTION {
     ULONG_PTR UserApcFlags;

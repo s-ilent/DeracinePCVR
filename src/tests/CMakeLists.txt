@@ -562,6 +562,8 @@ set(MEMORY_PATCHER_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/common/patch_repository.cpp
     ${CMAKE_SOURCE_DIR}/src/core/file_format/psf.cpp
     ${CMAKE_SOURCE_DIR}/src/common/io_file.cpp
+    # io_file.cpp calls the ntdll entry points that ntapi.cpp defines.
+    ${CMAKE_SOURCE_DIR}/src/common/ntapi.cpp
 
     # EmulatorState is used by OnGameLoaded(); EmulatorSettings is used by log.cpp.
     ${CMAKE_SOURCE_DIR}/src/core/emulator_state.cpp
@@ -1000,6 +1002,53 @@ target_link_libraries(shadps4_staged_file_read_test PRIVATE
 list(APPEND TEST_TARGETS shadps4_staged_file_read_test)
 
 gtest_discover_tests(shadps4_staged_file_read_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)
+# ===========================================================================
+# Autonomous-infrastructure devtools: virtual camera pacing and headless input
+# ===========================================================================
+
+add_executable(shadps4_virtual_camera_clock_test
+    core/test_virtual_camera_clock.cpp
+)
+
+target_include_directories(shadps4_virtual_camera_clock_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/tests
+)
+target_compile_features(shadps4_virtual_camera_clock_test PRIVATE cxx_std_23)
+
+target_link_libraries(shadps4_virtual_camera_clock_test PRIVATE
+    GTest::gtest_main
+)
+
+list(APPEND TEST_TARGETS shadps4_virtual_camera_clock_test)
+
+gtest_discover_tests(shadps4_virtual_camera_clock_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)
+
+add_executable(shadps4_autopress_test
+    core/test_autopress.cpp
+)
+
+target_include_directories(shadps4_autopress_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/tests
+)
+target_compile_features(shadps4_autopress_test PRIVATE cxx_std_23)
+
+target_link_libraries(shadps4_autopress_test PRIVATE
+    GTest::gtest_main
+)
+
+list(APPEND TEST_TARGETS shadps4_autopress_test)
+
+gtest_discover_tests(shadps4_autopress_test
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     DISCOVERY_TIMEOUT 60
 )

@@ -148,6 +148,89 @@ constexpr const char* kStrictHexPrefixPatch = R"(
 </Patch>
 )";
 
+// The backing image is filled with 0x90, so these Expected bytes describe it.
+constexpr const char* kExpectedBytesPatch = R"(
+<Patch>
+    <TitleID>
+        <ID>CUSA00001</ID>
+    </TitleID>
+    <Metadata Title="Test Game" Name="Expected Bytes" Author="author-e" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="true">
+        <PatchList>
+            <Line Type="bytes32" Address="400000" Value="00000001" Expected="90909090"/>
+        </PatchList>
+    </Metadata>
+</Patch>
+)";
+
+// The shipped CUSA11919 line uses a signature longer than the bytes it writes; verify the
+// prefix check does not require equal lengths.
+constexpr const char* kExpectedLongerPatch = R"(
+<Patch>
+    <TitleID>
+        <ID>CUSA00001</ID>
+    </TitleID>
+    <Metadata Title="Test Game" Name="Expected Longer" Author="author-e" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="true">
+        <PatchList>
+            <Line Type="bytes32" Address="400000" Value="00000001" Expected="9090909090909090"/>
+        </PatchList>
+    </Metadata>
+</Patch>
+)";
+
+constexpr const char* kExpectedBytesMismatchPatch = R"(
+<Patch>
+    <TitleID>
+        <ID>CUSA00001</ID>
+    </TitleID>
+    <Metadata Title="Test Game" Name="Expected Mismatch" Author="author-e" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="true">
+        <PatchList>
+            <Line Type="bytes32" Address="400000" Value="00000001" Expected="11223344"/>
+        </PatchList>
+    </Metadata>
+</Patch>
+)";
+
+constexpr const char* kExpectedBytesInvalidPatch = R"(
+<Patch>
+    <TitleID>
+        <ID>CUSA00001</ID>
+    </TitleID>
+    <Metadata Title="Test Game" Name="Expected Invalid" Author="author-e" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="true">
+        <PatchList>
+            <Line Type="bytes32" Address="400000" Value="00000001" Expected="not-hex"/>
+        </PatchList>
+    </Metadata>
+</Patch>
+)";
+
+// isEnabled=true with a version that is not the installed one: the write must not happen.
+constexpr const char* kLegacyWrongVersionEnabled = R"(
+<Patch>
+    <TitleID>
+        <ID>CUSA00001</ID>
+    </TitleID>
+    <Metadata Title="Test Game" Name="Wrong Version Enabled" Author="author-w" PatchVer="1.0" AppVer="99.99" AppElf="eboot.bin" isEnabled="true">
+        <PatchList>
+            <Line Type="bytes32" Address="400000" Value="000000FF"/>
+        </PatchList>
+    </Metadata>
+</Patch>
+)";
+
+// A mask signature that is not in the image: the scan must fail, not write elsewhere.
+constexpr const char* kMaskSignatureMissing = R"(
+<Patch>
+    <TitleID>
+        <ID>CUSA00001</ID>
+    </TitleID>
+    <Metadata Title="Test Game" Name="Missing Signature" Author="author-m" PatchVer="1.0" AppVer="99.99" AppElf="eboot.bin" isEnabled="true">
+        <PatchList>
+            <Line Type="mask" Address="DEADBEEF" Value="00" Offset="0"/>
+        </PatchList>
+    </Metadata>
+</Patch>
+)";
+
 class PatchTest : public ::testing::Test {
 protected:
     void SetUp() override {
@@ -409,6 +492,81 @@ TEST_F(PatchTest, StrictHexPrefixAndValue_AppliesCleanly) {
     EXPECT_TRUE(result.ok);
     ASSERT_EQ(Observed().size(), 1u);
     EXPECT_EQ(Observed()[0], "Hex Prefix Patch");
+}
+
+// A fixed-address patch that names the bytes it expects is written only when they are there.
+TEST_F(PatchTest, FixedAddress_ExpectedBytesMatch_Applies) {
+    const auto xml = WritePatch(kExpectedBytesPatch, "expected-ok.xml");
+    auto ids = IdentityMapFor(xml, {{"Expected Bytes", "expected.ok"}});
+    InstallObserver();
+
+    const auto result = MemoryPatcher::ApplyManagedPatches(xml, {"expected.ok"}, ids);
+    EXPECT_TRUE(result.ok);
+    ASSERT_EQ(Observed().size(), 1u);
+    ASSERT_EQ(result.records.size(), 1u);
+    EXPECT_EQ(result.records[0].status, MemoryPatcher::PatchApplyStatus::Applied);
+    EXPECT_EQ(backing[0], 0x01);
+    EXPECT_EQ(backing[1], 0x00);
+}
+
+TEST_F(PatchTest, FixedAddress_ExpectedSignatureLongerThanValue_Applies) {
+    const auto xml = WritePatch(kExpectedLongerPatch, "expected-longer.xml");
+    auto ids = IdentityMapFor(xml, {{"Expected Longer", "expected.longer"}});
+    InstallObserver();
+
+    const auto result = MemoryPatcher::ApplyManagedPatches(xml, {"expected.longer"}, ids);
+    EXPECT_TRUE(result.ok);
+    ASSERT_EQ(Observed().size(), 1u);
+    EXPECT_EQ(backing[0], 0x01);
+    EXPECT_EQ(backing[3], 0x00);
+}
+
+TEST_F(PatchTest, FixedAddress_ExpectedBytesMismatch_LeavesExecutableUnchanged) {
+    const auto xml = WritePatch(kExpectedBytesMismatchPatch, "expected-bad.xml");
+    auto ids = IdentityMapFor(xml, {{"Expected Mismatch", "expected.bad"}});
+    InstallObserver();
+    const std::vector<u8> original_backing = backing;
+
+    const auto result = MemoryPatcher::ApplyManagedPatches(xml, {"expected.bad"}, ids);
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(Observed().empty());
+    ASSERT_EQ(result.records.size(), 1u);
+    EXPECT_EQ(result.records[0].status, MemoryPatcher::PatchApplyStatus::WriteFailed);
+    EXPECT_EQ(backing, original_backing);
+}
+
+TEST_F(PatchTest, FixedAddress_InvalidExpectedBytes_LeavesExecutableUnchanged) {
+    const auto xml = WritePatch(kExpectedBytesInvalidPatch, "expected-invalid.xml");
+    auto ids = IdentityMapFor(xml, {{"Expected Invalid", "expected.invalid"}});
+    InstallObserver();
+    const std::vector<u8> original_backing = backing;
+
+    const auto result = MemoryPatcher::ApplyManagedPatches(xml, {"expected.invalid"}, ids);
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(Observed().empty());
+    ASSERT_EQ(result.records.size(), 1u);
+    EXPECT_EQ(result.records[0].status, MemoryPatcher::PatchApplyStatus::WriteFailed);
+    EXPECT_EQ(backing, original_backing);
+}
+
+TEST_F(PatchTest, Legacy_WrongAppVerWithEnabledMetadata_LeavesExecutableUnchanged) {
+    const auto xml = WritePatch(kLegacyWrongVersionEnabled, "legacy-wrong-ver.xml");
+    InstallObserver();
+    const std::vector<u8> original_backing = backing;
+
+    MemoryPatcher::ApplyLegacyPatchesFromXML(xml);
+    EXPECT_TRUE(Observed().empty());
+    EXPECT_EQ(backing, original_backing);
+}
+
+TEST_F(PatchTest, Legacy_MaskSignatureMissing_LeavesExecutableUnchanged) {
+    const auto xml = WritePatch(kMaskSignatureMissing, "mask-missing.xml");
+    InstallObserver();
+    const std::vector<u8> original_backing = backing;
+
+    MemoryPatcher::ApplyLegacyPatchesFromXML(xml);
+    EXPECT_TRUE(Observed().empty());
+    EXPECT_EQ(backing, original_backing);
 }
 
 
