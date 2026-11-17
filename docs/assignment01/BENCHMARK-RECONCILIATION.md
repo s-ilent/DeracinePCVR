@@ -90,5 +90,9 @@ One binary, one scene phase, interleaved cells:
 Nothing in this document is a performance comparison of the two branches; it is a provenance
 explanation of why the two reported numbers are not comparable. The only defensible cross-fork
 statement is structural: **de9c78c already pays for two default-on GPU optimizations that acda49e
-lacks, and its classroom cells are title-capped with GPU headroom, while acda49e is GPU-bound.**
+lacks, and its classroom cells were run at a 60 Hz vblank/submit cadence with GPU headroom (no engine cap established), while acda49e is GPU-bound.**
+
+
+
+Correction: the 'title-capped' wording above is withdrawn; the 60 Hz cells are vblank/submit cadence, not an engine ceiling.
 
