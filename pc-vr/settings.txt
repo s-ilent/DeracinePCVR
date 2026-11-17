@@ -1,4 +1,4 @@
-﻿# Settings for "Play Deracine VR.bat", one key=value a line. Lines starting with # are ignored;
+# Settings for "Play Deracine VR.bat", one key=value a line. Lines starting with # are ignored;
 # what is commented out below shows the value that applies when the line is left out.
 
 # game: Location of the game's eboot.bin or .pkg package.
@@ -20,6 +20,9 @@ render_percent=300
 fps=120
 resolution=2880
 dynamic=0
+# What the headset is shown: guest (the size the game draws, 1:1), auto (what the runtime asks for,
+# 3036x3036 an eye on a Steam Frame), or a size such as 3036x3036.
+present=auto
 
 # How much of the headset's field of view the game draws, in percent, 70 to 100.
 fov=100
