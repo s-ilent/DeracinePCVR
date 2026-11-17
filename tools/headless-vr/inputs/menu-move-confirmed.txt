@@ -1,0 +1,20 @@
+# M2 confirmed recipe (scene-eng, m2-confirm-1, wt-headless sha256 6b2605231e6733b2).
+#
+# Headless menu -> Continue -> loading -> classroom gameplay, no physical headset. The winning
+# pointer-hand press was the one at 65 s after the pose change at 46 s; the extra confirm variants
+# at 50-62 s did not select and are left out here. Press twice for a clean cell.
+#
+# Run it with:
+#   -SyntheticHands on -Autopress -AutopressSeconds 45 -Env SHADPS4_MOVE_PITCH=0 `
+#   -InputScript _build\headless\inputs\menu-move-confirmed.txt -Gate gameplay
+#
+# AUTOPRESS passes the camera/headset check screen and stops at 45 s, before the menu.
+# Move bits: 1 = trigger click, 2 = Move button; 6 = both, trigger 255.
+# The harness freezes the pose at the scene anchor, so nothing is pressed during the measured
+# window. Confirmed timing: loading 66-79 s, gameplay from ~86-90 s, ~1870 draws / ~625 Mpx,
+# 30-35 fps.
+0 900 head=0,0,0,0,0,0
+0 45 pad=0,-0.17,-0.5,0,0,0
+46 900 pad=0.30,-0.12,-0.5,0,0,0
+60 1 move1=6,255
+63 1 move1=6,255

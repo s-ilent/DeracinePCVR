@@ -1,0 +1,29 @@
+# Fixed input for a headless VR gameplay cell (M2 scripted Move entry).
+#
+# Format: <start_s> <hold_s> [buttons] [head=x,y,z,yaw,pitch,roll] [pad=x,y,z,yaw,pitch,roll]
+#         [move0=<buttons>,<trigger>] [move1=<buttons>,<trigger>]  (wt-headless build)
+# Times are seconds from the scripted-input start (process start). Poses persist; the most
+# recently started line wins. The headless mode has stationary simulated tracking, so this pose
+# is the one the verified headless probe used.
+#
+# The menu cursor is the Move sphere; the title selects with the Move trigger. The headless build
+# maps the pad to synthetic tracked Move hands (SHADPS4_VR_MOVE_FROM_PAD) and also accepts the
+# title's own hand bits directly:
+#   move1=2,255  -> right Move: trigger digital click (bit 1) + trigger fully pressed
+#   (bit layout: 1 trigger, 2 Move button, 4 options, 8 triangle, 16 circle, 32 cross, 64 square)
+# The direct move1= token is exact and takes precedence over the pad mapping. The pointer starts
+# on "Continue" (the lab carries the save with Stage m00_00_10_10), and the menu appears ~34 s
+# after launch, so the presses below are spaced across the menu window. The harness freezes this
+# input at the scene anchor, so nothing is pressed during the measured window.
+#
+# A build without the direct move tokens can use pad presses instead (`r2` maps to the right Move
+# trigger through SHADPS4_VR_MOVE_FROM_PAD); pass that file with -InputScript.
+0 100000 head=0,0,0,0,0,0 pad=0,-0.17,-0.5,0,-45,0
+40 0.3 move1=2,255
+45 0.3 move1=2,255
+50 0.3 move1=2,255
+55 0.3 move1=2,255
+60 0.3 move1=2,255
+65 0.3 move1=2,255
+70 0.3 move1=2,255
+75 0.3 move1=2,255
