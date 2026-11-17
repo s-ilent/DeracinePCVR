@@ -67,6 +67,14 @@ one 5760×3240 R8G8B8A8 eye picture. What differs is what the emulator does arou
    one cell at 41.3 fps / GPU 37 % because *this* branch's Ninja build was running. That is a
    direct demonstration that single cells taken across branches at different times are not
    comparable.
+7. **The recovery store's controlled copy-vs-depth A/B sharpens the attribution.** On `defpass.exe`
+   (the de9c78c line with the depth switch) the classroom measured copy 51.5 / 54.6 fps and
+   depth-pass 58.4 / 50.7 fps — the two pairs disagree in sign and the aggregate is +2.8 % inside
+   a ~10 % same-binary noise floor. Even the **copy** arm of that de9c78c-line binary runs at
+   51.5–54.6 fps, well above acda49e's 39.8. So the depth pass alone does not explain the gap; the
+   rest of the renderer generation (in-pass barrier → 66 vs 88 passes, pacing/presentation, and the
+   120 Hz camera in that line) is the larger part. The pass count is the one direct, measured
+   correlate: 66 with the barrier, 88 without.
 
 ## What would settle it
 
