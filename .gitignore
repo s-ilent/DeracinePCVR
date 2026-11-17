@@ -21,6 +21,20 @@ bin/
 _vr_backup/
 *.zip
 
+# Compiled programs and libraries: never commit them. Build the emulator and stage it with
+# tools/stage-runtime.ps1; obtain PkgTool with tools/pkgtool.ps1. See README.md.
+*.exe
+*.dll
+*.lib
+*.pdb
+*.ilk
+*.exp
+*.o
+*.so
+*.dylib
+*.a
+pc-vr/pkgtool/*.local.txt
+
 # Ignore third-party submodule source trees (fetched via git submodules or CMake)
 src/externals/*
 !src/externals/CMakeLists.txt

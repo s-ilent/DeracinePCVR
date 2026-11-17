@@ -37,7 +37,7 @@ whose notice (`shadps4-arm64-main/NOTICE.android-runtime.md`) and lock files
 | The emulator (`shadps4.exe`) and the launcher (`launch.ps1`, `Play Astro Bot VR.bat`) | GPL-2.0-or-later | this repository |
 | The libraries built into the emulator (`shadps4-arm64-main/externals`) | their own licenses, in each folder | the submodules listed in [.gitmodules](.gitmodules) |
 | Khronos OpenXR loader 1.1.63, built into the emulator | Apache-2.0 | `shadps4-arm64-main/externals/openxr-sdk` ([KhronosGroup/OpenXR-SDK](https://github.com/KhronosGroup/OpenXR-SDK), release 1.1.63) |
-| PkgTool and LibOrbisPkg 0.2.231 (`pc-vr/pkgtool`), unchanged: the launcher runs it to unpack a game package | LGPL-3.0 | [maxton/LibOrbisPkg](https://github.com/maxton/LibOrbisPkg), release [v0.2](https://github.com/maxton/LibOrbisPkg/releases/tag/v0.2) |
+| PkgTool and LibOrbisPkg 0.2.231, unchanged: the launcher runs it to unpack a game package. Not stored in this repository: `tools/pkgtool.ps1` builds it from the pinned upstream commit or fetches the verified release asset; release archives carry it alongside `pc-vr/pkgtool/LICENSE.txt` | LGPL-3.0 | [maxton/LibOrbisPkg](https://github.com/maxton/LibOrbisPkg), release [v0.2](https://github.com/maxton/LibOrbisPkg/releases/tag/v0.2), commit `72370ca3739e0708250695046b3886e50452dee7` |
 
 The emulator needs the Microsoft Visual C++ runtime, which is not included: it comes with the
 [Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe).

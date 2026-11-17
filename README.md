@@ -52,6 +52,60 @@ Special thanks and full credit to:
 
 ---
 
+## Building from source
+
+The emulator executable and the package tool are **not stored in this repository**; build or
+fetch them and stage them into `pc-vr/`. Nothing compiled is tracked by git.
+
+1. Fetch the externals (they are not vendored): `python tools/fetch-submodules.py`.
+2. Build the CMake tree in `src/` for Windows x64. The reference is
+   [`.github/workflows/build-windows.yml`](.github/workflows/build-windows.yml), which produces
+   `build/shadPS4.exe`; on a local machine use the same configure/build commands.
+3. Stage the result:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File tools\stage-runtime.ps1 -FromBuild build\shadPS4.exe
+   ```
+
+   It copies the binary to `pc-vr/shadps4.exe`, checks that it is a Windows executable, and prints
+   its SHA-256 — record that hash with any test result.
+
+Alternatively, download the CI artifact of the current commit, which stages it the same way:
+
+```powershell
+python tools/download-artifact.py
+```
+
+`tools\stage-runtime.ps1 -Check` reports whether the play folder is complete and prints the hashes
+of everything staged there.
+
+### PkgTool (unpacking a dumped `.pkg`)
+
+The launcher unpacks `.pkg` dumps with **PkgTool 0.2.231** and **LibOrbisPkg.dll**, by Maxton, from
+[LibOrbisPkg](https://github.com/maxton/LibOrbisPkg) — LGPL-3.0, see
+[`pc-vr/pkgtool/LICENSE.txt`](pc-vr/pkgtool/LICENSE.txt). They are not committed either.
+
+Preferred: build them from the pinned upstream release commit (needs Visual Studio Build Tools with
+the .NET Framework 4.0 targeting pack):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\pkgtool.ps1 -Mode Build
+```
+
+Fallback: fetch the official release asset, whose SHA-256 and file hashes are pinned in the script:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\pkgtool.ps1 -Mode Release
+```
+
+Both modes fail closed on a hash or version mismatch, stage only into `pc-vr/pkgtool/`, print the
+SHA-256 of each file, and record provenance in `pc-vr/pkgtool/PROVENANCE.local.txt` (not tracked).
+Nothing is downloaded unless `-Mode Release` is asked for explicitly. A verified pair is
+byte-identical to what this repository used to ship (`PkgTool.exe` `8B1C269D…`,
+`LibOrbisPkg.dll` `78705774…`).
+
+---
+
 ## How to Play
 
 1. **Place your game dump** in the `games` folder:
