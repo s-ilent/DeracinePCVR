@@ -562,6 +562,8 @@ set(MEMORY_PATCHER_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/common/patch_repository.cpp
     ${CMAKE_SOURCE_DIR}/src/core/file_format/psf.cpp
     ${CMAKE_SOURCE_DIR}/src/common/io_file.cpp
+    # io_file.cpp calls the ntdll entry points that ntapi.cpp defines.
+    ${CMAKE_SOURCE_DIR}/src/common/ntapi.cpp
 
     # EmulatorState is used by OnGameLoaded(); EmulatorSettings is used by log.cpp.
     ${CMAKE_SOURCE_DIR}/src/core/emulator_state.cpp
