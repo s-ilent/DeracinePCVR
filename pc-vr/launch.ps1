@@ -936,9 +936,14 @@ if (Test-Path $cfgPath) {
             $cfgJson.GPU.readback_linear_images_enabled = $rbLinear
             $changed = $true
         }
+        # The emulated display's refresh rate is the rate frames are asked for: a 60 Hz vblank holds
+        # the title to 60 fps whatever the headset does (the title paces itself to its display), so
+        # a 120 Hz headset with fps=120 needs a 120 Hz vblank to go faster than 60.
         if ($null -ne $cfgJson.GPU.vblank_frequency) {
-            if ($cfgJson.GPU.vblank_frequency -ne 60) {
-                $cfgJson.GPU.vblank_frequency = 60
+            $vblankWanted = [int](Setting "fps" "60")
+            if ($vblankWanted -lt 30) { $vblankWanted = 60 }
+            if ($cfgJson.GPU.vblank_frequency -ne $vblankWanted) {
+                $cfgJson.GPU.vblank_frequency = $vblankWanted
                 $changed = $true
             }
         }
