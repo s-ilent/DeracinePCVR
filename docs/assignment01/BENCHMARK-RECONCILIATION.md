@@ -53,11 +53,11 @@ one 5760×3240 R8G8B8A8 eye picture. What differs is what the emulator does arou
    for the depth-write pass that `8638928`/`fc2fb55` install and make default in de9c78c. On a
    25 ms frame, removing ~7–10 ms of GPU work is the difference between 40 and ~55–58 fps.
 3. **GPU busy 100 % vs 51–59 %.** r9 is GPU-bound on that extra work; the de9c78c cells have
-   headroom and sit at the title's own ~60 Hz front-end cap, so they cannot show a frame-rate
+   headroom and sit at a 60 Hz vblank/submit cadence, so they cannot show a frame-rate
    gain from anything CPU-side (including the recycler).
 4. **The recycler is not the cause of the cross-fork number.** de9c78c's own no-recycler cell
    (`xf-diag2`, 58.04 FPS) is within noise of the recycler-on cells (58.66 / 58.55). The
-   recycler's measured effect is CPU-thread image create/destroy time, not FPS at this cap. Its
+   recycler's measured effect is CPU-thread image create/destroy time, not FPS at this cadence. Its
    off-arm comparison (4.15 vs 0.29 ms) is **not usable as a saving estimate**: the off arm landed
    on the calibration screen (176 draws / 273 Mpx), a different workload.
 5. **Measurement differences.** 60 samples over 30 s versus 80 over 40 s; autopress allowed to
@@ -91,3 +91,4 @@ Nothing in this document is a performance comparison of the two branches; it is 
 explanation of why the two reported numbers are not comparable. The only defensible cross-fork
 statement is structural: **de9c78c already pays for two default-on GPU optimizations that acda49e
 lacks, and its classroom cells are title-capped with GPU headroom, while acda49e is GPU-bound.**
+

@@ -5,8 +5,8 @@
 **120 unique rendered FPS** at approximately **3036×3036 per eye** on Steam Frame, with correct
 stereo, colour, depth, transparency and frame pacing. Milestones: 60 and 90 unique FPS. Presented /
 reprojected frames do not count. Quality reductions must be explicit, measured options, never
-hidden substitutions. The front end is 60-locked, so 120 must be demonstrated on a GPU-bound scene,
-not inferred from the menu.
+hidden substitutions. No engine FPS cap is assumed. The classroom heavy scene is a valid performance target; 120 must be
+measured on a GPU-bound workload with the unique-FPS path, not inferred from a capped/paced scene.
 
 ## Measurement path
 
@@ -19,11 +19,13 @@ postflight. Do not compare cells across builds, resolutions, MSAA, settings or s
 | cell | build | workload | unique FPS | GPU busy | notes |
 |---|---|---|---|---|---|
 | `classroom-valid-r9` | `B6830480…` (`acda49e` + guardrails) | classroom+menu, 300 %, MSAA 2, presentation `SHADPS4_VR_SCALE=0.5` (2880×1632 window) | **39.83** | 97–100 % | one cell, screenshot 1.0000, 88 passes, 535 Mpx; reference PNG is R/B-swapped |
-| `xf-a2-*` | `A02FB23F…` (`de9c78c` + recycler) | same scene and settings | 58.7 p50 | 51–59 % | 60 Hz vblank/pacing; limiter **not established** (the earlier "title cap" claim is withdrawn); renderer differs (66 passes, depth pass, in-pass barrier) |
+| `xf-a2-*` | `A02FB23F…` (`de9c78c` + recycler) | same scene and settings | 58.7 p50 (window means, not the validated unique metric) | 51–59 % | **not GPU-bound**; 60 Hz vblank plus the guest submit/vblank cadence measured in the historical investigation (one frame per two refreshes). Not an engine cap. Renderer differs (66 passes, depth pass, in-pass barrier) |
 | `xf` 400 % uncapped | `A02FB23F…` | GPU-bound heavy samples, present = guest 7680×4320 | 26.4 → 35.5 → 40.9 | 95 %+ | depth-write pass +34 %, runtime-size presentation +15 % (reported by the cross-fork work, not yet independently re-validated) |
 
-The target configuration — 300 % guest, authored MSAA, **3036×3036/eye OpenXR output**, gameplay
-(uncapped) — **has not yet been measured with the unique-FPS path**. The 3036×3036 trial produced
+The target configuration — 300 % guest, authored MSAA, **3036×3036/eye OpenXR output** on the
+classroom heavy scene — **has not yet been measured with the unique-FPS path**. The 3036×3036 trial
+produced headset-presented cadence only (45–50 FPS, GPU 95–100 %), which is not a valid unique-FPS
+result. The 3036×3036 trial produced
 headset-presented cadence only (45–50 FPS, GPU 95–100 %), which is not a valid unique-FPS result.
 
 ## Noise floor
@@ -68,4 +70,5 @@ Hardware status: the headset is not available for a session; the A/B is prepared
 nothing will be claimed until it is measured on the target workload. Where hardware is unavailable,
 safe offline research/implementation continues; no production executable, launcher, shared save or
 SteamVR service is touched.
+
 
