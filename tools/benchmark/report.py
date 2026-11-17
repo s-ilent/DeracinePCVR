@@ -38,8 +38,9 @@ def build(run_dir: Path) -> dict:
     timing = data.get("timing", {})
     report["informational"]["compositor_cadence"] = timing.get("compositor_cadence")
     report["limitations"].append(
-        "Frame times are means of the emulator's 0.5 s frame-stats windows, not individual "
-        "frames; p95/p99 describe windows.")
+        "Window-average frame-time percentiles are percentiles of the emulator's per-window mean frame times "
+        "(1000/fps, one value per frame-stats window), not of individual frame durations; "
+        "no per-frame timing series is captured.")
     report["limitations"].append(
         "The classroom front end is not gameplay: menu selection, Move input and gameplay "
         "pacing were not exercised.")
@@ -48,7 +49,8 @@ def build(run_dir: Path) -> dict:
     window = [s for s in timing["per_sample"] if s["in_window"]]
     report["observed"] = {
         "unique_rendered_fps": timing["unique_fps"],
-        "frame_ms": timing["frame_ms"],
+        "window_avg_frame_ms": timing.get("window_avg_frame_ms", timing.get("frame_ms")),
+        "frame_time_statistic": timing.get("frame_time_statistic", "window-average (legacy key)"),
         "window": {
             "samples": timing["samples_window"],
             "stats_every_s": data["scenario"]["stats_every_s"],
@@ -89,9 +91,9 @@ def print_text(report: dict) -> None:
     print(f"  unique rendered FPS: {observed['unique_rendered_fps']:.2f} "
           f"({observed['window']['samples']} x {observed['window']['stats_every_s']} s windows, "
           f"{observed['window']['elapsed_s']:.2f} s)")
-    frame = observed["frame_ms"]
-    print(f"  frame time p50/p90/p95/p99: {frame['p50']:.2f} / {frame['p90']:.2f} / "
-          f"{frame['p95']:.2f} / {frame['p99']:.2f} ms (window means)")
+    frame = observed["window_avg_frame_ms"]
+    print(f"  window-average frame time p50/p90/p95/p99: {frame['p50']:.2f} / {frame['p90']:.2f} / "
+          f"{frame['p95']:.2f} / {frame['p99']:.2f} ms (per-window means, not per frame)")
     print(f"  scene: {observed['scene']['classification']}, overlay "
           f"{'present' if observed['scene']['overlay_present'] else 'absent'}, screenshot "
           f"similarity {observed['scene']['screenshot_similarity']:.4f}")

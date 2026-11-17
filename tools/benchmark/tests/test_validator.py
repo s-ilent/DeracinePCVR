@@ -529,6 +529,31 @@ class ValidatorTests(unittest.TestCase):
         self.fixture.write(document)
         self.assert_invalid("actual guest stereo")
 
+    # 11. Frame-time percentiles are window averages, and must say so --------
+    def test_window_average_frame_time_is_labelled(self) -> None:
+        document = self.fixture.reload()
+        timing = document["timing"]
+        timing["window_avg_frame_ms"] = timing.pop("frame_ms")
+        timing["frame_time_statistic"] = "window-average"
+        timing["per_frame_timing"] = False
+        for row in timing["per_sample"]:
+            row["window_avg_frame_ms"] = row.pop("frame_ms")
+        self.fixture.write(document)
+        result = validator.validate_run(self.run_dir)
+        self.assertTrue(result["valid"], result["errors"])
+        report = __import__("report").build(self.run_dir)
+        self.assertEqual(report["observed"]["frame_time_statistic"], "window-average")
+        self.assertIn("window-average", report["limitations"][0].lower())
+
+        document["timing"]["frame_time_statistic"] = "per-frame"
+        self.fixture.write(document)
+        self.assert_invalid("frame_time_statistic")
+
+        document["timing"]["frame_time_statistic"] = "window-average"
+        document["timing"]["per_frame_timing"] = True
+        self.fixture.write(document)
+        self.assert_invalid("per-frame timing")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

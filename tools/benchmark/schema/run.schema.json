@@ -126,7 +126,7 @@
       "type": "object",
       "required": ["source", "source_id", "samples_total", "samples_window",
                    "warmup_samples", "window_start_s", "window_end_s", "window_elapsed_s",
-                   "warmup_start_s", "warmup_end_s", "unique_fps", "frame_ms", "per_sample"],
+                   "warmup_start_s", "warmup_end_s", "unique_fps", "per_sample"],
       "properties": {
         "source": { "const": "framestats" },
         "source_id": { "type": "string" },
@@ -140,7 +140,10 @@
         "warmup_start_s": { "type": "number" },
         "warmup_end_s": { "type": "number" },
         "unique_fps": { "type": "number", "minimum": 1 },
-        "frame_ms": {
+        "frame_time_statistic": { "const": "window-average" },
+        "frame_time_derived_from": { "type": "string" },
+        "per_frame_timing": { "const": false },
+        "window_avg_frame_ms": {
           "type": "object",
           "required": ["p50", "p90", "p95", "p99", "mean", "min", "max"],
           "properties": {
@@ -153,19 +156,20 @@
             "max": { "type": "number", "minimum": 0.1 }
           }
         },
+        "frame_ms": { "type": "object" },
         "compositor_cadence": { "type": ["object", "null"] },
         "per_sample": {
           "type": "array",
           "minItems": 1,
           "items": {
             "type": "object",
-            "required": ["sample", "at_s", "fps", "frames", "frame_ms", "draws", "mpx",
-                         "in_window"],
+            "required": ["sample", "at_s", "fps", "frames", "draws", "mpx", "in_window"],
             "properties": {
               "sample": { "type": "integer", "minimum": 0 },
               "at_s": { "type": "number" },
               "fps": { "type": "number", "minimum": 0.01 },
               "frames": { "type": "integer", "minimum": 1 },
+              "window_avg_frame_ms": { "type": "number", "minimum": 0.01 },
               "frame_ms": { "type": "number", "minimum": 0.01 },
               "draws": { "type": "number" },
               "mpx": { "type": "number" },

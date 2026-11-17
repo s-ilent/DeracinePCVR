@@ -23,7 +23,7 @@ arithmetic and the save-slot pin are unit-tested without a GPU
 | measured | source |
 |---|---|
 | unique rendered FPS | `SHADPS4_FRAME_STATS` windows: **total frames / total measured time** (`Σ frames / Σ(frames/fps)`), computed by the emulator draw scheduler (`FrameStats::EndFrame`) |
-| frame time p50/p90/p95/p99 | the mean frame time of each 0.5 s window, `1000/fps` |
+| window-average frame time p50/p90/p95/p99 | percentiles of the per-window mean frame time, `1000/fps` — **not** per-frame timing |
 | scene identity | a render-target dump compared with the reviewed reference by normalised 64×36 grayscale correlation |
 | workload | draws, passes and target Mpx per window, from the same frame-stats line |
 
@@ -173,7 +173,7 @@ the old reference in history.
 
 ## Known limitations
 
-* Frame times are 0.5 s window means, not individual frames: p95/p99 describe windows.
+* Frame-time percentiles are percentiles of 0.5 s window means (`1000/fps`), not of individual frame durations; p95/p99 describe windows. A per-frame timing capture is not implemented (future work).
 * The classroom front end is not gameplay; nothing here validates quests, Move input or the
   120 FPS target, which need a worn headset and a real session.
 * The scene reference is one reviewed frame; a large lighting change in the scene would require

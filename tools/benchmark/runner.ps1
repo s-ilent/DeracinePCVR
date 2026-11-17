@@ -382,7 +382,7 @@ function Update-Samples {
             at_s       = [double]$match.Groups['at'].Value
             fps        = [double]$match.Groups['fps'].Value
             frames     = [int]$match.Groups['frames'].Value
-            frame_ms   = Round3 (1000.0 / [double]$match.Groups['fps'].Value)
+            window_avg_frame_ms = Round3 (1000.0 / [double]$match.Groups['fps'].Value)
             draws      = [double]$match.Groups['draws'].Value
             mpx        = [double]$match.Groups['mpx'].Value
             passes     = [double]$match.Groups['passes'].Value
@@ -580,19 +580,19 @@ if (-not (Test-Path -LiteralPath (Join-Path $Out 'shad_log.txt'))) {
 # --- analysis --------------------------------------------------------------------------------
 $window = $samples.ToArray() | Where-Object { $_.in_window }
 if ($window.Count -ne $samplesInWindow) { Fail-Run "only $($window.Count) in-window samples" }
-$frameMs = @($window | ForEach-Object { [double]$_.frame_ms })
+$windowAvgMs = @($window | ForEach-Object { [double]$_.window_avg_frame_ms })
 $totalFrames = ($window | ForEach-Object { [int]$_.frames } | Measure-Object -Sum).Sum
 $totalTime = ($window | ForEach-Object { [double]$_.frames / [double]$_.fps } |
     Measure-Object -Sum).Sum
 $uniqueFps = if ($totalTime -gt 0) { $totalFrames / $totalTime } else { 0.0 }
 $frameStats = [ordered]@{
-    p50  = Round3 (Get-Percentile $frameMs 0.50)
-    p90  = Round3 (Get-Percentile $frameMs 0.90)
-    p95  = Round3 (Get-Percentile $frameMs 0.95)
-    p99  = Round3 (Get-Percentile $frameMs 0.99)
-    mean = Round3 (($frameMs | Measure-Object -Average).Average)
-    min  = Round3 (($frameMs | Measure-Object -Minimum).Minimum)
-    max  = Round3 (($frameMs | Measure-Object -Maximum).Maximum)
+    p50  = Round3 (Get-Percentile $windowAvgMs 0.50)
+    p90  = Round3 (Get-Percentile $windowAvgMs 0.90)
+    p95  = Round3 (Get-Percentile $windowAvgMs 0.95)
+    p99  = Round3 (Get-Percentile $windowAvgMs 0.99)
+    mean = Round3 (($windowAvgMs | Measure-Object -Average).Average)
+    min  = Round3 (($windowAvgMs | Measure-Object -Minimum).Minimum)
+    max  = Round3 (($windowAvgMs | Measure-Object -Maximum).Maximum)
 }
 $windowStart = $samples[$warmupTarget].at_s
 $windowEnd = $samples[$windowTarget - 1].at_s
@@ -607,10 +607,10 @@ if ($framesCovered -eq $window.Count) {
 }
 
 $framesCsv = New-Object System.Collections.Generic.List[string]
-$framesCsv.Add('sample,at_s,fps,frames,frame_ms,passes,loading_passes,mpx,draws,dispatches,submits,gpu_busy_pct,in_window')
+$framesCsv.Add('sample,at_s,fps,frames,window_avg_frame_ms,passes,loading_passes,mpx,draws,dispatches,submits,gpu_busy_pct,in_window')
 foreach ($s in $samples) {
     $framesCsv.Add(('{0},{1},{2},{3},{4},{5},{6},{7},{8},{9},{10},{11},{12}' -f $s.sample, $s.at_s,
-            $s.fps.ToString($inv), $s.frames, $s.frame_ms.ToString($inv), $s.passes, $s.loading,
+            $s.fps.ToString($inv), $s.frames, $s.window_avg_frame_ms.ToString($inv), $s.passes, $s.loading,
             $s.mpx, $s.draws, $s.dispatches, $s.submits, $s.gpu_busy, [int]$s.in_window))
 }
 Invoke-Guard 'write' (Join-Path $Out 'frames.csv')
@@ -805,7 +805,10 @@ $document = [ordered]@{
         warmup_start_s     = $samples[0].at_s
         warmup_end_s       = $samples[$warmupTarget - 1].at_s
         unique_fps         = Round3 $uniqueFps
-        frame_ms           = $frameStats
+        window_avg_frame_ms = $frameStats
+        frame_time_statistic = 'window-average'
+        frame_time_derived_from = 'one mean-FPS value per stats window (1000/fps); not per-frame timing'
+        per_frame_timing = $false
         compositor_cadence = $null
         incomplete_stats_lines = $script:incompleteStats
         per_sample         = $samples.ToArray()

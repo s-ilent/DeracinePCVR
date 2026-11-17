@@ -28,6 +28,11 @@ SCENARIO_ID = "deracine-classroom-menu-300-msaa2-vblank60"
 SCENE_CLASSIFICATION = "classroom-main-menu-overlay"
 SIGNATURE_THRESHOLD = scene_signature.DEFAULT_THRESHOLD
 PERCENTILE_TOLERANCE_MS = 0.1
+# The measured series is one mean-FPS value per 0.5 s window, so its percentiles describe
+# window-average frame times, not individual frames. New runs name the block accordingly; old
+# run.json files used "frame_ms" for the same statistic and are still accepted.
+FRAME_TIME_KEY = "window_avg_frame_ms"
+LEGACY_FRAME_TIME_KEY = "frame_ms"
 FPS_TOLERANCE = 0.1
 
 HERE = Path(__file__).resolve().parent
@@ -226,8 +231,15 @@ class Checker:
             if float(sample["fps"]) <= 0.0:
                 self.fail(f"sample {sample['sample']} has a non-positive fps")
             expected_ms = 1000.0 / float(sample["fps"])
-            if abs(float(sample["frame_ms"]) - expected_ms) > 1e-6 * expected_ms + 0.01:
-                self.fail(f"sample {sample['sample']} frame_ms disagrees with its fps")
+            sample_ms = float(sample.get(FRAME_TIME_KEY, sample.get(LEGACY_FRAME_TIME_KEY, -1)))
+            if abs(sample_ms - expected_ms) > 1e-6 * expected_ms + 0.01:
+                self.fail(f"sample {sample['sample']} window-average frame_ms disagrees with its fps")
+        frame_time_key = FRAME_TIME_KEY if FRAME_TIME_KEY in timing else LEGACY_FRAME_TIME_KEY
+        if frame_time_key == FRAME_TIME_KEY:
+            if timing.get("frame_time_statistic") != "window-average":
+                self.fail("timing.frame_time_statistic is not 'window-average'")
+            if timing.get("per_frame_timing") not in (False, None):
+                self.fail("timing claims per-frame timing but the series is window means")
         window = [s for s in samples if s["in_window"]]
         if len(window) != timing["samples_window"]:
             self.fail(f"{len(window)} in-window samples != {timing['samples_window']}")
@@ -236,7 +248,8 @@ class Checker:
         if len(window) != len(samples) - timing["warmup_samples"]:
             self.fail("warmup_samples does not separate warmup from the measured window")
         if window:
-            frame_ms = [float(s["frame_ms"]) for s in window]
+            frame_ms = [float(s.get(FRAME_TIME_KEY, s.get(LEGACY_FRAME_TIME_KEY)))
+                        for s in window]
             recomputed_stats = {
                 "p50": percentile(frame_ms, 0.50),
                 "p90": percentile(frame_ms, 0.90),
@@ -247,13 +260,13 @@ class Checker:
                 "max": max(frame_ms),
             }
             for key, value in recomputed_stats.items():
-                stored = float(timing["frame_ms"][key])
+                stored = float(timing[frame_time_key][key])
                 if abs(stored - value) > PERCENTILE_TOLERANCE_MS:
-                    self.fail(f"timing.frame_ms.{key} {stored} != recomputed {value:.3f}")
-            if not (recomputed_stats["min"] <= timing["frame_ms"]["p50"] <=
-                    timing["frame_ms"]["p95"] <= timing["frame_ms"]["p99"] <=
-                    timing["frame_ms"]["max"]):
-                self.fail("frame-time percentiles are not ordered")
+                    self.fail(f"timing.{frame_time_key}.{key} {stored} != recomputed {value:.3f}")
+            if not (recomputed_stats["min"] <= timing[frame_time_key]["p50"] <=
+                    timing[frame_time_key]["p95"] <= timing[frame_time_key]["p99"] <=
+                    timing[frame_time_key]["max"]):
+                self.fail("window-average frame-time percentiles are not ordered")
             first, last = window[0], window[-1]
             if abs(float(first["at_s"]) - float(timing["window_start_s"])) > 2.0:
                 self.fail("window_start_s does not match the first measured sample")
@@ -494,9 +507,10 @@ def print_text(result: dict) -> None:
         print(f"  unique rendered FPS: {timing['unique_fps']:.2f} "
               f"({timing['samples_window']} x {data['scenario']['stats_every_s']} s windows, "
               f"{timing['window_elapsed_s']:.2f} s)")
-        print(f"  frame time p50/p95/p99: {timing['frame_ms']['p50']:.2f} / "
-              f"{timing['frame_ms']['p95']:.2f} / {timing['frame_ms']['p99']:.2f} ms "
-              f"(window means)")
+        frame = timing.get(FRAME_TIME_KEY, timing.get(LEGACY_FRAME_TIME_KEY))
+        print(f"  window-average frame time p50/p95/p99: {frame['p50']:.2f} / "
+              f"{frame['p95']:.2f} / {frame['p99']:.2f} ms "
+              f"(mean of each window's 1000/fps, not per-frame timing)")
         print(f"  scene: {data['scene']['classification']} "
               f"(similarity {data['scene']['screenshot']['signature_similarity']:.4f})")
     for reason in result["errors"]:
