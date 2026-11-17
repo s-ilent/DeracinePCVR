@@ -13,7 +13,7 @@
 #
 # It does not touch pc-vr/, the active lab, SteamVR or any OpenXR runtime. It takes no GPU lock by
 # itself: run it inside the machine-wide GPU lock, as the other headless tools do:
-#   bash _build/team/gpu-lock.sh run --owner <you> --kind headless --reason "headless gameplay" \
+#   bash <worktree>/tools/headless-vr/gpu-lock.sh run --owner <you> --kind headless --reason "headless gameplay" \
 #        --ttl 1800 --require-quiet -- pwsh.exe -NoProfile -File \
 #        M:/.../wt-unified-headless/tools/benchmark/headless-gameplay.ps1 `
 #        -Exe M:/.../build/shadPS4.exe -Eboot D:/Temp/Deracine/CUSA11919-qual/eboot.bin `

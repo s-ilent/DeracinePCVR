@@ -94,6 +94,26 @@ An optional gameplay eye reference is deliberately **not** installed: a candidat
 (`_build/headless/validation/evidence/gameplay-reference-candidate/`) but was never visually
 reviewed. Scene identity therefore rests on the numeric gate+band, which the menu cannot satisfy.
 
+### Reproducibility notes
+
+The M2 path above is self-contained in this repository: the lab template is the tracked `pc-vr/`,
+the input sequence and the save manifest/provisioner are committed, and the only external inputs are
+a game dump and a save you supply. It reads nothing from `_build/`; the `_build/...` references in
+this document are provenance/evidence locations, not dependencies.
+
+The M1 launcher (`headless-vr-launch.ps1`) predates that and still defaults `-TemplateLab`,
+`-SavesFrom` and its run directory to the original machine's paths. It is parameterised, so use it
+without that lab by overriding all three:
+
+```powershell
+pwsh -File tools\headless-vr\headless-vr-launch.ps1 -Exe <build>\shadPS4.exe `
+  -Eboot <game>\eboot.bin -TemplateLab <repo>\pc-vr -SavesFrom <your save>\CUSA11919 `
+  -Lab <dir>\lab
+```
+
+The dedicated gameplay benchmark (`headless-gameplay.ps1`) does this by default and is the
+recommended entry point.
+
 ## Evidence already recorded (single lab)
 
 - Gameplay entry: `_build/headless/probe-scene/evidence/m2-confirm-1` (`run.cmd`, `input-script.txt`,
