@@ -150,13 +150,14 @@ but the reference is not the game's colour.
 | guest address / size | `0x2008f80000`, `0x20000` (128 KiB), tile mode 19 |
 | format | `A2B10G10R10UnormPack32` |
 | producer | colour-target pass, `32×32×1`, **32 layers** (2D array), `vtx=0x4496c84956245785`, 4 indices, MRT 1 |
-| consumer | **fragment** shader `0x29090b93e88b0b98`, sampled 3D volume |
+| consumer | **fragment** shader `0x29090b93e88b0b98`, sampled 3D volume. SPIR-V disassembly (cached `pc-vr/user/cache/CUSA11919/0x29090b93e88b0b98_0.spv`) confirms a tonemap/colour-grading pass: **ST 2084 PQ constants** (0.159301758, 18.6875, 0.8359375, 18.8515625, 78.84375, 10000) and the 32³ texel-centre coordinate `Fma(31/32, c, 0.5/32)` into the 3D image at binding 6 |
 | cycle | 2D array (32 layers) → `ExpandImage` → 3D `32×32×32` → sampled; next frame 3D → 2D again. **Two re-creations and two copies per frame** |
 | guest memory | all zeros at dump time; the LUT lives only in the Vulkan images and survives through the copy chain |
 
-This is structurally a UE4-style 32³ colour-grading LUT. It is **not yet proven** that the consumer
-shader is UE4's tonemapping/colour-grading pass; that needs the shader disassembled or dumped by
-hash, not inferred from the 3D sample alone.
+This **is** the UE4-style 32³ colour-grading LUT: the consumer shader's SPIR-V contains the PQ
+tonemap constants and the standard 32³ LUT coordinate scale/bias (31/32, 0.5/32). The remaining
+question is not the resource's role but the ordering/filtering of the lookup; see the axis test
+below.
 
 ## Recycler comparison at the classroom (high-resolution, corrected colour)
 
@@ -204,3 +205,4 @@ Next experiments, in order:
 - high-res floor crops: `floor-on-hires.png`, `floor-off-hires.png`, `floor-diff.png`
 - full LUT dump: `_run\pc-vr-recycler-try\user\rt_dump-lut3d-off-001815\capture_01\image_2008f80000_level0_32x32x32_A2B10G10R10UnormPack32.bin`
 - diagnostic build: `wt-lut-diag` (branch `diag/lut-dump`, dump patch; not a production change)
+
