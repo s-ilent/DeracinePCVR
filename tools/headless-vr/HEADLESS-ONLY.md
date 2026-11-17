@@ -27,6 +27,13 @@ From now on:
 
 ## Verified headless recipe (milestone 1)
 
+**M1 is verified and committed:** `feature/headless-vr-harness` @ `5cee4a3`
+(`tools/headless-vr/`). On the renderer candidate `7B658961…` (source `1a53ceb`):
+both eyes `2880x3240`, **0** `UpdateWorn` lines, front end `472.7 draws / 485.3 Mpx /
+63.0 passes` (a repeat: `471.3 / 491.7 / 63.6`). Evidence:
+`_build/headless/runs/m1-candidate-r3/` and `.../m1-candidate-r5-r3/`. The launch entry point
+is `_build/headless/headless-vr-launch.ps1`.
+
 Private portable lab, game shadow `D:\Temp\Deracine\CUSA11919-qual`, current candidate
 `wt-crossfork-int/build/shadPS4.exe` (sha256 `7B658961…`) or any later build:
 
