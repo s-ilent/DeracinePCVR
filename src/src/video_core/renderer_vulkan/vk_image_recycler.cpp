@@ -14,10 +14,14 @@ bool ImageRecycler::Enabled() {
     static const bool enabled = [] {
         const char* value = std::getenv("SHADPS4_DBG_IMAGE_RECYCLER");
         if (value == nullptr || value[0] == '\0') {
-            return true;
+            // Off by default until a matched-scene measurement and a pixel A/B exist for it.
+            // Turning it on early would put an unmeasured resource-lifetime change into every
+            // session of the title. See docs/research/cross-fork-integration.md for the
+            // promotion criteria; SHADPS4_DBG_IMAGE_RECYCLER=1 runs it.
+            return false;
         }
-        // Any spelling of "off" turns it off. "0" alone was the only one that did, which made
-        // SHADPS4_DBG_IMAGE_RECYCLER=false mean "on".
+        // Any spelling of "on" turns it on, any spelling of "off" turns it off; "0" alone used to
+        // be the only one that did, which made SHADPS4_DBG_IMAGE_RECYCLER=false mean "on".
         const std::string text{value};
         return !(text == "0" || text == "false" || text == "off" || text == "no");
     }();
