@@ -50,6 +50,7 @@
 #endif
 #include "core/vr/vr_runtime.h"
 #include "emulator.h"
+#include "input/scripted_input.h"
 #include "video_core/cache_storage.h"
 #include "video_core/renderdoc.h"
 
@@ -91,6 +92,9 @@ void Emulator::Shutdown() {
     if (exit_done) {
         return;
     }
+    // Stop the scripted-input replay before the VR runtime and the controllers are taken down:
+    // it reads and drives both, and a detached thread would outlive them.
+    Input::StopScriptedInput();
     Common::Log::Flush();
     if (controllers) {
         controllers->ResetLightbarColors();
@@ -597,6 +601,11 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     while (window->IsOpen()) {
         window->WaitEvent();
     }
+
+    // The replay drives the VR runtime and the controllers; stop and join it before either is
+    // taken down. (Emulator::Shutdown also stops it, for the signal and quick-exit paths that
+    // never reach here.)
+    Input::StopScriptedInput();
 
 #ifdef ENABLE_OPENXR_HOST
     Core::Vr::OpenXrHost::Instance().Shutdown();

@@ -25,6 +25,7 @@
 #include "input/pad_gestures.h"
 #include "input/scripted_input.h"
 #include "input/scripted_timeline.h"
+#include "input/scripted_worker.h"
 #include "input/stick_finger.h"
 
 namespace Input {
@@ -35,6 +36,10 @@ using Buttons = Libraries::Pad::OrbisPadButtonDataOffset;
 
 std::atomic<float> microphone_level{0.0f};
 std::atomic<bool> blowing{false};
+
+// The replay thread is owned rather than detached, so shutdown can stop and join it before the
+// VR runtime and the controllers it reads are taken down (see StopScriptedInput).
+Scripted::Worker script_worker;
 
 struct Step {
     Scripted::StepTiming timing;
@@ -273,13 +278,40 @@ std::vector<Step> ParseScript(const std::filesystem::path& script) {
     return steps;
 }
 
-void Replay(std::vector<Step> steps, std::filesystem::path live_script) {
+std::vector<Scripted::StepTiming> TimingsOf(const std::vector<Step>& steps) {
+    std::vector<Scripted::StepTiming> timings;
+    timings.reserve(steps.size());
+    for (const Step& step : steps) {
+        timings.push_back(step.timing);
+    }
+    return timings;
+}
+
+/// SHADPS4_SCRIPT_FRAME_STALL_SECONDS: how long the guest frame counter may stand still while
+/// frame-numbered steps are still pending. 0 or less disables the watchdog; a value that is not
+/// a number falls back to the default.
+double ScriptFrameStallSeconds() {
+    constexpr double Default = Scripted::ScriptLifetime::DefaultStallSeconds;
+    const char* text = std::getenv("SHADPS4_SCRIPT_FRAME_STALL_SECONDS");
+    if (text == nullptr || *text == '\0') {
+        return Default;
+    }
+    const auto value = ParseNumber(text);
+    if (!value) {
+        LOG_WARNING(Input,
+                    "SHADPS4_SCRIPT_FRAME_STALL_SECONDS=\"{}\" is not a number; using {:.0f}", text,
+                    Default);
+        return Default;
+    }
+    return *value;
+}
+
+void Replay(std::vector<Step> steps, std::filesystem::path live_script, double stall_seconds) {
     Common::SetCurrentThreadName("shadPS4:ScriptedInput");
     const auto begin = std::chrono::steady_clock::now();
-    double last_end = 0.0;
-    for (const Step& step : steps) {
-        last_end = std::max(last_end, step.timing.end);
-    }
+    // The script lives in two timing domains at once; this decides when both have run out (and
+    // notices guest frames that stop moving while frame-numbered work is still pending).
+    Scripted::ScriptLifetime lifetime{TimingsOf(steps), stall_seconds};
 
     // The script's poses are counted from where the player sits.
     Core::Vr::Runtime::Instance().FixSeat();
@@ -288,17 +320,19 @@ void Replay(std::vector<Step> steps, std::filesystem::path live_script) {
     Buttons previous_buttons{Buttons::None};
     std::array<int, 6> previous_axes{128, 128, 128, 128, 0, 0};
     std::optional<std::array<float, 2>> previous_touch;
+    bool sent_controller_state = false;
     StickFinger stick_finger;
     PadGestures gestures;
     std::filesystem::file_time_type live_stamp{};
-    while (true) {
+    while (!script_worker.StopRequested()) {
         if (!live_script.empty()) {
             std::error_code error;
             const auto stamp = std::filesystem::last_write_time(live_script, error);
             if (!error && stamp != live_stamp) {
                 live_stamp = stamp;
                 steps = ParseScript(live_script);
-                started.resize(steps.size());
+                started.assign(steps.size(), false);
+                lifetime = Scripted::ScriptLifetime{TimingsOf(steps), stall_seconds};
                 LOG_INFO(Input, "Live script now has {} steps", steps.size());
             }
         }
@@ -434,17 +468,44 @@ void Replay(std::vector<Step> steps, std::filesystem::path live_script) {
             (*controllers)[0]->ApplyRemoteState(buttons, axes, touch.has_value(),
                                                 touch ? (*touch)[0] : 0.0f,
                                                 touch ? (*touch)[1] : 0.0f);
+            sent_controller_state = true;
             previous_buttons = buttons;
             previous_axes = axes;
             previous_touch = touch;
         }
-        if (live_script.empty() && now > last_end + 1.0) {
+        const auto state = lifetime.Update(now, frame);
+        if (state == Scripted::ScriptLifetime::State::Stalled) {
+            LOG_WARNING(Input,
+                        "Scripted input gave up: the guest frame count did not move for over "
+                        "{:.0f} s with frame-numbered steps pending (they reach frame {})",
+                        stall_seconds, lifetime.FrameEnd());
+            break;
+        }
+        // A live script is meant to be edited while it runs, so its running out does not stop
+        // the replay; the stall watchdog above and shutdown still do.
+        if (state == Scripted::ScriptLifetime::State::Finished && live_script.empty()) {
+            LOG_INFO(Input, "Scripted input finished");
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
+    // Release what the script set, so nothing stays latched after it: the synthetic Move
+    // overrides, the controller's remote state and the microphone. Poses are like any scripted
+    // pose and remain where the last line put them.
+    auto& vr = Core::Vr::Runtime::Instance();
+    vr.ClearScriptedHandInput(0);
+    vr.ClearScriptedHandInput(1);
+    if (sent_controller_state) {
+        // (Only touch the controllers if this script already did: creating the singleton from
+        // the replay thread at startup would race the emulator's own creation of it.)
+        auto* controllers = Common::Singleton<GameControllers>::Instance();
+        (*controllers)[0]->ApplyRemoteState(
+            Buttons::None, std::array<int, 6>{128, 128, 128, 128, 0, 0}, false, 0.0f, 0.0f);
+    }
     microphone_level.store(0.0f, std::memory_order_relaxed);
-    LOG_INFO(Input, "Scripted input finished");
+    if (lifetime.Current() == Scripted::ScriptLifetime::State::Running) {
+        LOG_INFO(Input, "Scripted input stopped");
+    }
 }
 
 } // namespace
@@ -473,7 +534,31 @@ void StartScriptedInput(const std::filesystem::path& script) {
     }
     LOG_INFO(Input, "Replaying {} input steps from {}", steps.size(), script.string());
     const char* live = std::getenv("SHADPS4_LIVE_INPUT");
-    std::thread{Replay, std::move(steps), std::filesystem::path{live ? live : ""}}.detach();
+    const double stall_seconds = ScriptFrameStallSeconds();
+    if (stall_seconds > 0.0) {
+        LOG_INFO(Input, "A script whose guest frames stand still for {:.0f} s is given up on",
+                 stall_seconds);
+    } else {
+        LOG_INFO(Input, "The scripted-input frame-stall watchdog is off");
+    }
+    const bool started = script_worker.Start(
+        [steps = std::move(steps), live = std::filesystem::path{live ? live : ""},
+         stall_seconds]() mutable { Replay(std::move(steps), std::move(live), stall_seconds); });
+    if (!started) {
+        LOG_WARNING(Input, "Scripted input is already running; {} was not started",
+                    script.string());
+    }
+}
+
+void StopScriptedInput() {
+    const bool was_running = script_worker.Running();
+    if (script_worker.Stop()) {
+        if (was_running) {
+            LOG_INFO(Input, "Scripted input stopped for shutdown");
+        }
+        return;
+    }
+    LOG_WARNING(Input, "Scripted input did not stop within 2 s; leaving its thread behind");
 }
 
 } // namespace Input
