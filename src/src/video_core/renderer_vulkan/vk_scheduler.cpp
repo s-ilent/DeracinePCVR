@@ -143,6 +143,74 @@ void NoteRdocSceneWindow(u64 draws_in_window, u64 pixels_in_window, u64 frames_i
     LOG_INFO(Render_Vulkan, "RDOC scene gate met: {:.0f} draws and {:.1f} Mpx a frame",
              draws_per_frame, mpx_per_frame);
 }
+
+/// Test-only: SHADPS4_DBG_DUMP_HMD_AT_SCENE="<draws>,<mpx>[,<folder>]". The first frame-stats
+/// window whose per-frame averages reach the gate asks the presenter to dump the HMD eye image
+/// once, through the same rt_dump code SHADPS4_DBG_DUMP_HMD_FRAMES uses. A headless run then gets
+/// a picture of the gameplay scene without having to know which frame it first appears on.
+struct HmdDumpSceneRequest {
+    u32 draws{};
+    double mpx{};
+    std::string folder{"rt_dump-scene"};
+
+    bool Wants() const {
+        return draws != 0;
+    }
+};
+
+const HmdDumpSceneRequest& HmdDumpScene() {
+    static const HmdDumpSceneRequest request = [] {
+        HmdDumpSceneRequest parsed{};
+        const char* value = std::getenv("SHADPS4_DBG_DUMP_HMD_AT_SCENE");
+        if (value == nullptr || *value == '\0') {
+            return parsed;
+        }
+        const char* at = value;
+        char* end = nullptr;
+        const unsigned long draws = std::strtoul(at, &end, 10);
+        if (end == at) {
+            return parsed;
+        }
+        at = *end == ',' ? end + 1 : end;
+        const double mpx = std::strtod(at, &end);
+        if (end == at) {
+            return parsed;
+        }
+        parsed.draws = static_cast<u32>(draws);
+        parsed.mpx = mpx;
+        if (*end == ',') {
+            std::string folder{end + 1};
+            if (!folder.empty()) {
+                parsed.folder = std::move(folder);
+            }
+        }
+        return parsed;
+    }();
+    return request;
+}
+
+std::atomic<bool> g_hmd_dump_requested{};
+std::string g_hmd_dump_folder;
+
+void NoteHmdDumpSceneWindow(u64 draws_in_window, u64 pixels_in_window, u64 frames_in_window) {
+    const HmdDumpSceneRequest& request = HmdDumpScene();
+    if (!request.Wants() || frames_in_window == 0 ||
+        g_hmd_dump_requested.load(std::memory_order_relaxed)) {
+        return;
+    }
+    const double draws_per_frame = static_cast<double>(draws_in_window) / frames_in_window;
+    const double mpx_per_frame = static_cast<double>(pixels_in_window) / frames_in_window / 1e6;
+    if (draws_per_frame < static_cast<double>(request.draws) ||
+        mpx_per_frame < request.mpx) {
+        return;
+    }
+    g_hmd_dump_folder = request.folder;
+    g_hmd_dump_requested.store(true, std::memory_order_relaxed);
+    LOG_INFO(Render_Vulkan,
+             "HMD dump scene gate met: {:.0f} draws and {:.1f} Mpx a frame; the presenter dumps "
+             "the images once",
+             draws_per_frame, mpx_per_frame);
+}
 } // Anonymous namespace
 
 namespace Vulkan {
@@ -571,6 +639,14 @@ std::chrono::nanoseconds FrameStats::ThreadTime() {
 #endif
 }
 
+bool FrameStats::TakeHmdDumpRequest(std::string& folder) {
+    if (!g_hmd_dump_requested.exchange(false, std::memory_order_relaxed)) {
+        return false;
+    }
+    folder = g_hmd_dump_folder;
+    return true;
+}
+
 void FrameStats::EndFrame() {
     MaybeTriggerRenderDocCapture();
     // The A/B measuring aid (AbOff): which way the frames from now on are drawn.
@@ -662,6 +738,7 @@ void FrameStats::EndFrame() {
     }
     const double n = static_cast<double>(frames);
     NoteRdocSceneWindow(c.draws.PeekWindow(), c.pass_pixels.PeekWindow(), frames);
+    NoteHmdDumpSceneWindow(c.draws.PeekWindow(), c.pass_pixels.PeekWindow(), frames);
     static const auto start = now;
     std::string ab;
     if (ab_period > 0.0) {
