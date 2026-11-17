@@ -91,6 +91,16 @@ bool EnvFlag(const char* name, bool& out) {
     return true;
 }
 
+float EnvNumber(const char* name, float fallback) {
+    const char* value = std::getenv(name);
+    if (value == nullptr || *value == '\0') {
+        return fallback;
+    }
+    char* end = nullptr;
+    const float parsed = std::strtof(value, &end);
+    return end != value ? parsed : fallback;
+}
+
 std::filesystem::path OwnPadPlacePath() {
     return Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "vr_controller.json";
 }
@@ -1089,7 +1099,54 @@ DeviceState Runtime::GetHand(int hand_idx) {
         return {};
     }
     std::scoped_lock lock{mutex};
-    return hands[hand_idx];
+    // A host that locates the hands (the headset's own controllers, a script's hands=) is always
+    // believed.
+    if (hands[hand_idx].sequence != 0) {
+        return hands[hand_idx];
+    }
+    // Test-only: with SHADPS4_OPENXR=0 no host ever feeds a hand, so a title that needs a tracked
+    // Move (a pointer-driven menu, calibration) can never get past it. With SHADPS4_VR_HANDS set
+    // the hands are placed where the runtime already puts the gamepad controller, with the Move's
+    // calibration pitch. Off unless asked for.
+    static const bool synthetic = [] {
+        const char* value = std::getenv("SHADPS4_VR_HANDS");
+        if (value == nullptr || *value == '\0') {
+            return false;
+        }
+        const std::string_view mode{value};
+        return mode == "synthetic" || mode == "1";
+    }();
+    if (!synthetic) {
+        return {};
+    }
+    static const float pitch_deg = EnvNumber("SHADPS4_MOVE_PITCH", -45.0f);
+    const DeviceState current_head = head.sequence == 0 ? DemoHead() : head;
+    const Vec3 anchor = config.pad_follows_head ? current_head.pose.position : config.origin_offset;
+    Vec3 position;
+    Quat orientation;
+    // The scripted pad= pose is what the hands hold; without one they are at the standard reach
+    // (or the player's own place), relative to the head like the synthesized pad.
+    if (pad.sequence != 0 && pad_position_tracked) {
+        position = pad.pose.position;
+        orientation = pad.pose.orientation;
+    } else {
+        const Vec3 assumed = Rotate(FromAxisAngle({0.0f, 1.0f, 0.0f}, view_turn),
+                                    own_pad_place ? own_pad_offset : config.pad_offset);
+        position = {anchor.x + assumed.x, anchor.y + assumed.y, anchor.z + assumed.z};
+    }
+    if (hand_idx == 1) {
+        // The other hand mirrors the first about the player: one pose, two hands.
+        position.x = 2.0f * current_head.pose.position.x - position.x;
+        orientation = {};
+    }
+    const float pitch = pitch_deg * (3.14159265358979323846f / 180.0f);
+    const Quat calibration{std::sin(pitch * 0.5f), 0.0f, 0.0f, std::cos(pitch * 0.5f)};
+    DeviceState state;
+    state.pose.position = position;
+    state.pose.orientation = Normalize(Multiply(orientation, calibration));
+    state.sequence = ++synthetic_hand_sequences[hand_idx];
+    state.tracked = true;
+    return state;
 }
 
 void Runtime::UpdateHandInput(int hand_idx, u16 buttons, u8 trigger) {
@@ -1105,7 +1162,30 @@ Runtime::HandInputState Runtime::GetHandInput(int hand_idx) {
         return {};
     }
     std::scoped_lock lock{mutex};
-    return hand_inputs[hand_idx];
+    return scripted_hand_input_set[hand_idx] ? scripted_hand_inputs[hand_idx]
+                                             : hand_inputs[hand_idx];
+}
+
+void Runtime::SetScriptedHandInput(int hand_idx, u16 buttons, u8 trigger) {
+    if (hand_idx < 0 || hand_idx >= 2) {
+        return;
+    }
+    std::scoped_lock lock{mutex};
+    scripted_hand_inputs[hand_idx] = {buttons, trigger};
+    scripted_hand_input_set[hand_idx] = true;
+}
+
+void Runtime::ClearScriptedHandInput(int hand_idx) {
+    if (hand_idx < 0 || hand_idx >= 2) {
+        return;
+    }
+    std::scoped_lock lock{mutex};
+    scripted_hand_input_set[hand_idx] = false;
+}
+
+bool Runtime::ScriptedHandInputActive() const {
+    std::scoped_lock lock{mutex};
+    return scripted_hand_input_set[0] || scripted_hand_input_set[1];
 }
 
 void Runtime::SetHandVibration(int hand_idx, u8 intensity) {
