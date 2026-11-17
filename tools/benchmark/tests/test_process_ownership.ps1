@@ -354,6 +354,24 @@ Invoke-Case 'no owned processes: cleanup is a no-op and never reads a snapshot' 
 }
 
 # --- case 12 ----------------------------------------------------------------------------------
+Invoke-Case 'a log callback that writes to the pipeline does not corrupt the report' {
+    $records = @(New-TestRecord -Id 1200 -StartTimeUtc (New-TestTime 0))
+    $rows = @(New-TestRow -ProcessId 1200 -ParentProcessId 1 -CreationDateUtc (New-TestTime 0))
+    $recorded = [System.Collections.Generic.List[int]]::new()
+    $simulatedStop = { param([int]$ProcessId) $recorded.Add([int]$ProcessId) }
+
+    # A caller-authored -Log that uses Write-Output must not add lines to the function's return
+    # value; the report has to stay a single object.
+    $result = Stop-OwnedProcesses -Records $records -TableProvider { $rows } -StopAction $simulatedStop `
+        -Log { param([string]$Message) Write-Output $Message }
+
+    Assert-Equal 'PSCustomObject' $result.GetType().Name 'the report is one object, not an array of log lines and a report'
+    Assert-Ids $result.Stopped @(1200) 'the report still carries the stopped process'
+    Assert-Equal 0 @($result.Skipped).Count 'the report still carries an empty skipped list'
+    Assert-Equal $false $result.Ambiguous 'the report still carries the ambiguity flag'
+}
+
+# --- case 13 ----------------------------------------------------------------------------------
 Invoke-Case 'no global name sweep exists in the module or in these tests' {
     $moduleText = Get-Content -LiteralPath $modulePath -Raw
     Assert-True (-not ($moduleText -match 'Get-Process\s+-Name\s+shadps4')) 'the module never selects by process name'

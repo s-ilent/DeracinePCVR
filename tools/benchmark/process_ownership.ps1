@@ -552,7 +552,9 @@ function Stop-OwnedProcesses {
     # cleanup): already exited processes are reported as absent, not as failures.
     #
     # -TableProvider : scriptblock returning the fresh table (normally { Get-ProcessTable }).
-    # -Log           : scriptblock receiving progress strings (default Write-Verbose).
+    # -Log           : scriptblock invoked for progress messages as a side effect. Its pipeline
+    #                  output is discarded so the structured report stays the function's only return
+    #                  value: use Write-Host/Write-Verbose, or render the returned report.
     # -StopAction    : optional scriptblock receiving the process id, used by tests to simulate
     #                  stops. When supplied, exit verification is skipped because no real stop
     #                  happened.
@@ -572,7 +574,7 @@ function Stop-OwnedProcesses {
     if (@($Records).Count -eq 0) {
         # Nothing was launched (a trap before the Start-Process, for instance): no snapshot and no
         # stop, so cleanup is safe even when CIM is unavailable.
-        & $Log 'owned cleanup: no owned processes were recorded, nothing to stop'
+        & $Log 'owned cleanup: no owned processes were recorded, nothing to stop' | Out-Null
         return [pscustomobject]@{ Stopped = @(); Skipped = @(); Ambiguous = $false }
     }
 
@@ -580,13 +582,13 @@ function Stop-OwnedProcesses {
     try {
         $table = & $TableProvider
     } catch {
-        & $Log ("owned cleanup: no process snapshot, nothing was stopped: {0}" -f $_.Exception.Message)
+        & $Log ("owned cleanup: no process snapshot, nothing was stopped: {0}" -f $_.Exception.Message) | Out-Null
         [void]$skipped.Add((New-ProcessOwnershipAmbiguity -Id 0 -Role '' -Code 'snapshot' `
                     -Reason ("process snapshot failed: {0}" -f $_.Exception.Message)))
         return [pscustomobject]@{ Stopped = @(); Skipped = @($skipped.ToArray()); Ambiguous = $true }
     }
     if ($null -eq $table) {
-        & $Log 'owned cleanup: the process snapshot was empty, nothing was stopped'
+        & $Log 'owned cleanup: the process snapshot was empty, nothing was stopped' | Out-Null
         [void]$skipped.Add((New-ProcessOwnershipAmbiguity -Id 0 -Role '' -Code 'snapshot' `
                     -Reason 'process snapshot returned no rows'))
         return [pscustomobject]@{ Stopped = @(); Skipped = @($skipped.ToArray()); Ambiguous = $true }
@@ -646,7 +648,7 @@ function Stop-OwnedProcesses {
                 Path     = $entry.Path
                 Origin   = $entry.Origin
             })
-        & $Log ("owned cleanup: stopped {0} '{1}' (pid {2})" -f $entry.Origin, $entry.Role, $entryId)
+        & $Log ("owned cleanup: stopped {0} '{1}' (pid {2})" -f $entry.Origin, $entry.Role, $entryId) | Out-Null
     }
 
     if (-not $customStop -and $ExitWaitSeconds -gt 0 -and $stopped.Count -gt 0) {
@@ -667,7 +669,7 @@ function Stop-OwnedProcesses {
         }
     }
 
-    & $Log ("owned cleanup: stopped {0}, skipped {1}, ambiguous {2}" -f $stopped.Count, $skipped.Count, ([bool]$ambiguous))
+    & $Log ("owned cleanup: stopped {0}, skipped {1}, ambiguous {2}" -f $stopped.Count, $skipped.Count, ([bool]$ambiguous)) | Out-Null
     return [pscustomobject]@{
         Stopped   = @($stopped.ToArray())
         Skipped   = @($skipped.ToArray())
