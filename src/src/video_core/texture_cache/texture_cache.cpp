@@ -357,13 +357,16 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
         new_image.info.meta_info.htile_clear_mask = 0;
 
         if (source_image.info.num_samples == 1 && new_info.num_samples == 1) {
-            // SHADPS4_DBG_DEPTH_PASS=0 restores the image copy. Carrying the picture through the
-            // depth unit keeps the words (D32 depth values are the same IEEE floats the guest
-            // wrote as R32F) and avoids the driver's detile and decompress of the whole depth
-            // surface that a colour-to-depth image copy pays.
+            // Off unless SHADPS4_DBG_DEPTH_PASS=1. The depth pass was claimed to be faster than
+            // the image copy, but a controlled A-B-A-B did not reproduce it
+            // (_handoff/2026-11-17/REJECTED-QUARANTINED.md), so it is not the default: the
+            // intermediate copy buffer, or the maintenance8 image copy, stay the default path.
+            // Carrying the picture through the depth unit keeps the words (D32 depth values are
+            // the same IEEE floats the guest wrote as R32F) and avoids the driver's detile and
+            // decompress of the whole depth surface that a colour-to-depth image copy pays.
             static const bool via_depth_pass = [] {
                 const char* value = std::getenv("SHADPS4_DBG_DEPTH_PASS");
-                return value == nullptr || value[0] != '0';
+                return value != nullptr && value[0] == '1';
             }();
             const bool same_extent = source_image.info.size.width == new_info.size.width &&
                                      source_image.info.size.height == new_info.size.height;
