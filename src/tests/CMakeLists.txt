@@ -1454,3 +1454,35 @@ gtest_discover_tests(shadps4_vr_presentation_size_test
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     DISCOVERY_TIMEOUT 60
 )
+
+# ===========================================================================
+# PSVR / OpenXR projection geometry (pure math, no emulator dependencies)
+# ===========================================================================
+# Proves when a full-rectangle UV resample of a guest eye image into an OpenXR
+# projection view is geometrically exact, and quantifies the error when the source
+# and destination frusta differ. Restored from e248372/e91f76c: the project keeps
+# this suite in the tree because it guards projection math that later OpenXR
+# changes could regress silently.
+
+add_executable(shadps4_vr_projection_math_test
+    test_vr_projection_math.cpp
+)
+
+target_include_directories(shadps4_vr_projection_math_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_compile_features(shadps4_vr_projection_math_test PRIVATE cxx_std_23)
+
+target_link_libraries(shadps4_vr_projection_math_test PRIVATE
+    GTest::gtest_main
+)
+
+list(APPEND TEST_TARGETS shadps4_vr_projection_math_test)
+
+gtest_discover_tests(shadps4_vr_projection_math_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)
