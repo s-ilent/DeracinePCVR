@@ -64,6 +64,8 @@ void NoteOverlap(const char* which) {
         g_expand_res.fetch_add(1);
     } else if (std::strcmp(which, "direct") == 0) {
         g_branch_direct.fetch_add(1);
+    } else if (std::strcmp(which, "depthpass") == 0) {
+        g_branch_direct.fetch_add(1);
     } else if (std::strcmp(which, "buffered") == 0) {
         g_branch_buffered.fetch_add(1);
     } else if (std::strcmp(which, "msreinterpret") == 0) {

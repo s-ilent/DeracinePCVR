@@ -464,6 +464,11 @@ int ProcessStates(s32 handle, OrbisPadData* pData, Input::GameController& contro
                     LOG_INFO(Lib_Pad, "AUTOPRESS pad {} elapsed={} ms", i, elapsed);
                 }
             }
+            // The title screen leads to the menu, whose cursor starts on "New game": one press of
+            // down moves it to "Continue", which the next press of Cross picks.
+            if (elapsed >= 46000 && elapsed < 46600) {
+                pData[i].buttons |= OrbisPadButtonDataOffset::Down;
+            }
         }
         pData[i].leftStick.x = states[i].axes[static_cast<int>(Input::Axis::LeftX)];
         pData[i].leftStick.y = states[i].axes[static_cast<int>(Input::Axis::LeftY)];
