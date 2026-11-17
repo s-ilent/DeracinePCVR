@@ -1465,6 +1465,16 @@ void OnGameLoaded(VAddr base, u64 size) {
 }
 
 bool IsSceneSize(u32 width, u32 height) {
+    // SHADPS4_VR_FOVEATION_ANY=1 lets a title that is not in the table below use the coarse shading
+    // of its large passes, so that what foveation is worth can be measured on it. Only passes of at
+    // least 2048x1024 are taken, which leaves the small post-process targets alone.
+    static const bool any = [] {
+        const char* value = std::getenv("SHADPS4_VR_FOVEATION_ANY");
+        return value != nullptr && value[0] == '1';
+    }();
+    if (any) {
+        return width >= 2048 && height >= 1024;
+    }
     const u32 size = scene_size.load(std::memory_order_relaxed);
     return size != 0 && width == size >> 16 && height == (size & 0xffff);
 }
