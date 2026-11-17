@@ -1660,6 +1660,16 @@ function Invoke-CellSession {
         # Log.sync=true, so its tail survives.
         $stopAt = Get-Date
         try {
+            # A clean-exit cell must be allowed to quit by itself: SHADPS4_EXIT_AFTER fires on
+            # the emulator's clock, which is after the measured window. Waiting here is what
+            # makes C an actual clean-shutdown test instead of a hard stop.
+            if ($CleanExit -and $ExitAfterSeconds -gt 0 -and $null -ne $emu -and -not $emu.HasExited) {
+                try {
+                    $selfExitBy = $emu.StartTime.AddSeconds($ExitAfterSeconds + 30)
+                    $waitMs = [int][Math]::Max(0, ($selfExitBy - (Get-Date)).TotalMilliseconds)
+                    if ($waitMs -gt 0) { [void]$emu.WaitForExit($waitMs) }
+                } catch {}
+            }
             if ($CellMode -eq 'rdoc') {
                 $emus = @(Get-Process -Name 'shadps4' -ErrorAction SilentlyContinue | Where-Object {
                         try { $_.Path -eq $labExe } catch { $false }
