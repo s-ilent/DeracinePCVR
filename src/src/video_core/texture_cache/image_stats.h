@@ -17,7 +17,7 @@ namespace VideoCore {
 
 /// Whether the texture cache's per-second counters are reported. One place, because both the
 /// counters and the timers that feed them ask, and the answer has to be the same for both.
-/// SHADPS4_DBG_OVERLAP=1 turns them on; the existing OVERLAPS line uses the same variable.
+/// SHADPS4_DBG_OVERLAP=1 turns them on; nothing is reported while it is unset.
 inline bool ImageStatsEnabled() {
     static const bool enabled = std::getenv("SHADPS4_DBG_OVERLAP") != nullptr;
     return enabled;
@@ -65,7 +65,10 @@ private:
 /// made unnecessary. Function counters alone never answered that — they say a path ran, not how
 /// much work a frame paid for.
 ///
-///   SHADPS4_DBG_OVERLAP=1   one RENDERSTAT line a second, next to the OVERLAPS line
+///   SHADPS4_DBG_OVERLAP=1   one RENDERSTAT line a second, from TextureCache::FindImage
+///
+/// The recycler fields are part of the line's shape so a reading is comparable with the tree this
+/// was extracted from. This tree has no image recycler, so they read 0.
 class ImageStats {
 public:
     /// Whether the counters are being reported.
@@ -92,7 +95,8 @@ public:
     }
 
     /// The image recycler handed back an image instead of the driver creating one.
-    static void NoteRecyclerHit() {        if (!Enabled()) {
+    static void NoteRecyclerHit() {
+        if (!Enabled()) {
             return;
         }
         recycler_hits.fetch_add(1, std::memory_order_relaxed);
