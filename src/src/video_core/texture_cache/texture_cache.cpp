@@ -754,12 +754,12 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
     // Whether the new image takes the old image's contents at all. Naming the copy's condition
     // once, here, is what keeps the coverage skip below sound: an upload may only be skipped when
     // the copy that replaces it is going to run. #5444 states the condition as
-    // SafeToDownload() || num_samples > 1 (the second term because RefreshImage declines
-    // multisampled images, so for those the copy is the only writer); this tree already gates the
-    // copy on SafeToDownload() alone, and carries_contents is that gate: when it is false the
-    // coverage below collapses to "skip nothing", which is what the assertion after the refresh
-    // enforces.
-    const bool carries_contents = src_has_gpu_data;
+    // SafeToDownload() || num_samples > 1: RefreshImage returns immediately for multisampled
+    // images without clearing Dirty, so SafeToDownload() is false for every one of them and the
+    // copy is the only writer their destination ever gets (before #5444 it always ran). When this
+    // is false the coverage below collapses to "skip nothing", which the assertion after the
+    // refresh enforces.
+    const bool carries_contents = src_has_gpu_data || src_image.info.num_samples > 1;
     // What the copy is going to write, level by level. Only levels it does not reach are read
     // from guest memory: the rest would be overwritten before anything could read them.
     // SHADPS4_DBG_COVERED_REFRESH=1 turns it on; the shapes it decides on are logged once each.
@@ -815,7 +815,8 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
 
     TrackImage(new_image_id);
     new_image.flags &= ~ImageFlagBits::Dirty;
-    if (src_has_gpu_data) {
+    if (carries_contents) {
+        // Also set for a multisampled source: the copy above ran and its pixels are GPU-authored.
         new_image.flags |= ImageFlagBits::GpuModified;
     }
     return new_image_id;
