@@ -6,6 +6,12 @@ sandbox arbitrary tools. It is preventive for the harness's own copy/delete/writ
 runner invokes it before every destructive operation, and it fails closed. A separate
 preflight/postflight detects changes to protected files, which is the only barrier that also
 covers operations this guard never sees.
+
+Every mutating operation additionally denies the shipped protected-path policy
+(``shadow-policy.json``): the active installation, shared game images, the shared harness and
+evidence stores and any checkout of this repository stay denied even when the caller's config
+would allow them. Reads are unaffected, because preflight hashes those paths legitimately. A
+missing or malformed policy is a failure, not a bypass.
 """
 
 from __future__ import annotations
@@ -15,8 +21,16 @@ import json
 import os
 import sys
 import ntpath
+from pathlib import Path
 
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+TOOLS_DIR = Path(__file__).resolve().parent
+# Active installations, shared game images, the shared harness/evidence stores and every checkout
+# of this repository. Automated writes to these fail closed even when the caller's config would
+# allow them; game_shadow.py enforces the same list for the game shadow.
+POLICY_PATH = TOOLS_DIR / "shadow-policy.json"
+MUTATING_OPS = frozenset({"write", "delete", "mkdir", "copy_dest"})
 
 
 class GuardError(Exception):
@@ -74,12 +88,39 @@ def is_under(path: str, root: str) -> bool:
     return path.startswith(root + os.sep)
 
 
+def protected_deny() -> list[str]:
+    """The shipped protected-path policy, resolved exactly as game_shadow.py resolves it.
+
+    A missing or malformed shadow-policy.json is not ignored: automated writes fail closed. The
+    policy is loaded through game_shadow.py so one file and one expansion rule govern both the
+    shadow proof and the write guard.
+    """
+    try:
+        import game_shadow
+    except ImportError as error:  # pragma: no cover - only when this file is imported out of place
+        raise GuardError(f"protected-path policy is unavailable: {error}") from error
+    try:
+        return list(game_shadow.load_policy(POLICY_PATH)["deny"])
+    except game_shadow.UsageError as error:
+        raise GuardError(f"protected-path policy is unusable: {error}") from error
+
+
+def _first_deny(path: str, resolved: str, roots: list[str]) -> str | None:
+    for root in roots:
+        if is_under(path, root) or is_under(resolved, root):
+            return root
+    return None
+
+
 def check(path: str, op: str, config: dict) -> dict:
     target = normalise(path)
     resolved = os.path.realpath(target)
     allow_write = [os.path.realpath(p) for p in config.get("allow_write", [])]
     allow_read = [os.path.realpath(p) for p in config.get("allow_read", [])]
     deny = [os.path.realpath(p) for p in config.get("deny", [])]
+    # The protected-path policy covers mutations only: reading the active install is legitimate
+    # (preflight hashes it), writing or deleting it never is.
+    policy_deny = protected_deny() if op in MUTATING_OPS else []
 
     allow = allow_write if op in ("write", "delete", "mkdir", "copy_dest") else allow_write + allow_read
     if not allow:
@@ -87,7 +128,8 @@ def check(path: str, op: str, config: dict) -> dict:
 
     lexical_ok = any(is_under(target, root) for root in allow)
     resolved_ok = any(is_under(resolved, root) for root in allow)
-    denied = any(is_under(target, root) or is_under(resolved, root) for root in deny)
+    config_denied = _first_deny(target, resolved, deny)
+    policy_denied = _first_deny(target, resolved, policy_deny)
 
     escaped = None
     for root in allow:
@@ -96,19 +138,30 @@ def check(path: str, op: str, config: dict) -> dict:
             if escaped is not None:
                 break
 
+    allowed = (
+        lexical_ok
+        and resolved_ok
+        and config_denied is None
+        and policy_denied is None
+        and escaped is None
+    )
     verdict = {
         "path": target,
         "resolved": resolved,
         "op": op,
-        "allowed": lexical_ok and resolved_ok and not denied and escaped is None,
+        "allowed": allowed,
         "reasons": [],
+        "policy": {"path": str(POLICY_PATH), "entries": len(policy_deny)},
     }
     if not lexical_ok:
         verdict["reasons"].append("outside every allow root")
     if not resolved_ok:
         verdict["reasons"].append("resolves outside every allow root")
-    if denied:
+    if config_denied is not None:
         verdict["reasons"].append("under a deny root")
+    if policy_denied is not None:
+        verdict["reasons"].append(
+            f"under a protected-path policy entry: {policy_denied}")
     if escaped is not None:
         verdict["reasons"].append(f"reparse point escapes the allow root: {escaped}")
     return verdict
