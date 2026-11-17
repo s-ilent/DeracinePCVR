@@ -856,6 +856,11 @@ if ($resolution -eq "game") {
         if (-not $dynamic) { $env:SHADPS4_TITLE_RESOLUTION = "6" }
     }
 }
+# present: the size the headset is shown the game's picture. guest (default) is the size the game
+# draws its scene at, one to one; auto is the size the runtime asks for (3036x3036 an eye on a
+# Steam Frame); or a size to the letter, 3036x3036.
+$present = Setting "present" "guest"
+if ($present -ne "guest" -and $present -ne "") { $env:SHADPS4_VR_RESOLUTION = $present }
 $env:SHADPS4_VR_SHARPEN = Setting "sharpen" "0.4"
 if ((Setting "aniso") -ne "") { $env:SHADPS4_FORCE_ANISO = Setting "aniso" }
 $env:SHADPS4_VR_DESKTOP_VIEW = Get-DesktopView
