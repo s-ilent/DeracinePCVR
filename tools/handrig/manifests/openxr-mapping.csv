@@ -1,0 +1,53 @@
+side,openxr_joint,game_bone,note
+R,PALM,R-Hand,palm and wrist both drive the hand bone; the actor transform carries the wrist pose
+R,WRIST,R-Hand,palm and wrist both drive the hand bone; the actor transform carries the wrist pose
+R,THUMB_METACARPAL,R-Finger0,thumb metacarpal: first thumb bone, base at the wrist
+R,THUMB_PROXIMAL,R-Finger01,thumb phalanx (game thumb has 2 phalanges after its metacarpal)
+R,THUMB_DISTAL,R-Finger02,thumb phalanx (game thumb has 2 phalanges after its metacarpal)
+R,THUMB_TIP,,no tip bone; tip is distal joint plus OpenXR tip offset
+R,INDEX_METACARPAL,,no metacarpal bone; its rotation is folded into the hand bone
+R,INDEX_PROXIMAL,R-Finger1,direct
+R,INDEX_INTERMEDIATE,R-Finger11,direct
+R,INDEX_DISTAL,R-Finger12,direct
+R,INDEX_TIP,,no tip bone; tip is distal joint plus OpenXR tip offset
+R,MIDDLE_METACARPAL,,no metacarpal bone; its rotation is folded into the hand bone
+R,MIDDLE_PROXIMAL,R-Finger2,direct
+R,MIDDLE_INTERMEDIATE,R-Finger21,direct
+R,MIDDLE_DISTAL,R-Finger22,direct
+R,MIDDLE_TIP,,no tip bone; tip is distal joint plus OpenXR tip offset
+R,RING_METACARPAL,,no metacarpal bone; its rotation is folded into the hand bone
+R,RING_PROXIMAL,R-Finger3,direct
+R,RING_INTERMEDIATE,R-Finger31,direct
+R,RING_DISTAL,R-Finger32,direct
+R,RING_TIP,,no tip bone; tip is distal joint plus OpenXR tip offset
+R,LITTLE_METACARPAL,,no metacarpal bone; its rotation is folded into the hand bone
+R,LITTLE_PROXIMAL,R-Finger4,direct
+R,LITTLE_INTERMEDIATE,R-Finger41,direct
+R,LITTLE_DISTAL,R-Finger42,direct
+R,LITTLE_TIP,,no tip bone; tip is distal joint plus OpenXR tip offset
+L,PALM,L-Hand,palm and wrist both drive the hand bone; the actor transform carries the wrist pose
+L,WRIST,L-Hand,palm and wrist both drive the hand bone; the actor transform carries the wrist pose
+L,THUMB_METACARPAL,L-Finger0,thumb metacarpal: first thumb bone, base at the wrist
+L,THUMB_PROXIMAL,L-Finger01,thumb phalanx (game thumb has 2 phalanges after its metacarpal)
+L,THUMB_DISTAL,L-Finger02,thumb phalanx (game thumb has 2 phalanges after its metacarpal)
+L,THUMB_TIP,,no tip bone; tip is distal joint plus OpenXR tip offset
+L,INDEX_METACARPAL,,no metacarpal bone; its rotation is folded into the hand bone
+L,INDEX_PROXIMAL,L-Finger1,direct
+L,INDEX_INTERMEDIATE,L-Finger11,direct
+L,INDEX_DISTAL,L-Finger12,direct
+L,INDEX_TIP,,no tip bone; tip is distal joint plus OpenXR tip offset
+L,MIDDLE_METACARPAL,,no metacarpal bone; its rotation is folded into the hand bone
+L,MIDDLE_PROXIMAL,L-Finger2,direct
+L,MIDDLE_INTERMEDIATE,L-Finger21,direct
+L,MIDDLE_DISTAL,L-Finger22,direct
+L,MIDDLE_TIP,,no tip bone; tip is distal joint plus OpenXR tip offset
+L,RING_METACARPAL,,no metacarpal bone; its rotation is folded into the hand bone
+L,RING_PROXIMAL,L-Finger3,direct
+L,RING_INTERMEDIATE,L-Finger31,direct
+L,RING_DISTAL,L-Finger32,direct
+L,RING_TIP,,no tip bone; tip is distal joint plus OpenXR tip offset
+L,LITTLE_METACARPAL,,no metacarpal bone; its rotation is folded into the hand bone
+L,LITTLE_PROXIMAL,L-Finger4,direct
+L,LITTLE_INTERMEDIATE,L-Finger41,direct
+L,LITTLE_DISTAL,L-Finger42,direct
+L,LITTLE_TIP,,no tip bone; tip is distal joint plus OpenXR tip offset

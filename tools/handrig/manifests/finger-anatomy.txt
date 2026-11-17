@@ -1,0 +1,17 @@
+# digit evidence per rig
+
+## GameProject/Content/model/chr/c0000/model/c0000_Skeleton.uasset
+  digit 0: len= 14.626 base_from_wrist=  6.765 out_of_plane=0.692 chain=R-Finger0>R-Finger01>R-Finger02
+  digit 1: len= 13.902 base_from_wrist= 15.421 out_of_plane=0.399 chain=R-Finger1>R-Finger11>R-Finger12
+  digit 2: len= 15.042 base_from_wrist= 15.407 out_of_plane=0.347 chain=R-Finger2>R-Finger21>R-Finger22
+  digit 3: len= 14.301 base_from_wrist= 15.496 out_of_plane=0.351 chain=R-Finger3>R-Finger31>R-Finger32
+  digit 4: len= 11.106 base_from_wrist= 15.664 out_of_plane=0.364 chain=R-Finger4>R-Finger41>R-Finger42
+  -> thumb = digit 0
+
+## GameProject/Content/model/chr/c0100/model/c0100_Skeleton.uasset
+  digit 0: len= 14.626 base_from_wrist=  6.765 out_of_plane=0.692 chain=L-Finger0>L-Finger01>L-Finger02
+  digit 1: len= 13.902 base_from_wrist= 15.421 out_of_plane=0.399 chain=L-Finger1>L-Finger11>L-Finger12
+  digit 2: len= 15.042 base_from_wrist= 15.407 out_of_plane=0.347 chain=L-Finger2>L-Finger21>L-Finger22
+  digit 3: len= 14.301 base_from_wrist= 15.496 out_of_plane=0.351 chain=L-Finger3>L-Finger31>L-Finger32
+  digit 4: len= 11.106 base_from_wrist= 15.664 out_of_plane=0.364 chain=L-Finger4>L-Finger41>L-Finger42
+  -> thumb = digit 0
