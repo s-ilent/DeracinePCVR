@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "id": "deracine-headless-gameplay-300-msaa2-vblank120",
+  "profile": "headless-gameplay",
+  "phase": "gameplay",
+  "description": "Déraciné (CUSA11919) gameplay, reached headlessly: emulated PSVR, no OpenXR host and no physical headset, from savedata slot 1 (stage m00_00_10_10) via the M2 scripted Move sequence. Measurement is the emulator's own unique-rendered-frame series (frame stats), not the compositor.",
+  "measured_2026_11_18": {
+    "menu_front_end": {"draws": "465-500", "mpx": "~480", "passes": "~65", "fps": "58-60 (paced)"},
+    "loading_dip": {"draws": "42-55"},
+    "gameplay": {"draws": "1866-1900", "mpx": "620-720", "passes": "42-46", "fps": "30-35"},
+    "source": "_build/headless/validation/results/RESULTS.md (M2-confirmed) and the user's handover"
+  },
+  "scene_gate": {
+    "min_draws": 800,
+    "min_mpx": 450,
+    "consecutive_samples": 2,
+    "min_window_samples": 5
+  },
+  "band": {
+    "min_draws": 1500,
+    "max_draws": 2300,
+    "min_mpx": 550,
+    "max_mpx": 750,
+    "min_passes": 35,
+    "max_passes": 55,
+    "min_in_band_ratio": 0.9
+  },
+  "menu_disambiguation": {
+    "max_draws": 800,
+    "note": "The menu/front end is ~465-500 draws and cannot pass the 800-draw gate; a run that never leaves it is reported phase=menu, never as gameplay."
+  },
+  "guest": {
+    "screen_percentage": 300,
+    "msaa_requested": 2,
+    "eye_width": 2880,
+    "eye_height": 3240,
+    "title_resolution": 6,
+    "vr_scale": 0.5,
+    "vr_fov": 100
+  },
+  "pacing": {
+    "refresh_hz": 120,
+    "fps_cap": 120,
+    "fastest_pace": true,
+    "stats_every_s": 0.5
+  },
+  "save": {
+    "slot": 1,
+    "stage": "m00_00_10_10",
+    "manifest": "tools/headless-vr/save-slot/MANIFEST.json",
+    "note": "Slot 1 makes Continue load the classroom; the quality-lab save (slot 0, m00_00_80_10) stays on the menu forever. The three files are pinned by sha256; they are game/user data and are not committed."
+  },
+  "input": {
+    "script": "tools/headless-vr/input/gameplay-entry.txt",
+    "env": {
+      "SHADPS4_VR_MOVE_FROM_PAD": "1",
+      "SHADPS4_VR_HANDS": "synthetic",
+      "SHADPS4_DBG_AUTOPRESS": "1",
+      "SHADPS4_DBG_AUTOPRESS_TO": "45000"
+    },
+    "note": "The script is the M2 confirm sweep: it aims the mirrored Move hand at Continue and presses it. All of it is test-only and off unless these variables are set."
+  },
+  "image_reference": null,
+  "image_reference_note": "No gameplay eye reference is installed. A candidate exists (_build/headless/validation/evidence/gameplay-reference-candidate/gameplay-eye-m2-confirm-1.png, menu-vs-gameplay SSIM 0.4174) but it was never visually reviewed and installed. Until it is, scene identity rests on the numeric gate+band, which the menu cannot satisfy; an optional reference can be added here and checked by scene_signature.py.",
+  "reproducibility": {
+    "state": "single-lab",
+    "note": "M2 has been proven in one independently constructed lab (scene-eng's). It is NOT yet reproducible from a second independently constructed lab, so a valid cell here is single-lab evidence until that second lab passes."
+  }
+}
