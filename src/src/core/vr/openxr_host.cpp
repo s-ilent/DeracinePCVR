@@ -1240,6 +1240,42 @@ struct OpenXrHost::Impl {
     /// Reads the headset's controllers and hands what they say on as the first player's
     /// gamepad, while the PC has no gamepad of its own or they were used after it.
     void UpdateControllers(XrTime time) {
+    // SHADPS4_DBG_HAND_POSE="x,y,z,pitch,yaw,roll": where a hand is put, in the headset's own space
+    // in metres and degrees, when the runtime does not locate a controller (nobody is holding one).
+    // A title whose menu is pointed at rather than navigated with a d-pad can then be walked into in
+    // an unattended run. One pose for both hands.
+    static const std::optional<std::array<float, 6>> debug_hand_pose = [] {
+        const char* value = std::getenv("SHADPS4_DBG_HAND_POSE");
+        if (value == nullptr) {
+            return std::optional<std::array<float, 6>>{};
+        }
+        std::array<float, 6> parsed{};
+        const char* at = value;
+        for (float& out : parsed) {
+            char* end = nullptr;
+            out = std::strtof(at, &end);
+            if (end == at) {
+                return std::optional<std::array<float, 6>>{};
+            }
+            at = *end == ',' ? end + 1 : end;
+        }
+        return std::optional<std::array<float, 6>>{parsed};
+    }();
+    const auto apply_debug_hand_pose = [](DeviceState& state) {
+        if (!debug_hand_pose) {
+            return;
+        }
+        constexpr float to_rad = 3.14159265358979323846f / 180.0f;
+        const float pitch = (*debug_hand_pose)[3] * to_rad * 0.5f;
+        const float yaw = (*debug_hand_pose)[4] * to_rad * 0.5f;
+        const float roll = (*debug_hand_pose)[5] * to_rad * 0.5f;
+        const Quat qx{std::sin(pitch), 0.0f, 0.0f, std::cos(pitch)};
+        const Quat qy{0.0f, std::sin(yaw), 0.0f, std::cos(yaw)};
+        const Quat qz{0.0f, 0.0f, std::sin(roll), std::cos(roll)};
+        state.pose.position = {(*debug_hand_pose)[0], (*debug_hand_pose)[1], (*debug_hand_pose)[2]};
+        state.pose.orientation = Normalize(Multiply(Multiply(qy, qx), qz));
+        state.tracked = true;
+    };
         actions_synced = false;
         if (!actions_ready) {
             return;
@@ -1405,6 +1441,7 @@ struct OpenXrHost::Impl {
                 }
                 const int target_move_slot =
                     !SwapHandsActive().load(std::memory_order_relaxed) ? (hand == 0 ? 1 : 0) : hand;
+            apply_debug_hand_pose(hand_state);
                 Runtime::Instance().UpdateHand(target_move_slot, hand_state);
             }
             // Both lie somewhere, asleep.
@@ -1709,6 +1746,7 @@ struct OpenXrHost::Impl {
             }
             const int target_move_slot =
                 !SwapHandsActive().load(std::memory_order_relaxed) ? (hand == 0 ? 1 : 0) : hand;
+            apply_debug_hand_pose(hand_state);
             Runtime::Instance().UpdateHand(target_move_slot, hand_state);
         }
 
@@ -3376,3 +3414,4 @@ void OpenXrHost::AudioDevicesChanged() {
 }
 
 } // namespace Core::Vr
+
