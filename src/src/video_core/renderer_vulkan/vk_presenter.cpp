@@ -1365,6 +1365,16 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
         if (std::ranges::find(dump_frames, frame_id) != dump_frames.end()) {
             DumpGpuImages(fmt::format("rt_dump-{}", frame_id));
         }
+        // SHADPS4_DBG_DUMP_HMD_AT_SCENE: the frame-stats window matched the scene the caller
+        // described, so this is one of its first frames: dump the HMD eye image once.
+        {
+            std::string folder;
+            if (Vulkan::FrameStats::TakeHmdDumpRequest(folder)) {
+                LOG_INFO(Render_Vulkan, "HMD dump: scene reached, dumping the images to {}",
+                         folder);
+                DumpGpuImages(folder);
+            }
+        }
         static u32 marked = 0;
         if (std::ranges::find(trace_frames, frame_id) != trace_frames.end()) {
             Rasterizer::StartDrawTrace(2500);
@@ -1976,7 +1986,11 @@ void Presenter::DumpGpuImages(std::string_view folder) {
         const int width = value != nullptr ? std::atoi(value) : 0;
         return width >= 64 ? static_cast<u32>(width) : 1280u;
     }();
-    const auto base_dump_dir = Common::FS::GetUserPath(Common::FS::PathType::UserDir) / folder;
+    const std::filesystem::path requested{folder};
+    const auto base_dump_dir =
+        requested.is_absolute()
+            ? requested
+            : Common::FS::GetUserPath(Common::FS::PathType::UserDir) / folder;
     std::error_code ec;
     static u32 capture_seq = 0;
     if (capture_seq == 0) {

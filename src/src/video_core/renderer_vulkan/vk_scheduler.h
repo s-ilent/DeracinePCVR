@@ -7,6 +7,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <queue>
 #include <source_location>
@@ -117,6 +118,10 @@ struct FrameStats {
     static void Submit();
     /// Called once per presented frame.
     static void EndFrame();
+    /// Test-only, SHADPS4_DBG_DUMP_HMD_AT_SCENE="<draws>,<mpx>[,<folder>]": once a frame-stats
+    /// window averages what the string describes, the presenter takes this request and dumps the
+    /// HMD images there with the existing rt_dump code. True once per run.
+    static bool TakeHmdDumpRequest(std::string& folder);
 
     /// SHADPS4_DBG_AB=<seconds>: a measuring aid. Whatever asks AbOff is left out for that many
     /// seconds, then made again for as many, and so on, so that what it does shows in the frame
