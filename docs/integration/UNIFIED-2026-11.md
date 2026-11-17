@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | Branch | `integration/deracine-unified-2026-11` |
-| Tip | `fc01c026d00f8ae7fceae679efc4e10408dc4450` |
+| Tip | source commit `9358d7a` plus documentation-only commits (this report and its matrix are among them) |
 | Source commit of the shipped binary | `9358d7a` (the two later commits are test/docs only; `ninja: no work to do` at `fc01c02`) |
 | Base | `acda49e` (`recovery/baseline`) |
 | Worktree | `M:\Development\Deracine-work\wt-unified` |

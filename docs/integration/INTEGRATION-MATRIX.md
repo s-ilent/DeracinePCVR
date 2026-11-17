@@ -1,6 +1,6 @@
 # Déraciné PCVR — integration matrix (2026-11-18)
 
-Unified branch: `integration/deracine-unified-2026-11` @ `fc01c02`
+Unified branch: `integration/deracine-unified-2026-11`, source commit `9358d7a` (branch tip adds this matrix and the report; documentation only)
 Base: `acda49e` (`recovery/baseline`, recovered clean baseline)
 Worktree: `M:\Development\Deracine-work\wt-unified`
 
