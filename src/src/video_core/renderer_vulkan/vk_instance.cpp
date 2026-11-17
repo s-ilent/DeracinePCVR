@@ -22,6 +22,7 @@
 #include "video_core/renderer_vulkan/legacy_vertex_attributes.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_foveation.h"
+#include "video_core/renderer_vulkan/vk_image_recycler.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 
@@ -211,6 +212,9 @@ Instance::Instance(Frontend::WindowSDL& window, s32 physical_device_index,
 
 Instance::~Instance() {
     ImGui::Core::Shutdown(GetDevice());
+    // The pool holds Vulkan images and their allocations, so it has to give them back before the
+    // allocator that made them goes away.
+    ImageRecycler::Get().Shutdown();
     vmaDestroyAllocator(allocator);
 }
 
