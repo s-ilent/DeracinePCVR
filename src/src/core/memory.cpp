@@ -19,6 +19,15 @@
 
 namespace Core {
 
+namespace {
+std::atomic<u64> g_commit_calls{};
+std::atomic<u64> g_commit_ns{};
+std::atomic<u64> g_decommit_calls{};
+std::atomic<u64> g_decommit_ns{};
+std::atomic<u64> g_decommit_unmap_ns{};
+const bool g_pool_stats = std::getenv("SHADPS4_DBG_POOL_STATS") != nullptr;
+} // Anonymous namespace
+
 MemoryManager::MemoryManager() {
     LOG_INFO(Kernel_Vmm, "Virtual memory space initialized with regions:");
 
@@ -401,6 +410,7 @@ s32 MemoryManager::Free(PAddr phys_addr, u64 size, bool is_checked) {
 }
 
 s32 MemoryManager::PoolCommit(VAddr virtual_addr, u64 size, MemoryProt prot, s32 mtype) {
+    const auto pool_commit_started = std::chrono::steady_clock::now();
     std::scoped_lock lk{unmap_mutex};
     std::unique_lock lk2{mutex};
     auto mapping_mutation = mapping_generation.BeginMutation();
@@ -494,6 +504,16 @@ s32 MemoryManager::PoolCommit(VAddr virtual_addr, u64 size, MemoryProt prot, s32
         rasterizer->MapMemory(mapped_addr, size);
     }
 
+    {
+        const auto elapsed_ns = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - pool_commit_started).count());
+        g_commit_ns += elapsed_ns;
+        const u64 calls = ++g_commit_calls;
+        if (g_pool_stats && calls % 128 == 0) {
+            LOG_INFO(Kernel_Vmm, "POOLSTAT commit calls={} avg={:.3f} ms last_size={:#x}", calls,
+                     static_cast<double>(g_commit_ns.load()) / calls / 1e6, size);
+        }
+    }
     return ORBIS_OK;
 }
 
@@ -606,7 +626,10 @@ s32 MemoryManager::MapMemory(void** out_addr, VAddr virtual_addr, u64 size, Memo
 
     // Perform early GPU unmap to avoid potential deadlocks
     if (IsValidGpuMapping(virtual_addr, size)) {
+        const auto unmap_started = std::chrono::steady_clock::now();
         rasterizer->UnmapMemory(virtual_addr, size);
+        g_decommit_unmap_ns += static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - unmap_started).count());
     }
 
     // Acquire writer lock.
@@ -782,7 +805,10 @@ s32 MemoryManager::MapFile(void** out_addr, VAddr virtual_addr, u64 size, Memory
 
     // Perform early GPU unmap to avoid potential deadlocks
     if (IsValidGpuMapping(virtual_addr, size)) {
+        const auto unmap_started = std::chrono::steady_clock::now();
         rasterizer->UnmapMemory(virtual_addr, size);
+        g_decommit_unmap_ns += static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - unmap_started).count());
     }
 
     // Aquire writer lock
@@ -819,6 +845,7 @@ s32 MemoryManager::MapFile(void** out_addr, VAddr virtual_addr, u64 size, Memory
 }
 
 s32 MemoryManager::PoolDecommit(VAddr virtual_addr, u64 size) {
+    const auto pool_decommit_started = std::chrono::steady_clock::now();
     std::scoped_lock lk{unmap_mutex};
     ASSERT_MSG(IsValidMapping(virtual_addr, size), "Attempted to access invalid address {:#x}",
                virtual_addr);
@@ -835,7 +862,10 @@ s32 MemoryManager::PoolDecommit(VAddr virtual_addr, u64 size) {
 
     // Perform early GPU unmap to avoid potential deadlocks
     if (IsValidGpuMapping(virtual_addr, size)) {
+        const auto unmap_started = std::chrono::steady_clock::now();
         rasterizer->UnmapMemory(virtual_addr, size);
+        g_decommit_unmap_ns += static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - unmap_started).count());
     }
 
     // Aquire writer mutex
@@ -899,7 +929,19 @@ s32 MemoryManager::PoolDecommit(VAddr virtual_addr, u64 size) {
     // Tracy memory tracking breaks from merging memory areas. Disabled for now.
     // TRACK_FREE(virtual_addr, "VMEM");
 
+    {
+        const auto elapsed_ns = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - pool_decommit_started).count());
+        g_decommit_ns += elapsed_ns;
+        const u64 calls = ++g_decommit_calls;
+        if (g_pool_stats && calls % 128 == 0) {
+            LOG_INFO(Kernel_Vmm,
+                     "POOLSTAT decommit calls={} avg={:.3f} ms unmap_avg={:.3f} ms", calls,
+                     static_cast<double>(g_decommit_ns.load()) / calls / 1e6,
+                     static_cast<double>(g_decommit_unmap_ns.load()) / calls / 1e6);
+        }
     return ORBIS_OK;
+    }
 }
 
 s32 MemoryManager::UnmapMemory(VAddr virtual_addr, u64 size) {

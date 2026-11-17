@@ -12,6 +12,7 @@ set(SHADER_FILES
     detilers/micro_64bpp.comp
     detilers/micro_8bpp.comp
     color_to_ms_depth.frag
+    copy_reinterpret_32bpp.comp
     ms_image_blit.frag
     fault_buffer_process.comp
     fs_tri.vert

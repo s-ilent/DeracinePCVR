@@ -303,6 +303,7 @@ void Runtime::CopyImage(VideoCore::Image* src, VideoCore::Image* dst) {
         regions.push_back(region);
     }
 
+    Core::Vr::FrameTimeline::Mark("rt_copy_begin", static_cast<u32>(src->info.size.width));
     scheduler.EndRendering();
 
     bool needs_flush =
@@ -317,6 +318,7 @@ void Runtime::CopyImage(VideoCore::Image* src, VideoCore::Image* dst) {
     auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.copyImage(src->GetImage(), vk::ImageLayout::eTransferSrcOptimal, dst->GetImage(),
                      vk::ImageLayout::eTransferDstOptimal, regions);
+    Core::Vr::FrameTimeline::Mark("rt_copy_end");
 
     dst->flags |= (src->flags & VideoCore::ImageFlagBits::GpuModified);
     dst->flags &= ~VideoCore::ImageFlagBits::Dirty;
@@ -785,3 +787,4 @@ void Runtime::MakeCurrent(const VideoCore::Buffer* handle) {
 }
 
 } // namespace Vulkan
+

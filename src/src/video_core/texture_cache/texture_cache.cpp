@@ -27,8 +27,74 @@
 #include "video_core/texture_cache/image_view.h"
 #include "video_core/texture_cache/texture_cache.h"
 #include "video_core/texture_cache/tile_manager.h"
+#include "core/vr/frame_timeline.h"
+#include "video_core/texture_cache/preserve_tracker.h"
+#include "video_core/texture_cache/alias_trace.h"
+#include <vk_mem_alloc.h>
 
 namespace VideoCore {
+namespace {
+// Counts of the overlap-resolution entry points, once a second, so a capture can be checked
+// against the scene it was taken in rather than trusted on its own.
+std::atomic<u32> g_depth_overlap{};
+std::atomic<u32> g_overlap{};
+std::atomic<u32> g_expand{};
+std::atomic<u32> g_expand_block{};
+std::atomic<u32> g_expand_3d{};
+std::atomic<u32> g_expand_res{};
+std::atomic<u32> g_branch_direct{};
+std::atomic<u32> g_branch_buffered{};
+std::atomic<u32> g_branch_ms{};
+std::atomic<u32> g_copyimage{};
+std::atomic<u32> g_draws{};
+std::atomic<long long> g_last_report{};
+void NoteOverlap(const char* which) {
+    if (std::getenv("SHADPS4_DBG_OVERLAP") == nullptr) {
+        return;
+    }
+    if (std::strcmp(which, "depth") == 0) {
+        g_depth_overlap.fetch_add(1);
+    } else if (std::strcmp(which, "expand") == 0) {
+        g_expand.fetch_add(1);
+    } else if (std::strcmp(which, "expand_block") == 0) {
+        g_expand_block.fetch_add(1);
+    } else if (std::strcmp(which, "expand_3d") == 0) {
+        g_expand_3d.fetch_add(1);
+    } else if (std::strcmp(which, "expand_res") == 0) {
+        g_expand_res.fetch_add(1);
+    } else if (std::strcmp(which, "direct") == 0) {
+        g_branch_direct.fetch_add(1);
+    } else if (std::strcmp(which, "buffered") == 0) {
+        g_branch_buffered.fetch_add(1);
+    } else if (std::strcmp(which, "msreinterpret") == 0) {
+        g_branch_ms.fetch_add(1);
+    } else if (std::strcmp(which, "copyimage") == 0) {
+        g_copyimage.fetch_add(1);
+    } else if (std::strcmp(which, "draw") == 0) {
+        g_draws.fetch_add(1);
+    }
+    const long long now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now().time_since_epoch())
+                              .count();
+    long long last = g_last_report.load();
+    if (now - last >= 1000 && g_last_report.compare_exchange_strong(last, now)) {
+        LOG_INFO(Render_Vulkan,
+                 "OVERLAPS depth={} direct={} buffered={} msreinterp={} expand={} copyimage={} draws={} skipped={} cleared_after={} loaded_after={} exp_block={} exp_3d={} exp_res={} passes={} alias_clear={} alias_load={} alias_sample={}",
+                 g_depth_overlap.exchange(0), g_branch_direct.exchange(0),
+                 g_branch_buffered.exchange(0), g_branch_ms.exchange(0), g_expand.exchange(0),
+                 g_copyimage.exchange(0), g_draws.exchange(0),
+                 PreserveTracker::skipped_total.exchange(0),
+                 PreserveTracker::cleared_after_skip.exchange(0),
+                 PreserveTracker::loaded_after_skip.exchange(0),
+                 g_expand_block.exchange(0), g_expand_3d.exchange(0), g_expand_res.exchange(0),
+                 Core::Vr::FrameTimeline::TakeRenderPasses(),
+                 Alias3DTracker::used_cleared.exchange(0),
+                 Alias3DTracker::used_loaded.exchange(0),
+                 Alias3DTracker::used_sampled.exchange(0));
+    }
+}} // Anonymous namespace
+
+
 
 static constexpr u64 PageShift = 12;
 static constexpr u64 NumFramesBeforeRemoval = 32;
@@ -298,6 +364,7 @@ void TextureCache::UnmapMemory(VAddr cpu_addr, size_t size) {
 
 ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, BindingType binding,
                                           ImageId cache_image_id) {
+    NoteOverlap("depth");
     auto& cache_image = slot_images[cache_image_id];
 
     if (!cache_image.info.props.is_depth && !requested_info.props.is_depth) {
@@ -355,14 +422,129 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
         new_image.flags &= ~ImageFlagBits::Dirty;
         // When creating a depth buffer through overlap resolution don't clear it on first use.
         new_image.info.meta_info.htile_clear_mask = 0;
+        ReprTrace::Note(source_image.info.guest_address,
+                        static_cast<u32>(source_image.info.pixel_format),
+                        static_cast<u32>(new_image.info.pixel_format), static_cast<u32>(binding),
+                        static_cast<u64>(source_image.info.size.width) *
+                            source_image.info.size.height * source_image.info.num_bits / 8);
 
-        if (source_image.info.num_samples == 1 && new_info.num_samples == 1) {
-            // Perform depth<->color copy using the intermediate copy buffer.
-            if (instance.IsMaintenance8Supported()) {
+        // Content preservation is only needed when the new representation will be read as
+        // data (a texture or a storage image). A colour or depth target is drawn into, and
+        // its previous contents live in the other representation, where they are not the
+        // depth or colour values the guest expects anyway. This is the condition the NHL
+        // 24 fork uses for the same per-frame depth/colour aliasing pattern.
+        static const bool nhl_condition = std::getenv("SHADPS4_DBG_NHL_COND") != nullptr;
+        const bool contents_matter = binding == BindingType::Texture ||
+                                     binding == BindingType::Storage;
+        // The conservative predicate: contents may be dropped only when a later use cannot
+        // read them. Nothing proves that yet for this title - its depth targets are bound
+        // with a load, not a clear - so this falls back to preserving unless a future
+        // clear intent is propagated into the request.
+        static const bool conservative = std::getenv("SHADPS4_DBG_CONSERVATIVE") != nullptr;
+        const bool preserve_contents = conservative || !nhl_condition || contents_matter;
+        if (!preserve_contents) {
+            PreserveTracker::NoteSkipped(cache_image.info.guest_address);
+        }
+        if (AliasTrace::Enabled() && AliasTrace::Hits(new_info.guest_address, new_info.guest_size)) {
+            const u64 copy_bytes = static_cast<u64>(source_image.info.size.width) *
+                                   source_image.info.size.height * source_image.info.num_bits / 8;
+            AliasTrace::recreations.fetch_add(1, std::memory_order_relaxed);
+            if (preserve_contents) {
+                AliasTrace::recreations_preserved.fetch_add(1, std::memory_order_relaxed);
+                AliasTrace::copied_bytes.fetch_add(copy_bytes, std::memory_order_relaxed);
+            }
+            const u64 key = 2u ^ (static_cast<u64>(binding) << 8) ^
+                            (static_cast<u64>(source_image.info.pixel_format) << 16) ^
+                            (static_cast<u64>(new_image.info.pixel_format) << 32) ^
+                            (static_cast<u64>(preserve_contents) << 48);
+            if (AliasTrace::FirstTime(key)) {
+            LOG_INFO(Render_Vulkan,
+                     "ALIAS seq={} op=representation binding={} {}->{} type={}->{} "
+                     "{}x{}x{} -> {}x{}x{} levels={}->{} layers={}->{} samples={}->{} "
+                     "stencil={}->{} preserve={} copy_bytes={}",
+                     AliasTrace::NextSeq(), static_cast<u32>(binding),
+                     vk::to_string(source_image.info.pixel_format),
+                     vk::to_string(new_image.info.pixel_format),
+                     static_cast<u32>(source_image.info.type),
+                     static_cast<u32>(new_image.info.type), source_image.info.size.width,
+                     source_image.info.size.height, source_image.info.size.depth,
+                     new_image.info.size.width, new_image.info.size.height,
+                     new_image.info.size.depth, source_image.info.resources.levels,
+                     new_image.info.resources.levels, source_image.info.resources.layers,
+                     new_image.info.resources.layers, source_image.info.num_samples,
+                     new_image.info.num_samples, source_image.info.props.has_stencil ? 1 : 0,
+                     new_image.info.props.has_stencil ? 1 : 0, preserve_contents ? 1 : 0,
+                     copy_bytes);
+            }
+        }
+        if (preserve_contents && source_image.info.num_samples == 1 &&
+            new_info.num_samples == 1) {            // Perform depth<->color copy using the intermediate copy buffer.
+            // The buffer-mediated path needs room for the whole picture: the utility buffer is
+            // a stream buffer whose regions must be reserved before use. It used to be taken
+            // with Handle() alone and no reservation, so a 5760x3240 copy wrote past its
+            // capacity.
+            static const bool via_buffer = [] {
+                const char* value = std::getenv("SHADPS4_DBG_COPY_VIA_BUFFER");
+                return value != nullptr && value[0] == '1';
+            }();
+            if (instance.IsMaintenance8Supported() && !via_buffer) {
                 new_image.CopyImage(source_image);
+                NoteOverlap("direct");
+                {
+                    static const bool trace_fmt = std::getenv("SHADPS4_DBG_PAIRFMT") != nullptr;
+                    if (trace_fmt) {
+                        static std::atomic<u32> traced{};
+                        if (traced.fetch_add(1) < 40) {
+                            LOG_INFO(Render_Vulkan,
+                                     "PAIRFMT src={} dst={} depth={}/{} bpp={}/{} samples={}/{} aspect={:#x}/{:#x}",
+                                     vk::to_string(source_image.info.pixel_format),
+                                     vk::to_string(new_image.info.pixel_format),
+                                     static_cast<int>(source_image.info.props.is_depth),
+                                     static_cast<int>(new_image.info.props.is_depth),
+                                     source_image.info.num_bits, new_image.info.num_bits,
+                                     source_image.info.num_samples, new_image.info.num_samples,
+                                     static_cast<u32>(source_image.aspect_mask),
+                                     static_cast<u32>(new_image.aspect_mask));
+                        }
+                    }
+                }
             } else {
-                const auto& copy_buffer = buffer_cache.GetUtilityBuffer(MemoryUsage::DeviceLocal);
-                new_image.CopyImageWithBuffer(source_image, copy_buffer.Handle(), 0);
+                // A whole 5760x3240 picture is 74.6 MB; the utility stream buffer is 32 MB when
+                // maintenance8 is present, and a stream buffer cannot grow to hold it. The
+                // transfer gets a buffer of its own, big enough, made once.
+                const u64 bytes_per_pixel = source_image.info.num_bits / 8;
+                const u64 needed = static_cast<u64>(source_image.info.size.width) *
+                                   source_image.info.size.height * bytes_per_pixel;
+                static vk::Buffer preserve_buffer{};
+                static u64 preserve_capacity{};
+                {
+                    static std::once_flag once;
+                    std::call_once(once, [&] {
+                        const VkBufferCreateInfo buffer_ci = static_cast<VkBufferCreateInfo>(
+                            vk::BufferCreateInfo{
+                                .size = 128_MB,
+                                .usage = vk::BufferUsageFlagBits::eTransferSrc |
+                                         vk::BufferUsageFlagBits::eTransferDst,
+                            });
+                        const VmaAllocationCreateInfo alloc_ci = {
+                            .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+                        VkBuffer buffer{};
+                        VmaAllocation allocation{};
+                        if (vmaCreateBuffer(instance.GetAllocator(), &buffer_ci, &alloc_ci, &buffer,
+                                            &allocation, nullptr) == VK_SUCCESS) {
+                            preserve_buffer = buffer;
+                            preserve_capacity = 128_MB;
+                        }
+                    });
+                }
+                if (preserve_buffer && needed <= preserve_capacity) {
+                    new_image.CopyImageWithBuffer(source_image, preserve_buffer, 0);
+                    NoteOverlap("buffered");
+                } else {
+                    LOG_ERROR(Render_Vulkan,
+                              "Depth overlap copy needs {} bytes, more than the {} provided", needed,
+                              preserve_capacity);
+                }
             }
         } else if (source_image.info.num_samples == 1 && new_info.props.is_depth &&
                    new_info.num_samples > 1) {
@@ -375,6 +557,7 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
                 new_info.size.width, new_info.size.height,
                 new_image.backing->image.image_ci.samples, source_image.info.pixel_format,
                 new_info.pixel_format, source_image.GetImage(), new_image.GetImage());
+            NoteOverlap("msreinterpret");
         } else {
             LOG_WARNING(Render_Vulkan, "Unimplemented depth overlap copy");
         }
@@ -390,6 +573,7 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
 
 ImageId TextureCache::ResolveDimensionOverlap(const ImageInfo& requested_info,
                                               ImageId cache_image_id) {
+    NoteOverlap("overlap");
     auto& cache_image = slot_images[cache_image_id];
     if (!NeedsViewTypeRecreation(requested_info.type, cache_image.info.type)) {
         return {};
@@ -452,6 +636,38 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
                                                            ImageId cache_image_id,
                                                            ImageId merged_image_id) {
     auto& cache_image = slot_images[cache_image_id];
+    if (AliasTrace::Enabled() &&
+        (AliasTrace::Hits(image_info.guest_address, image_info.guest_size) ||
+         AliasTrace::Hits(cache_image.info.guest_address, cache_image.info.guest_size))) {
+        AliasTrace::requests.fetch_add(1, std::memory_order_relaxed);
+        AliasTrace::Report();
+        const u64 key = 1u ^ (static_cast<u64>(binding) << 8) ^
+                        (static_cast<u64>(image_info.pixel_format) << 16) ^
+                        (static_cast<u64>(cache_image.info.pixel_format) << 32) ^
+                        (static_cast<u64>(image_info.props.is_depth) << 48) ^
+                        (static_cast<u64>(cache_image.info.props.is_depth) << 49);
+        if (AliasTrace::FirstTime(key)) {
+            LOG_INFO(Render_Vulkan,
+                     "ALIAS seq={} op=request binding={} asked(addr={:#x} size={:#x} fmt={} type={} "
+                     "{}x{}x{} levels={} layers={} samples={} bits={} depth={} stencil={} tile={}) "
+                     "cached(addr={:#x} size={:#x} fmt={} {}x{}x{} levels={} layers={} samples={} "
+                     "depth={} stencil={} tile={})",
+                     AliasTrace::NextSeq(), static_cast<u32>(binding), image_info.guest_address,
+                     image_info.guest_size, vk::to_string(image_info.pixel_format),
+                     static_cast<u32>(image_info.type), image_info.size.width,
+                     image_info.size.height, image_info.size.depth, image_info.resources.levels,
+                     image_info.resources.layers, image_info.num_samples, image_info.num_bits,
+                     image_info.props.is_depth ? 1 : 0, image_info.props.has_stencil ? 1 : 0,
+                     static_cast<u32>(image_info.tile_mode), cache_image.info.guest_address,
+                     cache_image.info.guest_size, vk::to_string(cache_image.info.pixel_format),
+                     cache_image.info.size.width, cache_image.info.size.height,
+                     cache_image.info.size.depth, cache_image.info.resources.levels,
+                     cache_image.info.resources.layers, cache_image.info.num_samples,
+                     cache_image.info.props.is_depth ? 1 : 0,
+                     cache_image.info.props.has_stencil ? 1 : 0,
+                     static_cast<u32>(cache_image.info.tile_mode));
+        }
+    }
     const bool safe_to_delete =
         scheduler.CurrentTick() - cache_image.tick_accessed_last > NumFramesBeforeRemoval;
 
@@ -479,12 +695,37 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
 
         // Compressed view of uncompressed image with same block size.
         if (image_info.props.is_block && !cache_image.info.props.is_block) {
+            NoteOverlap("expand_block");
             return {ExpandImage(image_info, cache_image_id), -1, -1};
         }
 
         if (image_info.guest_size == cache_image.info.guest_size &&
             (image_info.type == AmdGpu::ImageType::Color3D ||
              cache_image.info.type == AmdGpu::ImageType::Color3D)) {
+            NoteOverlap("expand_3d");
+            {
+                static const bool trace_pair = std::getenv("SHADPS4_DBG_ALIAS3D") != nullptr;
+                if (trace_pair) {
+                    static std::atomic<u32> traced{};
+                    if (traced.fetch_add(1) < 200) {
+                        LOG_INFO(Render_Vulkan,
+                                 "ALIAS3D addr={:#x} cached(type={} {}x{}x{} mips={} layers={}) "
+                                 "requested(type={} {}x{}x{} mips={} layers={})",
+                                 cache_image.info.guest_address,
+                                 static_cast<u32>(cache_image.info.type),
+                                 cache_image.info.size.width,
+                                 cache_image.info.size.height,
+                                 cache_image.info.size.depth,
+                                 cache_image.info.resources.levels,
+                                 cache_image.info.resources.layers,
+                                 static_cast<u32>(image_info.type), image_info.size.width,
+                                 image_info.size.height, image_info.size.depth,
+                                 image_info.resources.levels,
+                                 image_info.resources.layers);
+                    }
+                }
+            }
+            Alias3DTracker::NoteExpanded(cache_image.info.guest_address);
             return {ExpandImage(image_info, cache_image_id), -1, -1};
         }
 
@@ -503,6 +744,7 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
         // Size and resources are greater, expand the image.
         if (image_info.type == cache_image.info.type &&
             image_info.resources > cache_image.info.resources) {
+            NoteOverlap("expand_res");
             return {ExpandImage(image_info, cache_image_id), -1, -1};
         }
 
@@ -667,6 +909,22 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
 }
 
 ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
+    {
+        // Expanding an image to the size it already has only re-allocates it and copies its
+        // contents to the same place. The cache already holds an image big enough.
+        static const bool skip_empty_expand = [] {
+            const char* value = std::getenv("SHADPS4_DBG_SKIP_EMPTY_EXPAND");
+            return value != nullptr && value[0] == '1';
+        }();
+        const auto& existing = slot_images[image_id];
+        if (skip_empty_expand && existing.info.size.width >= info.size.width &&
+            existing.info.size.height >= info.size.height &&
+            existing.info.resources.levels >= info.resources.levels &&
+            existing.info.resources.layers >= info.resources.layers) {
+            return image_id;
+        }
+    }
+    NoteOverlap("expand");
     const auto new_image_id =
         slot_images.insert(instance, scheduler, blit_helper, slot_image_views, info);
     RegisterImage(new_image_id);
@@ -674,7 +932,46 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
     auto& src_image = slot_images[image_id];
     auto& new_image = slot_images[new_image_id];
 
-    RefreshImage(new_image);
+    ReprTrace::Note(src_image.info.guest_address,
+                    static_cast<u32>(src_image.info.pixel_format),
+                    static_cast<u32>(new_image.info.pixel_format), 0xffu,
+                    static_cast<u64>(src_image.info.size.width) * src_image.info.size.height *
+                        src_image.info.num_bits / 8);
+
+    if (AliasTrace::Enabled() &&
+        AliasTrace::Hits(src_image.info.guest_address, src_image.info.guest_size)) {
+        AliasTrace::expands.fetch_add(1, std::memory_order_relaxed);
+        const u64 key = 3u ^ (static_cast<u64>(src_image.info.pixel_format) << 8) ^
+                        (static_cast<u64>(src_image.info.type) << 16) ^
+                        (static_cast<u64>(src_image.info.resources.layers) << 24) ^
+                        (static_cast<u64>(new_image.info.resources.layers) << 32);
+        if (AliasTrace::FirstTime(key)) {
+            LOG_INFO(Render_Vulkan,
+                 "ALIAS seq={} op=expand addr={:#x} fmt={} {}x{}x{} levels={} layers={} -> "
+                 "{}x{}x{} levels={} layers={}",
+                 AliasTrace::NextSeq(), src_image.info.guest_address,
+                 vk::to_string(src_image.info.pixel_format), src_image.info.size.width,
+                 src_image.info.size.height, src_image.info.size.depth,
+                 src_image.info.resources.levels, src_image.info.resources.layers,
+                 new_image.info.size.width, new_image.info.size.height,
+                 new_image.info.size.depth, new_image.info.resources.levels,
+                 new_image.info.resources.layers);
+        }
+    }
+
+    // The copy below replaces everything the old image covers. When that is all of the new
+    // image, uploading it from guest memory first is work the copy immediately throws away,
+    // so only the parts the copy does not reach are refreshed.
+    const bool copy_covers_all =
+        src_image.info.size.width >= new_image.info.size.width &&
+        src_image.info.size.height >= new_image.info.size.height &&
+        src_image.info.resources.levels >= new_image.info.resources.levels &&
+        src_image.info.resources.layers >= new_image.info.resources.layers;
+    static const bool skip_covered_refresh =
+        std::getenv("SHADPS4_DBG_SKIP_COVERED_REFRESH") != nullptr;
+    if (!copy_covers_all || !skip_covered_refresh) {
+        RefreshImage(new_image);
+    }
     new_image.CopyImage(src_image);
 
     if (src_image.binding.is_bound || src_image.binding.is_target) {

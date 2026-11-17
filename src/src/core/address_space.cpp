@@ -562,13 +562,54 @@ struct AddressSpace::Impl {
             const u64 range_size = std::min(region.base + region.size, virtual_end) - range_addr;
             DWORD old_flags{};
             if (!VirtualProtectEx(process, LPVOID(range_addr), range_size, new_flags, &old_flags)) {
-                UNREACHABLE_MSG(
-                    "Failed to change virtual memory protection for address {:#x}, size "
-                    "{:#x}, error {}",
-                    virtual_addr, size, Common::GetLastErrorMsg());
+                const DWORD protect_error = GetLastError();
+                LOG_ERROR(Core,
+                          "PROBE protect failed: request guest={:#x} size={:#x} "
+                          "subrange={:#x}+{:#x} flags={:#x} error={} region(base={:#x} "
+                          "size={:#x} phys={:#x} mapped={} prot={:#x})",
+                          virtual_addr, size, range_addr, range_size,
+                          static_cast<u32>(new_flags), static_cast<u32>(protect_error),
+                          region.base, region.size, region.phys_base, region.is_mapped,
+                          region.prot);
+                MEMORY_BASIC_INFORMATION first_page{};
+                if (VirtualQueryEx(process, LPVOID(range_addr), &first_page,
+                                 sizeof(first_page))) {
+                    LOG_ERROR(Core,
+                              "PROBE protect first page: state={:#x} type={:#x} "
+                              "protect={:#x} alloc_base={} region_size={:#x}",
+                              static_cast<u32>(first_page.State),
+                              static_cast<u32>(first_page.Type),
+                              static_cast<u32>(first_page.Protect),
+                              static_cast<const void*>(first_page.AllocationBase),
+                              static_cast<u64>(first_page.RegionSize));
+                }
+                const VAddr last_byte = range_addr + range_size - 1;
+                MEMORY_BASIC_INFORMATION last_page{};
+                if (VirtualQueryEx(process, LPVOID(last_byte), &last_page,
+                                 sizeof(last_page))) {
+                    LOG_ERROR(Core,
+                              "PROBE protect last page: state={:#x} type={:#x} "
+                              "protect={:#x} alloc_base={} region_size={:#x}",
+                              static_cast<u32>(last_page.State),
+                              static_cast<u32>(last_page.Type),
+                              static_cast<u32>(last_page.Protect),
+                              static_cast<const void*>(last_page.AllocationBase),
+                              static_cast<u64>(last_page.RegionSize));
+                }
+                // Diagnostic continuation only: fatal unless asked for.
+                static const bool continue_on_failure = [] {
+                    const char* value = std::getenv("SHADPS4_DBG_PROTECT_CONTINUE");
+                    return value != nullptr && value[0] == '1';
+                }();
+                if (continue_on_failure) {
+                    continue;
+                }
+                UNREACHABLE_MSG("Failed to protect guest {:#x} size {:#x}", virtual_addr,
+                                size);
             }
         }
     }
+
 
     boost::icl::interval_set<VAddr> GetUsableRegions() {
         boost::icl::interval_set<VAddr> reserved_regions;

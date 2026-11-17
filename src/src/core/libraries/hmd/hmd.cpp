@@ -43,7 +43,19 @@ static void FillDeviceInformation(OrbisHmdDeviceInformation* info) {
         info->user_id = UserManagement.GetDefaultUser().user_id;
     }
     info->status = OrbisHmdDeviceStatus::ORBIS_HMD_DEVICE_STATUS_READY;
-    info->device_info.panel_resolution = {PanelWidth, PanelHeight};
+    // TEMPORARY probe: report another panel, to see whether the title derives its eye buffers
+    // from it.
+    static const std::pair<u32, u32> panel = [] {
+        const char* value = std::getenv("SHADPS4_DBG_HMD_PANEL");
+        u32 width = 0;
+        u32 height = 0;
+        if (value != nullptr && std::sscanf(value, "%ux%u", &width, &height) == 2 && width > 0 &&
+            height > 0) {
+            return std::pair<u32, u32>{width, height};
+        }
+        return std::pair<u32, u32>{PanelWidth, PanelHeight};
+    }();
+    info->device_info.panel_resolution = {panel.first, panel.second};
     info->device_info.flip_to_display_latency = {FlipToDisplayLatency90Hz,
                                                  FlipToDisplayLatency120Hz};
     // Whether the headset is on the head: always, unless a host knows better.

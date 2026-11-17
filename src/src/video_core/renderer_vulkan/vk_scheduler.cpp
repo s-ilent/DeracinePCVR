@@ -21,6 +21,7 @@
 #endif
 
 #include "common/assert.h"
+#include "core/vr/frame_timeline.h"
 #include "common/debug.h"
 #include "common/logging/log.h"
 #include "common/thread.h"
@@ -28,6 +29,55 @@
 #include "video_core/renderer_vulkan/vk_gpu_profile.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
+#include "video_core/renderer_vulkan/renderdoc_app.h"
+
+namespace {
+/// SHADPS4_DBG_RDOC_CAPTURE=<seconds>: with the process started under RenderDoc, asks it for one
+/// capture of the first frame presented that long after the first one. A scene can then be captured
+/// without a key being pressed, which the frame a benchmark measures needs.
+void MaybeTriggerRenderDocCapture() {
+    static const double at_seconds = [] {
+        const char* value = std::getenv("SHADPS4_DBG_RDOC_CAPTURE");
+        return value != nullptr ? std::atof(value) : 0.0;
+    }();
+    if (at_seconds <= 0.0) {
+        return;
+    }
+    static RENDERDOC_API_1_4_0* api = []() -> RENDERDOC_API_1_4_0* {
+        const HMODULE module = GetModuleHandleA("renderdoc.dll");
+        if (module == nullptr) {
+            LOG_INFO(Render_Vulkan, "RDOC capture was asked for but renderdoc.dll is not loaded");
+            return nullptr;
+        }
+        const auto get_api =
+            reinterpret_cast<pRENDERDOC_GetAPI>(GetProcAddress(module, "RENDERDOC_GetAPI"));
+        if (get_api == nullptr) {
+            return nullptr;
+        }
+        void* out = nullptr;
+        if (get_api(eRENDERDOC_API_Version_1_4_0, &out) != 1) {
+            return nullptr;
+        }
+        return static_cast<RENDERDOC_API_1_4_0*>(out);
+    }();
+    if (api == nullptr) {
+        return;
+    }
+    static const auto started = std::chrono::steady_clock::now();
+    static bool fired = false;
+    if (fired) {
+        return;
+    }
+    const double since =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    if (since < at_seconds) {
+        return;
+    }
+    api->TriggerCapture();
+    fired = true;
+    LOG_INFO(Render_Vulkan, "RDOC capture triggered {:.1f} s after the first frame", since);
+}
+} // Anonymous namespace
 
 namespace Vulkan {
 
@@ -451,6 +501,7 @@ std::chrono::nanoseconds FrameStats::ThreadTime() {
 }
 
 void FrameStats::EndFrame() {
+    MaybeTriggerRenderDocCapture();
     // The A/B measuring aid (AbOff): which way the frames from now on are drawn.
     static const double ab_period = [] {
         const char* value = std::getenv("SHADPS4_DBG_AB");
@@ -666,6 +717,7 @@ static bool ContinuesPass(const RenderState& current, const RenderState& next) {
 }
 
 void Scheduler::BeginRendering(const RenderState& new_state) {
+    Core::Vr::FrameTimeline::CountRenderPass();
     if (is_rendering && render_state == new_state) {
         return;
     }
@@ -893,6 +945,7 @@ void TraceSync(const char* format, ...) {
 }
 
 void Scheduler::SubmitExecution(SubmitInfo& info) {
+    Core::Vr::FrameTimeline::Mark("queue_submit_begin");
     std::scoped_lock lk{submit_mutex};
     const u64 signal_value = master_semaphore.NextTick();
     if (signal_value > MAX_IN_FLIGHT_SUBMISSIONS) {

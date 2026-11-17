@@ -12,6 +12,7 @@
 #include "video_core/texture_cache/image.h"
 
 #include "video_core/host_shaders/color_to_ms_depth_frag.h"
+#include "video_core/host_shaders/copy_reinterpret_32bpp_comp.h"
 #include "video_core/host_shaders/fs_tri_vert.h"
 #include "video_core/host_shaders/ms_image_blit_frag.h"
 #include "video_core/host_shaders/resolve_aa_frag.h"
@@ -43,6 +44,7 @@ BlitHelper::~BlitHelper() {
 void BlitHelper::ReinterpretColorAsMsDepth(u32 width, u32 height, vk::SampleCountFlagBits samples,
                                            vk::Format src_pixel_format, vk::Format dst_pixel_format,
                                            vk::Image source, vk::Image dest) {
+    if (std::getenv("SHADPS4_DBG_FMT") != nullptr) { LOG_INFO(Render_Vulkan, "PRESERVE_BRANCH msreinterpret {}x{}", width, height); }
     const vk::ImageViewUsageCreateInfo color_usage_ci{.usage = vk::ImageUsageFlagBits::eSampled};
     const vk::ImageViewCreateInfo color_view_ci = {
         .pNext = &color_usage_ci,
@@ -155,6 +157,16 @@ void BlitHelper::CopyBetweenMsImages(u32 width, u32 height, vk::SampleCountFlagB
                                      vk::Format pixel_format, bool src_msaa, vk::Image source,
                                      vk::Image dest) {
     const vk::ImageViewUsageCreateInfo src_usage_ci{.usage = vk::ImageUsageFlagBits::eSampled};
+    {
+        static const bool trace_blit = [] { const char* v = std::getenv("SHADPS4_DBG_MSAA"); return v != nullptr && v[0] == '1'; }();
+        if (trace_blit) {
+            static std::atomic<u32> traced{};
+            if (traced.fetch_add(1) < 300) {
+                LOG_INFO(Render_Vulkan, "MS_BLIT {}x{} samples={} src_msaa={}", width, height,
+                         static_cast<u32>(samples), src_msaa);
+            }
+        }
+    }
     const vk::ImageViewCreateInfo src_view_ci = {
         .pNext = &src_usage_ci,
         .image = source,
@@ -371,6 +383,8 @@ void BlitHelper::CreateShaders() {
     const auto device = instance.GetDevice();
     fs_tri_vertex =
         Vulkan::Compile(HostShaders::FS_TRI_VERT, vk::ShaderStageFlagBits::eVertex, device);
+    copy32_comp = Vulkan::Compile(HostShaders::COPY_REINTERPRET_32BPP_COMP,
+                                  vk::ShaderStageFlagBits::eCompute, device);
     color_to_ms_depth_frag = Vulkan::Compile(HostShaders::COLOR_TO_MS_DEPTH_FRAG,
                                              vk::ShaderStageFlagBits::eFragment, device);
     src_msaa_copy_frag = Vulkan::Compile(HostShaders::MS_IMAGE_BLIT_FRAG,

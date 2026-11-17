@@ -5,6 +5,7 @@
 #include <magic_enum/magic_enum.hpp>
 
 #include "common/assert.h"
+#include "core/vr/frame_timeline.h"
 #include "common/debug.h"
 #include "common/logging/log.h"
 #include "common/singleton.h"
@@ -479,7 +480,16 @@ int PS4_SYSV_ABI sceKernelWaitEqueue(OrbisKernelEqueue eq, OrbisKernelEvent* ev,
         return ORBIS_KERNEL_ERROR_EINVAL;
     }
 
+    if (Core::Vr::FrameTimeline::Enabled()) {
+        Core::Vr::FrameTimeline::MarkStr("eq_wait_begin", std::string{equeue->GetName()}.c_str(),
+                                         static_cast<u32>(num), 0);
+    }
     *out = equeue->WaitForEvents(ev, num, timo);
+    if (Core::Vr::FrameTimeline::Enabled() && *out > 0) {
+        Core::Vr::FrameTimeline::MarkStr("eq_wait_end", std::string{equeue->GetName()}.c_str(),
+                                         static_cast<u32>(ev[0].filter),
+                                         static_cast<u32>(ev[0].ident));
+    }
 
     if (*out == 0) {
         return ORBIS_KERNEL_ERROR_ETIMEDOUT;

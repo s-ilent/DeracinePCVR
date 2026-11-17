@@ -53,6 +53,14 @@ public:
     Foveation(const Foveation&) = delete;
     Foveation& operator=(const Foveation&) = delete;
 
+    /// Whether the map should follow the eyes (SHADPS4_VR_FOVEATION_GAZE=1) instead of being
+    /// centred on the picture.
+    static bool GazeDriven();
+
+    /// Re-centres the maps on where the eyes look, if they have moved. Cheap when they have
+    /// not; leaves the maps as they are when no gaze is known.
+    void Refresh();
+
     /// The map for a render area of that size, made the first time it is asked for (which
     /// ends the render pass being recorded). Null where the GPU cannot shade coarsely. (With
     /// SHADPS4_DBG_AB_ONLY=fov, the level below the one asked for while that is left out.)
@@ -70,10 +78,20 @@ private:
         int level{};
         vk::Image image{};
         VmaAllocation_T* allocation{};
+        /// The rates last written, and the host buffer they go through, kept so a map can
+        /// be re-centred on a new gaze without making anything new.
+        u32 columns{};
+        u32 rows{};
+        VkBuffer buffer{};
+        VmaAllocation_T* buffer_allocation{};
+        void* buffer_data{};
+        u32 revision{};
         vk::ImageView view{};
     };
 
     bool Make(Map& map);
+    void ComputeRates(Map& map, std::vector<u8>& rates) const;
+    bool UploadRates(Map& map, const std::vector<u8>& rates);
 
     const Instance& instance;
     Scheduler& scheduler;

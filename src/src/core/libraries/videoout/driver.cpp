@@ -19,6 +19,7 @@
 #include "core/libraries/hmd/hmd.h"
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/videoout/driver.h"
+#include "core/vr/frame_timeline.h"
 #include "core/libraries/videoout/videoout_error.h"
 #include "imgui/renderer/imgui_core.h"
 #include "video_core/amdgpu/liverpool.h"
@@ -281,6 +282,7 @@ int VideoOutDriver::ChangeBufferAttribute(VideoOutPort* port, s32 attributeIndex
 }
 
 void VideoOutDriver::Flip(const Request& req) {
+    Core::Vr::FrameTimeline::Mark("present_begin");
     if (present_traces.fetch_add(1, std::memory_order_relaxed) < 32) {
         LOG_INFO(Lib_VideoOut,
                  "BACHATA_FLIP_TRACE stage=present index={} arg={} eop={} frame={}", req.index,
@@ -327,10 +329,12 @@ void VideoOutDriver::Flip(const Request& req) {
     }
 
     FinishFlip(req.port, req.index, req.flip_arg, req.eop, req.lock_generation);
+    Core::Vr::FrameTimeline::Mark("present_end");
 }
 
 void VideoOutDriver::FinishFlip(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop,
                                 u64 lock_generation) {
+    if (port == &main_port) { Core::Vr::FrameTimeline::Mark("flip_done"); }
     // Update flip status.
     {
         std::unique_lock lock{port->port_mutex};
@@ -497,6 +501,7 @@ bool VideoOutDriver::SubmitHmdFrame(VideoOutPort* port, const HmdFrame& hmd_fram
     // The eye textures live in the texture cache, so the frame is composed on the GPU thread.
     // Where the head was for it is worked out here and now: the seat the title's pose was
     // counted from may be another by the time the GPU thread gets to the frame.
+    Core::Vr::FrameTimeline::Mark("guest_flip_submit");
     HmdFrame frame = hmd_frame;
     frame.render_pose = Core::Vr::Runtime::Instance().ToHostSpace(hmd_frame.render_pose);
     const u32 frame_id = Core::Vr::Runtime::Instance().NextFrameId();
@@ -505,6 +510,7 @@ bool VideoOutDriver::SubmitHmdFrame(VideoOutPort* port, const HmdFrame& hmd_fram
     if (started != std::chrono::steady_clock::time_point{}) {
         Vulkan::FrameStats::Time(Vulkan::FrameStats::Stage::Submitting, handed_over - started);
     }
+    Core::Vr::FrameTimeline::Mark("gpup_queued", frame_id);
     liverpool->SendCommand([=, this]() {
         SubmitHmdFrameInternal(port, frame, frame_id, started, handed_over);
     });
@@ -515,6 +521,7 @@ void VideoOutDriver::SubmitHmdFrameInternal(VideoOutPort* port, const HmdFrame& 
                                             u32 frame_id,
                                             std::chrono::steady_clock::time_point started,
                                             std::chrono::steady_clock::time_point handed_over) {
+    Core::Vr::FrameTimeline::Mark("gpu_take", frame_id);
     u32 eye_width = 0;
     u32 eye_height = 0;
     const Vulkan::HmdFrames frames =
@@ -526,7 +533,12 @@ void VideoOutDriver::SubmitHmdFrameInternal(VideoOutPort* port, const HmdFrame& 
         });
         return;
     }
-    Vulkan::FrameStats::Time(Vulkan::FrameStats::Stage::CatchUp,
+    {
+        static std::atomic<u32> reported{};
+        if ((reported.fetch_add(1, std::memory_order_relaxed) % 240) == 0) {
+            LOG_INFO(Lib_VideoOut, "EYE SIZE {}x{}", eye_width, eye_height);
+        }
+    }    Vulkan::FrameStats::Time(Vulkan::FrameStats::Stage::CatchUp,
                              std::chrono::steady_clock::now() - handed_over);
     Vulkan::GpuProfile::NoteFrameDone();
     Vulkan::FrameStats::NoteHmdFrame();
@@ -866,6 +878,7 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
 }
 
 void VideoOutDriver::SignalVblank(VideoOutPort& port) {
+    if (&port == &main_port) { Core::Vr::FrameTimeline::Mark("vblank"); }
     // Needs lock here as can be concurrently read by `sceVideoOutGetVblankStatus`
     std::scoped_lock lock{port.vo_mutex};
     auto& vblank_status = port.vblank_status;

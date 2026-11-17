@@ -34,6 +34,12 @@ public:
                                    vk::Format src_pixel_format, vk::Format dst_pixel_format,
                                    vk::Image source, vk::Image dest);
 
+    /// Copies `source` into `dest` bit for bit, both single sampled 32-bit images whose formats
+    /// differ only in meaning (a depth representation and a colour one of the same memory).
+    /// Nothing is converted: the same 32-bit words land in the other image. Both images are
+    /// moved to GENERAL, written, and left readable by shaders.
+    void CopyReinterpret32(u32 width, u32 height, vk::Image source, vk::Image dest);
+
     void CopyBetweenMsImages(u32 width, u32 height, vk::SampleCountFlagBits samples,
                              vk::Format pixel_format, bool src_msaa, vk::Image source,
                              vk::Image dest);
@@ -80,6 +86,11 @@ private:
     Vulkan::DescriptorHeap desc_heap;
     vk::UniqueDescriptorSetLayout single_texture_descriptor_set_layout;
     vk::UniquePipelineLayout single_texture_pl_layout;
+    vk::ShaderModule copy32_comp;
+    vk::UniqueDescriptorSetLayout copy32_set_layout;
+    vk::UniquePipelineLayout copy32_pl_layout;
+    vk::Pipeline copy32_pipeline{};
+    vk::UniqueDescriptorPool copy32_pool;
     vk::ShaderModule fs_tri_vertex;
     vk::ShaderModule color_to_ms_depth_frag;
     vk::ShaderModule src_msaa_copy_frag;

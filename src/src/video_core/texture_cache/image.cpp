@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <cstring>
+#include <memory>
 #include <cstdlib>
 #include <ranges>
 #include "common/assert.h"
+#include "core/vr/frame_timeline.h"
 #include "common/logging/log.h"
 #include "core/known_title.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
@@ -286,6 +288,21 @@ Image::Image(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
 
     backing = &backing_images.emplace_back();
     backing->num_samples = info.num_samples;
+    {
+        // SHADPS4_DBG_SAMPLES=1: what the images were actually made with.
+        static const bool trace_samples = [] {
+            const char* v = std::getenv("SHADPS4_DBG_SAMPLES");
+            return v != nullptr && v[0] == '1';
+        }();
+        if (trace_samples) {
+            static std::atomic<u32> logged{};
+            if (info.size.width >= 2000 && logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+                LOG_INFO(Render_Vulkan, "SAMPLES image {}x{} samples={} fmt={}",
+                         info.size.width, info.size.height, info.num_samples,
+                         static_cast<u32>(info.pixel_format));
+            }
+        }
+    }
     backing->image = UniqueImage{instance->GetDevice(), instance->GetAllocator()};
     backing->image.Create(image_ci, ViewFormatsFor(image_ci.format, info.props.is_depth));
 
@@ -716,7 +733,49 @@ static std::pair<u32, u32> SanitizeCopyLayers(const ImageInfo& src_info, const I
     return std::make_pair(src_layers, dst_layers);
 }
 
+namespace {
+/// GPU timestamps around the full-surface transfers only, so their cost is measured rather than
+/// inferred from the gap around them. SHADPS4_DBG_XFER=1.
+struct CopyTiming {
+    vk::QueryPool pool{};
+    u32 used{};
+    static constexpr u32 Capacity = 512;
+    u64 last_report{};
+};
+CopyTiming g_copy_timing;
+} // Anonymous namespace
 void Image::CopyImage(Image& src_image) {
+    // A copy of an image into itself changes nothing, and Vulkan does not allow the same
+    // image as both source and destination of a copy: drivers may stall on it (the cost
+    // seen here was milliseconds for a 5760x3240 copy of a picture onto itself) or leave
+    // it undefined. Titles ask for it; it is dropped here.
+    if (std::addressof(src_image) == this) {
+        return;
+    }
+    Core::Vr::FrameTimeline::MarkStr("img_copy", "", static_cast<u32>(info.size.width), static_cast<u32>(info.size.height));
+    {
+        // SHADPS4_DBG_IMGCOPY=1: what each full-surface copy is, for judging whether it
+        // can be avoided rather than made cheaper.
+        static const bool trace_copy = [] {
+            const char* value = std::getenv("SHADPS4_DBG_IMGCOPY");
+            return value != nullptr && value[0] == '1';
+        }();
+        if (trace_copy) {
+            static std::atomic<u32> traced{};
+            if (traced.fetch_add(1, std::memory_order_relaxed) < 400) {
+                LOG_INFO(Render_Vulkan,
+                         "IMGCOPY src={:#x} dst={:#x} {}x{} fmt={}/{} samples={}/{} "
+                         "levels={}/{} layers={}/{}",
+                         src_image.info.guest_address, info.guest_address,
+                         info.size.width, info.size.height,
+                         static_cast<u32>(src_image.info.pixel_format),
+                         static_cast<u32>(info.pixel_format), src_image.info.num_samples,
+                         info.num_samples, src_image.info.resources.levels,
+                         info.resources.levels, src_image.info.resources.layers,
+                         info.resources.layers);
+            }
+        }
+    }
     Vulkan::GpuProfile::Note(Vulkan::GpuProfile::HostWork::ImageCopy);
     const auto& src_info = src_image.info;
 
@@ -810,15 +869,65 @@ void Image::CopyImage(Image& src_image) {
 
     auto cmdbuf = scheduler->CommandBuffer();
 
+    static const bool time_transfer = [] { const char* v = std::getenv("SHADPS4_DBG_XFER"); return v != nullptr && v[0] == '1'; }();
+    const bool timed_transfer = time_transfer && g_copy_timing.used + 2 <= CopyTiming::Capacity;
+    if (timed_transfer) {
+        const auto device = instance->GetDevice();
+        if (!g_copy_timing.pool) {
+            const vk::QueryPoolCreateInfo pool_ci{.queryType = vk::QueryType::eTimestamp,
+                                               .queryCount = CopyTiming::Capacity};
+            g_copy_timing.pool = device.createQueryPool(pool_ci).value;
+        }
+        cmdbuf.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, g_copy_timing.pool,
+                              g_copy_timing.used);
+    }
     if (!regions.empty()) {
         cmdbuf.copyImage(src_image.GetImage(), src_image.backing->state.layout, GetImage(),
                          backing->state.layout, regions);
+    if (timed_transfer) {
+        cmdbuf.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, g_copy_timing.pool,
+                              g_copy_timing.used + 1);
+        g_copy_timing.used += 2;
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now().time_since_epoch())
+                             .count();
+        if (g_copy_timing.used >= CopyTiming::Capacity ||
+            now - g_copy_timing.last_report >= 1000) {
+            const auto device2 = instance->GetDevice();
+            std::array<u64, CopyTiming::Capacity> stamps{};
+            const vk::Result read = device2.getQueryPoolResults(
+                g_copy_timing.pool, 0, g_copy_timing.used,
+                g_copy_timing.used * sizeof(u64), stamps.data(), sizeof(u64),
+                vk::QueryResultFlagBits::e64);
+            if (read == vk::Result::eSuccess) {
+                u64 total = 0;
+                u32 n = 0;
+                for (u32 q = 0; q + 1 < g_copy_timing.used; q += 2) {
+                    if (stamps[q + 1] > stamps[q]) {
+                        total += stamps[q + 1] - stamps[q];
+                        ++n;
+                    }
+                }
+                if (n > 0) {
+                    LOG_INFO(Render_Vulkan,
+                             "XFER_GPU copies={} avg={:.3f} ms total={:.3f} ms", n,
+                             static_cast<double>(total) / n / 1e6,
+                             static_cast<double>(total) / 1e6);
+                }
+            }
+            device2.resetQueryPool(g_copy_timing.pool, 0, CopyTiming::Capacity);
+            g_copy_timing.used = 0;
+            g_copy_timing.last_report = now;
+        }
+    }
     }
 
     Transit(vk::ImageLayout::eGeneral,
             vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eTransferRead, {});
 }
 void Image::CopyImageWithBuffer(Image& src_image, vk::Buffer buffer, u64 offset) {
+    if (std::getenv("SHADPS4_DBG_FMT") != nullptr) { LOG_INFO(Render_Vulkan, "PRESERVE_BRANCH viabuffer {}x{} samples={}/{}", info.size.width, info.size.height, src_image.info.num_samples, info.num_samples); }
+    Core::Vr::FrameTimeline::MarkStr("img_copy_buf", "", static_cast<u32>(info.size.width), static_cast<u32>(info.size.height));
     Vulkan::GpuProfile::Note(Vulkan::GpuProfile::HostWork::ImageCopy);
     const auto& src_info = src_image.info;
     const u32 num_mips = std::min(src_info.resources.levels, info.resources.levels);
@@ -900,6 +1009,7 @@ void Image::CopyImageWithBuffer(Image& src_image, vk::Buffer buffer, u64 offset)
 }
 
 void Image::CopyMip(Image& src_image, u32 mip, u32 slice) {
+    Core::Vr::FrameTimeline::MarkStr("img_copy_mip", "", static_cast<u32>(info.size.width), static_cast<u32>(info.size.height));
     Vulkan::GpuProfile::Note(Vulkan::GpuProfile::HostWork::ImageCopy);
     const auto& src_info = src_image.info;
 
@@ -944,6 +1054,7 @@ void Image::CopyMip(Image& src_image, u32 mip, u32 slice) {
 
 void Image::Resolve(Image& src_image, const VideoCore::SubresourceRange& mrt0_range,
                     const VideoCore::SubresourceRange& mrt1_range) {
+    Core::Vr::FrameTimeline::MarkStr("img_resolve", "", static_cast<u32>(info.size.width), static_cast<u32>(info.size.height));
     Vulkan::GpuProfile::Note(Vulkan::GpuProfile::HostWork::ImageCopy);
     SetBackingSamples(1, false);
     scheduler->EndRendering();
@@ -1090,6 +1201,20 @@ void Image::SetBackingSamples(u32 num_samples, bool copy_backing) {
     });
     if (it == backing_images.end()) {
         // What the current image allows its views goes for this one too.
+        {
+            // SHADPS4_DBG_MSAA=1: how often a picture is rebuilt to change its sample
+            // count, which copies its contents through a full-screen draw.
+            static const bool trace_msaa = [] { const char* v = std::getenv("SHADPS4_DBG_MSAA"); return v != nullptr && v[0] == '1'; }();
+            if (trace_msaa) {
+                static std::atomic<u32> traced{};
+                if (traced.fetch_add(1) < 300) {
+                    LOG_INFO(Render_Vulkan,
+                             "MSAA_SWAP {:#x} {}x{} backing {} -> {} samples, copy={}",
+                             info.guest_address, info.size.width, info.size.height,
+                             backing->num_samples, num_samples, copy_backing);
+                }
+            }
+        }
         const auto view_formats = backing->image.view_formats;
         new_backing = &backing_images.emplace_back();
         new_backing->image = UniqueImage{instance->GetDevice(), instance->GetAllocator()};

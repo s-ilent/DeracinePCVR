@@ -11,6 +11,7 @@
 #include "core/libraries/kernel/process.h"
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/libs.h"
+#include "core/vr/frame_timeline.h"
 #include "core/vr/vr_runtime.h"
 
 #include <algorithm>
@@ -34,14 +35,12 @@ OrbisCameraConfigExtention output_config0, output_config1;
 // A connected virtual headset brings a virtual PlayStation Camera along, because titles will not
 // start head tracking without one. It never touches a host webcam: tracking comes from the host
 // headset, so all the guest ever sees are blank frames arriving at the sensor's frame rate.
-static constexpr u64 VirtualFramePeriodUs = 1000000 / 60;
+static constexpr u64 VirtualFramePeriodUs = 1000000 / 120;
 static std::vector<u8> g_virtual_frame;
 static bool g_virtual_started = false;
 static u64 g_virtual_frame_count = 0;
 static u64 g_virtual_next_frame_time = 0;
 static u64 g_virtual_frame_time = 0;
-/// How many frames the guest had presented when the sensor delivered its latest frame.
-static u64 g_virtual_guest_frames = 0;
 // Titles read the sensor settings back out of each frame's metadata to tell whether the frame
 // was captured with the exposure tracking needs, so the virtual sensor has to remember them.
 static OrbisCameraExposureGain g_virtual_exposure_gain[ORBIS_CAMERA_MAX_DEVICE_NUM]{};
@@ -59,30 +58,34 @@ static s32 GetVirtualFrameData(OrbisCameraFrameData* frame_data) {
         return ORBIS_CAMERA_ERROR_NOT_START;
     }
 
-    // A read either asks for the frame after the one it got last, and then blocks until the
-    // sensor delivers it, or takes the latest frame as it is.
+    // A read either asks for the frame after the one it got last, and then waits for the sensor
+    // to deliver it, or takes the latest frame as it is. The sensor runs on its own clock: it
+    // never waits for the title to present a frame, because a title that reads the camera before
+    // it presents would then wait for a frame only its own return could produce.
     static constexpr u32 ReadModeWaitNextFrame = 1;
-    if ((frame_data->readMode & ReadModeWaitNextFrame) != 0 || g_virtual_frame_count == 0) {
-        const u64 now = Libraries::Kernel::sceKernelGetProcessTime();
+    Core::Vr::FrameTimeline::Mark("cam_read_begin");
+    const u64 now = Libraries::Kernel::sceKernelGetProcessTime();
+    if (g_virtual_frame_count == 0) {
+        g_virtual_frame_time = now;
+        g_virtual_next_frame_time = now + VirtualFramePeriodUs;
+        ++g_virtual_frame_count;
+    } else if ((frame_data->readMode & ReadModeWaitNextFrame) != 0) {
         if (g_virtual_next_frame_time > now) {
             std::this_thread::sleep_for(
                 std::chrono::microseconds(g_virtual_next_frame_time - now));
         }
-        // Titles keep what they read in a ring of three entries: one thread reads the camera
-        // into the next entry while the main thread uses the newest complete one, trusting that
-        // it never falls two camera frames behind. A title that is emulated slower than a
-        // console runs it does, and finds the entry it is looking at wiped for reuse. So this
-        // sensor never runs ahead of the title: a frame for every two the title presents. The
-        // time limit keeps the camera alive while the title presents nothing at all.
-        static constexpr auto GuestFrameTimeout = std::chrono::milliseconds{200};
-        g_virtual_guest_frames =
-            Core::GuestCpu::WaitForGuestFrame(g_virtual_guest_frames + 1, GuestFrameTimeout);
-
-        g_virtual_frame_time = Libraries::Kernel::sceKernelGetProcessTime();
-        g_virtual_next_frame_time =
-            std::max(g_virtual_next_frame_time, g_virtual_frame_time) + VirtualFramePeriodUs;
+        // One new frame per read at most: the sensor never runs further ahead of the title than
+        // the frame the read asked for. A clock that fell behind (a pause) restarts from here
+        // rather than replaying timestamps from the past.
+        g_virtual_frame_time = std::max(g_virtual_next_frame_time, now);
+        g_virtual_next_frame_time = g_virtual_frame_time + VirtualFramePeriodUs;
+        ++g_virtual_frame_count;
+    } else if (now >= g_virtual_next_frame_time) {
+        g_virtual_frame_time = now;
+        g_virtual_next_frame_time = now + VirtualFramePeriodUs;
         ++g_virtual_frame_count;
     }
+    Core::Vr::FrameTimeline::Mark("cam_read_end");
     const u64 timestamp = g_virtual_frame_time;
     const u64 frame_number = g_virtual_frame_count - 1;
 
@@ -1154,8 +1157,7 @@ s32 PS4_SYSV_ABI sceCameraStart(s32 handle, OrbisCameraStartParameter* param) {
         g_virtual_frame.assign(c_width * c_height * 2, 0);
         g_virtual_started = true;
         g_virtual_next_frame_time = 0;
-        g_virtual_guest_frames = Core::GuestCpu::GuestFrameCount();
-        return ORBIS_OK;
+            return ORBIS_OK;
     }
 
     if (param->formatLevel[0] > 1 || param->formatLevel[1] > 1) {

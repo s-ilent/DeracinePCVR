@@ -10,6 +10,7 @@
 #include <thread>
 
 #include "common/assert.h"
+#include "core/vr/frame_timeline.h"
 #include "common/debug.h"
 #include "common/elf_info.h"
 #include "common/logging/log.h"
@@ -2334,7 +2335,15 @@ int PS4_SYSV_ABI sceGnmSubmitDone() {
         std::this_thread::sleep_for(std::chrono::milliseconds{frame_delay});
     }
     Core::KnownTitle::OnFrameSubmitted();
-    WaitGpuIdle();
+    Core::Vr::FrameTimeline::Mark("gnm_done_begin");
+    static const bool skip_drain = [] {
+        const char* value = std::getenv("SHADPS4_GNM_NO_DRAIN");
+        return value != nullptr && value[0] == '1';
+    }();
+    if (!skip_drain) {
+        WaitGpuIdle();
+    }
+    Core::Vr::FrameTimeline::Mark("gnm_done_end");
     if (!liverpool->IsGpuIdle()) {
         submission_lock = true;
     }

@@ -14,6 +14,9 @@
 #include "video_core/renderer_vulkan/vk_gpu_profile.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
+#include "video_core/texture_cache/preserve_tracker.h"
+#include "video_core/texture_cache/alias_trace.h"
+#include "core/vr/frame_timeline.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_hle.h"
 #include "video_core/renderer_vulkan/vk_title_upscale.h"
@@ -30,6 +33,10 @@
 #endif
 
 namespace Vulkan {
+
+namespace {
+std::atomic<u32> g_render_passes{};
+} // Anonymous namespace
 
 static Shader::PushData MakeUserData(const AmdGpu::Regs& regs) {
     // TODO(roamic): Add support for multiple viewports and geometry shaders when ViewportIndex
@@ -1046,6 +1053,24 @@ bool Rasterizer::IsComputeImageCopy(const Pipeline* pipeline) {
     // Perform image copy
     VideoCore::Image& src_image = desc0.is_written ? image1 : image0;
     VideoCore::Image& dst_image = desc0.is_written ? image0 : image1;
+    {
+        // SHADPS4_DBG_COMPUTE_COPY=1: what this copy is, for working out whether it is needed.
+        static const bool trace_copy = [] {
+            const char* value = std::getenv("SHADPS4_DBG_COMPUTE_COPY");
+            return value != nullptr && value[0] == '1';
+        }();
+        if (trace_copy) {
+            LOG_INFO(Render_Vulkan,
+                     "COMPUTE_COPY src={:#x} dst={:#x} size={:#x} src_img={} dst_img={} "
+                     "dims={}x{} samples={}/{} levels={}/{} layers={}/{}",
+                     src_image.info.guest_address, dst_image.info.guest_address,
+                     static_cast<u64>(src_image.info.guest_size), image0_id.index, image1_id.index,
+                     src_image.info.size.width, dst_image.info.size.height,
+                     src_image.info.num_samples, dst_image.info.num_samples,
+                     src_image.info.resources.levels, dst_image.info.resources.levels,
+                     src_image.info.resources.layers, dst_image.info.resources.layers);
+        }
+    }
     if (instance.IsMaintenance8Supported() ||
         src_image.info.props.is_depth == dst_image.info.props.is_depth) {
         dst_image.CopyImage(src_image);
@@ -1464,6 +1489,29 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
                 Core::KnownTitle::IsSceneEnlargement(stage.pgm_hash)) {
                 NoteFinalPass(image);
             }
+            if (VideoCore::AliasTrace::Enabled() &&
+                VideoCore::AliasTrace::Hits(image.info.guest_address, image.info.guest_size)) {
+                (is_storage ? VideoCore::AliasTrace::binds_storage
+                            : VideoCore::AliasTrace::binds_sampled)
+                    .fetch_add(1, std::memory_order_relaxed);
+                if (VideoCore::AliasTrace::FirstTime(
+                        0x40u ^ (stage.pgm_hash << 1) ^ static_cast<u64>(is_storage))) {
+                    LOG_INFO(Render_Vulkan,
+                         "ALIAS seq={} op=bind shader={:#x} stage={} kind={} asked(addr={:#x} "
+                         "binding={} fmt={} type={} depth={} storage={}) found(fmt={} {}x{}x{} "
+                         "levels={} layers={} samples={} depth={} layout={})",
+                         VideoCore::AliasTrace::NextSeq(), stage.pgm_hash,
+                         static_cast<u32>(stage.stage), is_storage ? "storage" : "sampled",
+                         desc.info.guest_address, static_cast<u32>(desc.type),
+                         vk::to_string(desc.info.pixel_format),
+                         static_cast<u32>(desc.info.type), desc.info.props.is_depth ? 1 : 0,
+                         is_storage ? 1 : 0, vk::to_string(image.info.pixel_format),
+                         image.info.size.width, image.info.size.height, image.info.size.depth,
+                         image.info.resources.levels, image.info.resources.layers,
+                         image.info.num_samples, image.info.props.is_depth ? 1 : 0,
+                         vk::to_string(image.backing->state.layout));
+                }
+            }
             image_infos.emplace_back(VK_NULL_HANDLE, *image_view.image_view,
                                      image.backing->state.layout);
         }
@@ -1574,6 +1622,29 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
                           format == vk::Format::eB8G8R8A8Srgb;
 
         image->usage.render_target = 1u;
+
+        if (VideoCore::AliasTrace::Enabled() &&
+            VideoCore::AliasTrace::Hits(image->info.guest_address, image->info.guest_size)) {
+            VideoCore::AliasTrace::color_targets.fetch_add(1, std::memory_order_relaxed);
+            if (is_clear) {
+                VideoCore::AliasTrace::color_clears.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (VideoCore::AliasTrace::FirstTime(0x80u ^ (key.stage_hashes[1] << 1) ^
+                                                 static_cast<u64>(is_clear) ^
+                                                 (static_cast<u64>(cb) << 63))) {
+                LOG_INFO(Render_Vulkan,
+                     "ALIAS seq={} op=color_target cb={} addr={:#x} fmt={} {}x{}x{} levels={} "
+                     "layers={} samples={} clear={} cmask={:#x} vtx={:#x} px={:#x} indices={} "
+                     "mrt={:#x}",
+                     VideoCore::AliasTrace::NextSeq(), cb, image->info.guest_address,
+                     vk::to_string(image->info.pixel_format), image->info.size.width,
+                     image->info.size.height, image->info.size.depth,
+                     image->info.resources.levels, image->info.resources.layers,
+                     image->info.num_samples, is_clear ? 1 : 0,
+                     regs.color_buffers[cb].CmaskAddress(), key.stage_hashes[0],
+                     key.stage_hashes[1], regs.num_indices, key.mrt_mask);
+            }
+        }
     }
     for (u32 cb = state.num_color_attachments; cb < state.color_attachments.size(); ++cb) {
         state.color_attachments[cb] = {};
@@ -1586,7 +1657,21 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
         auto& image = texture_cache.GetImage(image_id);
 
         const auto slice = image_view.info.range.base.layer;
-        const bool is_depth_clear = regs.depth_render_control.depth_clear_enable ||
+        if (VideoCore::Alias3DTracker::WasExpanded(image.info.guest_address)) {
+        if (regs.depth_render_control.depth_clear_enable) {
+            VideoCore::Alias3DTracker::used_cleared.fetch_add(1);
+        } else {
+            VideoCore::Alias3DTracker::used_loaded.fetch_add(1);
+        }
+    }
+    if (image.info.guest_address != 0 && VideoCore::PreserveTracker::WasSkipped(image.info.guest_address)) {
+        if (regs.depth_render_control.depth_clear_enable) {
+            VideoCore::PreserveTracker::cleared_after_skip.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            VideoCore::PreserveTracker::loaded_after_skip.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    const bool is_depth_clear = regs.depth_render_control.depth_clear_enable ||
                                     texture_cache.IsMetaCleared(htile_address, slice);
         const bool is_stencil_clear = regs.depth_render_control.stencil_clear_enable;
         texture_cache.TouchMeta(htile_address, slice, false);
@@ -1616,6 +1701,58 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
         }
 
         image.usage.depth_target = true;
+
+        if (VideoCore::AliasTrace::Enabled() && VideoCore::AliasTrace::Hits(image.info.guest_address, image.info.guest_size)) {
+            VideoCore::AliasTrace::depth_targets.fetch_add(1, std::memory_order_relaxed);
+            if (is_depth_clear) {
+                VideoCore::AliasTrace::depth_clears.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                VideoCore::AliasTrace::depth_loads.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (regs.depth_control.stencil_enable) {
+                VideoCore::AliasTrace::stencil_enabled_passes.fetch_add(
+                    1, std::memory_order_relaxed);
+                if (regs.stencil_control.stencil_zpass_front != AmdGpu::StencilFunc::Keep ||
+                    regs.stencil_control.stencil_fail_front != AmdGpu::StencilFunc::Keep ||
+                    regs.stencil_control.stencil_zfail_front != AmdGpu::StencilFunc::Keep) {
+                    VideoCore::AliasTrace::stencil_write_passes.fetch_add(
+                        1, std::memory_order_relaxed);
+                }
+            }
+            if (VideoCore::AliasTrace::FirstTime(
+                    0x100u ^ (key.stage_hashes[1] << 1) ^ static_cast<u64>(is_depth_clear) ^
+                    (static_cast<u64>(is_stencil_clear) << 60) ^
+                    (static_cast<u64>(regs.depth_control.stencil_enable) << 61))) {
+                LOG_INFO(Render_Vulkan,
+                     "ALIAS seq={} op=depth_target addr={:#x} fmt={} {}x{} samples={} "
+                     "depth_valid={} bits={} stencil_valid={} stencil_fmt={} clear_depth={} "
+                     "clear_stencil={} depth_copy={} stencil_copy={} decompress={} "
+                     "z_read_only={} stencil_read_only={} depth_enable={} depth_write={} "
+                     "depth_func={} stencil_enable={} stencil_front={}/{}/{} "
+                     "stencil_write_mask={:#x} vtx={:#x} px={:#x} indices={} mrt={:#x}",
+                     VideoCore::AliasTrace::NextSeq(), image.info.guest_address,
+                     vk::to_string(image.info.pixel_format), image.info.size.width,
+                     image.info.size.height, image.info.num_samples,
+                     regs.depth_buffer.DepthValid() ? 1 : 0, regs.depth_buffer.NumBits(),
+                     regs.depth_buffer.StencilValid() ? 1 : 0,
+                     static_cast<u32>(regs.depth_buffer.stencil_info.format),
+                     is_depth_clear ? 1 : 0, is_stencil_clear ? 1 : 0,
+                     regs.depth_render_control.depth_copy ? 1 : 0,
+                     regs.depth_render_control.stencil_copy ? 1 : 0,
+                     regs.depth_render_control.decompress_enable ? 1 : 0,
+                     regs.depth_view.z_read_only ? 1 : 0,
+                     regs.depth_view.stencil_read_only ? 1 : 0,
+                     regs.depth_control.depth_enable ? 1 : 0,
+                     regs.depth_control.depth_write_enable ? 1 : 0,
+                     static_cast<u32>(regs.depth_control.depth_func),
+                     regs.depth_control.stencil_enable ? 1 : 0,
+                     static_cast<u32>(regs.stencil_control.stencil_fail_front),
+                     static_cast<u32>(regs.stencil_control.stencil_zpass_front),
+                     static_cast<u32>(regs.stencil_control.stencil_zfail_front),
+                     static_cast<u32>(regs.stencil_ref_front.stencil_write_mask),
+                     key.stage_hashes[0], key.stage_hashes[1], regs.num_indices, key.mrt_mask);
+            }
+        }
     } else {
         state.depth_stencil_attachment = {};
     }
@@ -1628,6 +1765,7 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
     // shaded more coarsely towards their edges, where it is asked for.
     if (foveation && state.num_layers == 1 && !display_target &&
         Core::KnownTitle::IsSceneSize(state.width, state.height)) {
+        foveation->Refresh();
         state.shading_rate_view = foveation->MapFor(state.width, state.height);
     }
 
@@ -1675,7 +1813,9 @@ void Rasterizer::Resolve() {
     ScopeMarkerBegin(fmt::format("Resolve:MRT0={:#x}:MRT1={:#x}",
                                  liverpool->regs.color_buffers[0].Address(),
                                  liverpool->regs.color_buffers[1].Address()));
+    Core::Vr::FrameTimeline::Mark("resolve_begin", static_cast<u32>(mrt1_image.info.size.width));
     mrt1_image.Resolve(mrt0_image, mrt0_desc.view_info.range, mrt1_desc.view_info.range);
+    Core::Vr::FrameTimeline::Mark("resolve_end");
     ScopeMarkerEnd();
 }
 
@@ -1692,6 +1832,19 @@ void Rasterizer::DepthStencilCopy(bool is_depth, bool is_stencil) {
 
     auto& read_image = texture_cache.GetImage(texture_cache.FindImage(read_desc));
     auto& write_image = texture_cache.GetImage(texture_cache.FindImage(write_desc));
+
+    if (VideoCore::AliasTrace::Enabled() &&
+        (VideoCore::AliasTrace::Hits(read_image.info.guest_address, read_image.info.guest_size) ||
+         VideoCore::AliasTrace::Hits(write_image.info.guest_address, write_image.info.guest_size))) {
+        VideoCore::AliasTrace::depth_copies.fetch_add(1, std::memory_order_relaxed);
+        LOG_INFO(Render_Vulkan,
+                 "ALIAS seq={} op=depth_copy is_depth={} is_stencil={} read={:#x} write={:#x} "
+                 "read_fmt={} write_fmt={} slices={}",
+                 VideoCore::AliasTrace::NextSeq(), is_depth ? 1 : 0, is_stencil ? 1 : 0,
+                 read_image.info.guest_address, write_image.info.guest_address,
+                 vk::to_string(read_image.info.pixel_format),
+                 vk::to_string(write_image.info.pixel_format), regs.depth_view.NumSlices());
+    }
 
     VideoCore::SubresourceRange sub_range;
     sub_range.base.layer = liverpool->regs.depth_view.slice_start;
@@ -2174,3 +2327,4 @@ void Rasterizer::ScopedMarkerInsertColor(const std::string_view& str, const u32 
 }
 
 } // namespace Vulkan
+

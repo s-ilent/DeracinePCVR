@@ -441,6 +441,26 @@ int ProcessStates(s32 handle, OrbisPadData* pData, Input::GameController& contro
         }
 
         pData[i].buttons = states[i].buttonsState;
+        // Diagnostic hook, for reaching a scene no one is sitting at the keyboard for: presses
+        // Cross for 150 ms every 2 s. Off unless asked for.
+        static const bool auto_press = [] {
+            const char* value = std::getenv("SHADPS4_DBG_AUTOPRESS");
+            return value != nullptr && value[0] == '1';
+        }();
+        if (auto_press) {
+            static const auto auto_start = std::chrono::steady_clock::now();
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     std::chrono::steady_clock::now() - auto_start)
+                                     .count();
+            if (elapsed >= 8000 && elapsed < 45000 && (elapsed % 3000) < 600) {
+                pData[i].buttons |= OrbisPadButtonDataOffset::Cross;
+                static long long last_note{};
+                if (elapsed - last_note >= 1000) {
+                    last_note = elapsed;
+                    LOG_INFO(Lib_Pad, "AUTOPRESS pad {} elapsed={} ms", i, elapsed);
+                }
+            }
+        }
         pData[i].leftStick.x = states[i].axes[static_cast<int>(Input::Axis::LeftX)];
         pData[i].leftStick.y = states[i].axes[static_cast<int>(Input::Axis::LeftY)];
         pData[i].rightStick.x = states[i].axes[static_cast<int>(Input::Axis::RightX)];

@@ -26,6 +26,9 @@
 #include <filesystem>
 #include <fstream>
 #include "common/logging/log.h"
+#include "core/vr/frame_timeline.h"
+#include "core/vr/gaze_state.h"
+#include "core/vr/gaze_mapping.h"
 #include "common/path_util.h"
 #include "common/polyfill_thread.h"
 #include "common/singleton.h"
@@ -474,6 +477,10 @@ struct OpenXrHost::Impl {
     XrAction act_rumble{XR_NULL_HANDLE};
     XrPath hand_paths[2]{XR_NULL_PATH, XR_NULL_PATH};
     XrSpace controller_space{XR_NULL_HANDLE};
+    /// Where the eyes look, when the headset says (XR_EXT_eye_gaze_interaction).
+    XrAction act_gaze{XR_NULL_HANDLE};
+    XrSpace gaze_space{XR_NULL_HANDLE};
+    bool gaze_extension{};
     // Where each hand holds something, as far as the headset's runtime says where its own
     // controllers are: with a gamepad in both hands and those controllers put away, a runtime
     // that makes controllers up from the hands it sees (Virtual Desktop does) says where the
@@ -555,6 +562,32 @@ struct OpenXrHost::Impl {
             LOG_WARNING(Core_Vr, "The OpenXR runtime does not take pictures drawn with Vulkan");
             return false;
         }
+        {
+            // SHADPS4_DBG_XR_EXT=1: what the runtime offers, for choosing how to look at the eyes.
+            static const bool list_extensions = [] {
+                const char* value = std::getenv("SHADPS4_DBG_XR_EXT");
+                return value != nullptr && value[0] == '1';
+            }();
+            if (list_extensions) {
+                u32 interested = 0;
+                for (const auto& property : offered) {
+                    const std::string_view name{property.extensionName};
+                    const bool is_interesting =
+                        name.find("eye") != std::string_view::npos ||
+                        name.find("gaze") != std::string_view::npos ||
+                        name.find("foveation") != std::string_view::npos ||
+                        name.find("foveated") != std::string_view::npos;
+                    if (is_interesting) {
+                        ++interested;
+                        LOG_INFO(Core_Vr, "The runtime offers {} (version {})", name,
+                                 static_cast<u32>(property.extensionVersion));
+                    }
+                }
+                LOG_INFO(Core_Vr, "Extensions offered: {} in all, {} of them about eyes or "
+                                  "foveation",
+                         static_cast<u32>(offered.size()), interested);
+            }
+        }
         std::vector<const char*> extensions{XR_KHR_VULKAN_ENABLE_EXTENSION_NAME};
         const auto enable_if_offered = [&](const char* name) {
             const bool offered_one = has(name);
@@ -564,6 +597,9 @@ struct OpenXrHost::Impl {
             return offered_one;
         };
         hand_extension = track_hands && enable_if_offered(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
+        gaze_extension = enable_if_offered("XR_EXT_eye_gaze_interaction");
+        LOG_INFO(Core_Vr, "Eye gaze offered by the runtime: {}, enabled: {}",
+                 has("XR_EXT_eye_gaze_interaction"), gaze_extension);
         has_refresh_rate = enable_if_offered(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
 #ifdef _WIN32
         has_audio_guid = enable_if_offered(XR_OCULUS_AUDIO_DEVICE_GUID_EXTENSION_NAME);
@@ -691,6 +727,27 @@ struct OpenXrHost::Impl {
                  hands ? "tracked" : "not tracked",
                  XR_VERSION_MAJOR(requirements.minApiVersionSupported),
                  XR_VERSION_MINOR(requirements.minApiVersionSupported));
+        {
+            // What the runtime says an eye is worth, which is what a headset native to the PC
+            // presents at: the guest's own size is a PlayStation VR's, not this headset's.
+            u32 view_count = 0;
+            if (XR_SUCCEEDED(xrEnumerateViewConfigurationViews(
+                    instance, system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &view_count,
+                    nullptr)) &&
+                view_count > 0) {
+                std::vector<XrViewConfigurationView> views(
+                    view_count, XrViewConfigurationView{XR_TYPE_VIEW_CONFIGURATION_VIEW});
+                if (XR_SUCCEEDED(xrEnumerateViewConfigurationViews(
+                        instance, system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, view_count,
+                        &view_count, views.data()))) {
+                    LOG_INFO(Core_Vr,
+                             "The runtime asks for {}x{} an eye (samples up to {}x{}), {} views",
+                             views[0].recommendedImageRectWidth,
+                             views[0].recommendedImageRectHeight, views[0].maxImageRectWidth,
+                             views[0].maxImageRectHeight, view_count);
+                }
+            }
+        }
         has_hand_tracking = hands;
         FindAudioDevices();
         return true;
@@ -901,7 +958,7 @@ struct OpenXrHost::Impl {
         if (has_hand_tracking) {
             CreateHandTrackers();
         }
-        if (use_controllers || use_grips) {
+        if (use_controllers || use_grips || gaze_extension) {
             CreateActions();
         }
         if (has_refresh_rate) {
@@ -958,6 +1015,8 @@ struct OpenXrHost::Impl {
     /// button is OPTIONS. Where one of them is and how it points (the right one, unless
     /// SHADPS4_XR_PAD_HAND=left) is where the controller in the game is.
     void CreateActions() {
+        LOG_INFO(Core_Vr, "Creating actions: controllers={} grips={} gaze={}",
+                 use_controllers, use_grips, gaze_extension);
         actions_ready = false;
         XrActionSetCreateInfo set_info{XR_TYPE_ACTION_SET_CREATE_INFO};
         std::strcpy(set_info.actionSetName, "gamepad");
@@ -996,6 +1055,9 @@ struct OpenXrHost::Impl {
         made = made && make(act_options, "options", "Options", XR_ACTION_TYPE_BOOLEAN_INPUT);
         made = made && make(act_l3, "l3", "L3", XR_ACTION_TYPE_BOOLEAN_INPUT);
         made = made && make(act_pose, "controller", "Controller", XR_ACTION_TYPE_POSE_INPUT);
+        if (gaze_extension) {
+            make(act_gaze, "gaze", "Eye gaze", XR_ACTION_TYPE_POSE_INPUT);
+        }
         made = made && make(act_grip, "hands", "Hands", XR_ACTION_TYPE_POSE_INPUT, true);
         made = made &&
                make(act_rumble, "rumble", "Rumble", XR_ACTION_TYPE_VIBRATION_OUTPUT, true);
@@ -1049,6 +1111,31 @@ struct OpenXrHost::Impl {
             }
         }
 
+        if (gaze_extension && act_gaze != XR_NULL_HANDLE) {
+            XrPath gaze_path = XR_NULL_PATH;
+            XrPath gaze_pose_path = XR_NULL_PATH;
+            if (XR_SUCCEEDED(xrStringToPath(instance, "/interaction_profiles/ext/eye_gaze_interaction",
+                                            &gaze_path)) &&
+                XR_SUCCEEDED(xrStringToPath(instance, "/user/eyes_ext/input/gaze_ext/pose",
+                                            &gaze_pose_path))) {
+                XrActionSuggestedBinding gaze_binding{act_gaze, gaze_pose_path};
+                XrInteractionProfileSuggestedBinding suggested{
+                    XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+                suggested.interactionProfile = gaze_path;
+                suggested.countSuggestedBindings = 1;
+                suggested.suggestedBindings = &gaze_binding;
+                if (const XrResult result =
+                        xrSuggestInteractionProfileBindings(instance, &suggested);
+                    XR_FAILED(result)) {
+                    LOG_WARNING(Core_Vr, "The runtime takes no eye gaze bindings: {}",
+                                ResultText(instance, result));
+                    gaze_extension = false;
+                }
+            } else {
+                LOG_WARNING(Core_Vr, "The runtime has no eye gaze paths");
+                gaze_extension = false;
+            }
+        }
         XrSessionActionSetsAttachInfo attach{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
         attach.countActionSets = 1;
         attach.actionSets = &action_set;
@@ -1071,6 +1158,17 @@ struct OpenXrHost::Impl {
             space_info.subactionPath = hand_paths[hand];
             if (XR_FAILED(xrCreateActionSpace(session, &space_info, &grip_spaces[hand]))) {
                 grip_spaces[hand] = XR_NULL_HANDLE;
+            }
+        }
+        if (gaze_extension && act_gaze != XR_NULL_HANDLE) {
+            XrActionSpaceCreateInfo gaze_info{XR_TYPE_ACTION_SPACE_CREATE_INFO};
+            gaze_info.action = act_gaze;
+            gaze_info.poseInActionSpace.orientation.w = 1.0f;
+            if (XR_FAILED(xrCreateActionSpace(session, &gaze_info, &gaze_space))) {
+                gaze_space = XR_NULL_HANDLE;
+                LOG_WARNING(Core_Vr, "The eyes cannot be located");
+            } else {
+                LOG_INFO(Core_Vr, "Eye tracking is on: XR_EXT_eye_gaze_interaction");
             }
         }
         actions_ready = true;
@@ -1978,6 +2076,7 @@ struct OpenXrHost::Impl {
                 continue;
             }
 
+            Core::Vr::FrameTimeline::Mark("xr_wait_begin");
             XrFrameState frame_state{XR_TYPE_FRAME_STATE};
             if (const XrResult waited = xrWaitFrame(session, nullptr, &frame_state);
                 XR_FAILED(waited)) {
@@ -1999,6 +2098,7 @@ struct OpenXrHost::Impl {
             // point of each: the emulated headset takes its own refreshes from that. Under a
             // runtime that makes up every other picture itself that is half as often as the
             // display refreshes, which is the rate that counts here.
+            Core::Vr::FrameTimeline::Mark("xr_wait_end");
             const auto woke = Clock::now();
             float rate = frame_state.predictedDisplayPeriod > 0
                              ? 1e9f / static_cast<float>(frame_state.predictedDisplayPeriod)
@@ -2027,6 +2127,7 @@ struct OpenXrHost::Impl {
                 continue;
             }
 
+            Core::Vr::FrameTimeline::Mark("xr_begin_end");
             const XrTime pose_time =
                 frame_state.predictedDisplayTime +
                 static_cast<XrTime>(std::clamp(predict_ms, 0.0f, 80.0f) * 1e6f);
@@ -2037,10 +2138,12 @@ struct OpenXrHost::Impl {
 
             FreeCopied();
             if (const s32 index = TakeFrame(); index >= 0) {
+                Core::Vr::FrameTimeline::Mark("copy_begin");
                 const auto started = Clock::now();
                 bool blank = false;
                 const bool copied = CopyFrame(static_cast<u32>(index), blank);
                 copy_time += std::chrono::duration<double>(Clock::now() - started).count();
+                Core::Vr::FrameTimeline::Mark("copy_end");
                 std::scoped_lock lock{slot_mutex};
                 Slot& slot = slots[index];
                 if (copied) {
@@ -2189,6 +2292,79 @@ struct OpenXrHost::Impl {
             return;
         }
         const auto seen = ParallelStereoFov(eye_views[0], eye_views[1]);
+        if (gaze_extension && gaze_space != XR_NULL_HANDLE) {
+            XrSpaceLocation gaze{XR_TYPE_SPACE_LOCATION};
+            const bool located =
+                XR_SUCCEEDED(xrLocateSpace(gaze_space, view_space, time, &gaze));
+            const bool aimed =
+                located &&
+                (gaze.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0;
+            auto& gaze_state = Core::Vr::GazeState::Instance();
+            if (!aimed) {
+                gaze_state.SetValid(false);
+            } else {
+                // The way the eyes look, in the view space both the gaze and the title's own
+                // head pose are given in; the headset looks down -Z, turned by the quaternion.
+                const auto& g = gaze.pose.orientation;
+                const float gx = g.x, gy = g.y, gz = g.z, gw = g.w;
+                const float look[3]{-2.0f * (gw * gy + gz * gx), 2.0f * (gw * gx - gz * gy),
+                                    -1.0f + 2.0f * (gx * gx + gy * gy)};
+                // Into the frame the title drew with, which is not the one the head is in now:
+                // the guest's own render pose, so an overlay lands on what it drew.
+                const auto& r = shown.render_pose.orientation;
+                const float ix = -r.x, iy = -r.y, iz = -r.z, iw = r.w;
+                const float cx = iy * look[2] - iz * look[1];
+                const float cy = iz * look[0] - ix * look[2];
+                const float cz = ix * look[1] - iy * look[0];
+                const float dx = look[0] + 2.0f * (iw * cx + iy * cz - iz * cy);
+                const float dy = look[1] + 2.0f * (iw * cy + iz * cx - ix * cz);
+                const float dz = look[2] + 2.0f * (iw * cz + ix * cy - iy * cx);
+                const float forward = -dz;
+                if (forward <= 1e-4f) {
+                    // Looking behind the drawn picture: nothing to shade more coarsely.
+                    gaze_state.SetValid(false);
+                } else {
+                    // The title's projection, not the runtime's: the tangents it was given, and
+                    // per eye which side of it is "out" towards the temple.
+                    const float tan_x = dx / forward;
+                    const float tan_y = dy / forward;
+                    for (int eye = 0; eye < 2; ++eye) {
+                        const float out = eye == 0 ? shown.fov.tan_out : shown.fov.tan_in;
+                        const float in = eye == 0 ? shown.fov.tan_in : shown.fov.tan_out;
+                        const float u = (tan_x + out) / (out + in);
+                        const float v = (shown.fov.tan_top - tan_y) /
+                                        (shown.fov.tan_top + shown.fov.tan_bottom);
+                        gaze_state.SetEye(eye, std::clamp(u, 0.0f, 1.0f),
+                                          std::clamp(v, 0.0f, 1.0f));
+                    }
+                    gaze_state.SetValid(true);
+                }
+            }
+        }
+        {
+            // SHADPS4_DBG_GAZE=1: what the eyes are looking at, once a second.
+            static const bool report_gaze = [] {
+                const char* value = std::getenv("SHADPS4_DBG_GAZE");
+                return value != nullptr && value[0] == '1';
+            }();
+            static u64 last_report = 0;
+            if (report_gaze && gaze_extension && gaze_space != XR_NULL_HANDLE &&
+                time - last_report > 1000000000) {
+                XrSpaceLocation gaze{XR_TYPE_SPACE_LOCATION};
+                if (XR_SUCCEEDED(xrLocateSpace(gaze_space, view_space, time, &gaze))) {
+                    const bool aimed =
+                        (gaze.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0;
+                    const auto& o = gaze.pose.orientation;
+                    const auto& p = gaze.pose.position;
+                    LOG_INFO(Core_Vr,
+                             "GAZE aimed={} q=({:.3f},{:.3f},{:.3f},{:.3f}) "
+                             "p=({:.3f},{:.3f},{:.3f}) flags={:#x}",
+                             aimed, o.x, o.y, o.z, o.w, p.x, p.y, p.z,
+                             static_cast<u32>(gaze.locationFlags));
+                    last_report = time;
+                }
+            }
+        }
         if (seen && ++fov_samples % 600 == 1) {
             runtime.NoteHeadsetFov(*seen);
         }

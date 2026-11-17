@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/debug.h"
+#include "core/vr/frame_timeline.h"
 #include "common/elf_info.h"
 #include "common/io_file.h"
 #include "common/path_util.h"
@@ -2371,6 +2372,7 @@ Frame* Presenter::GetRenderFrame() {
     };
 
     // Wait for the presentation to be finished so all frame resources are free
+    Core::Vr::FrameTimeline::Mark("fence_wait_begin");
     while (wait() != vk::Result::eSuccess) {
         if (result == vk::Result::eTimeout) {
             if (nonblock) {

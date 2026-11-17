@@ -12,6 +12,7 @@
 
 #include "common/logging/log.h"
 #include "video_core/renderer_vulkan/vk_foveation.h"
+#include "core/vr/gaze_state.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
@@ -112,6 +113,9 @@ vk::ImageView Foveation::MapFor(u32 width, u32 height) {
 bool Foveation::Make(Map& map) {
     const u32 columns = (map.width + texel - 1) / texel;
     const u32 rows = (map.height + texel - 1) / texel;
+    map.columns = columns;
+    map.rows = rows;
+    map.revision = 0;
     const auto device = instance.GetDevice();
 
     const VkImageCreateInfo image_ci = static_cast<VkImageCreateInfo>(vk::ImageCreateInfo{
@@ -233,4 +237,127 @@ bool Foveation::Make(Map& map) {
     return true;
 }
 
+bool Foveation::GazeDriven() {
+    static const bool gaze_driven = [] {
+        const char* value = std::getenv("SHADPS4_VR_FOVEATION_GAZE");
+        return value != nullptr && value[0] == '1';
+    }();
+    return gaze_driven;
+}
+
+void Foveation::ComputeRates(Map& map, std::vector<u8>& rates) const {
+    const Rings rings = LevelRings[map.level];
+    const u8 coarsest = instance.IsFoveationRateSupported(4, 4) ? Rate(4, 4) : Rate(2, 2);
+    const auto& gaze = Core::Vr::GazeState::Instance();
+    const bool gaze_ok = GazeDriven() && gaze.valid.load(std::memory_order_relaxed);
+    // Where the eyes look, in each eye's own picture: 0..1 across and down it.
+    const float gu[2] = {gaze.u[0].load(std::memory_order_relaxed),
+                         gaze.u[1].load(std::memory_order_relaxed)};
+    const float gv[2] = {gaze.v[0].load(std::memory_order_relaxed),
+                         gaze.v[1].load(std::memory_order_relaxed)};
+    for (u32 row = 0; row < map.rows; ++row) {
+        for (u32 column = 0; column < map.columns; ++column) {
+            const float x = ((column + 0.5f) * texel / map.width) * 2.0f - 1.0f;
+            const float y = ((row + 0.5f) * texel / map.height) * 2.0f - 1.0f;
+            float out;
+            if (gaze_ok && map.columns > 1) {
+                // The picture holds an eye either side of its middle; a texel belongs to the
+                // eye whose half it falls in, and is measured from where that eye looks.
+                const int eye = x < 0.0f ? 0 : 1;
+                const float eye_u = x < 0.0f ? x + 1.0f : x;
+                const float eye_v = (y + 1.0f) * 0.5f;
+                const float dx = (eye_u - gu[eye]) * 2.0f;
+                const float dy = (eye_v - gv[eye]) * 2.0f;
+                out = std::sqrt(dx * dx + dy * dy);
+            } else {
+                out = std::sqrt(x * x + y * y);
+            }
+            rates[size_t{row} * map.columns + column] = out >= rings.coarsest ? coarsest
+                                                          : out >= rings.coarse ? Rate(2, 2)
+                                                                                : Rate(1, 1);
+        }
+    }
+}
+
+bool Foveation::UploadRates(Map& map, const std::vector<u8>& rates) {
+    const VkBufferCreateInfo buffer_ci = static_cast<VkBufferCreateInfo>(vk::BufferCreateInfo{
+        .size = rates.size(),
+        .usage = vk::BufferUsageFlagBits::eTransferSrc,
+    });
+    const VmaAllocationCreateInfo buffer_alloc_ci = {
+        .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                 VMA_ALLOCATION_CREATE_MAPPED_BIT,
+        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+    };
+    VkBuffer buffer{};
+    VmaAllocation buffer_allocation{};
+    VmaAllocationInfo buffer_info{};
+    if (vmaCreateBuffer(instance.GetAllocator(), &buffer_ci, &buffer_alloc_ci, &buffer,
+                        &buffer_allocation, &buffer_info) != VK_SUCCESS) {
+        return false;
+    }
+    std::memcpy(buffer_info.pMappedData, rates.data(), rates.size());
+    vmaFlushAllocation(instance.GetAllocator(), buffer_allocation, 0, VK_WHOLE_SIZE);
+
+    scheduler.EndRendering();
+    const auto cmdbuf = scheduler.CommandBuffer();
+    const vk::ImageSubresourceRange range{
+        .aspectMask = vk::ImageAspectFlagBits::eColor,
+        .levelCount = 1,
+        .layerCount = 1,
+    };
+    const vk::ImageMemoryBarrier2 to_copy{
+        .srcStageMask = vk::PipelineStageFlagBits2::eFragmentShadingRateAttachmentKHR,
+        .srcAccessMask = vk::AccessFlagBits2::eFragmentShadingRateAttachmentReadKHR,
+        .dstStageMask = vk::PipelineStageFlagBits2::eCopy,
+        .dstAccessMask = vk::AccessFlagBits2::eTransferWrite,
+        .oldLayout = vk::ImageLayout::eFragmentShadingRateAttachmentOptimalKHR,
+        .newLayout = vk::ImageLayout::eTransferDstOptimal,
+        .image = map.image,
+        .subresourceRange = range,
+    };
+    cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &to_copy});
+    const vk::BufferImageCopy copy{
+        .imageSubresource{
+            .aspectMask = vk::ImageAspectFlagBits::eColor,
+            .layerCount = 1,
+        },
+        .imageExtent = {map.columns, map.rows, 1},
+    };
+    cmdbuf.copyBufferToImage(vk::Buffer{buffer}, map.image, vk::ImageLayout::eTransferDstOptimal,
+                             copy);
+    const vk::ImageMemoryBarrier2 to_use{
+        .srcStageMask = vk::PipelineStageFlagBits2::eCopy,
+        .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eFragmentShadingRateAttachmentKHR,
+        .dstAccessMask = vk::AccessFlagBits2::eFragmentShadingRateAttachmentReadKHR,
+        .oldLayout = vk::ImageLayout::eTransferDstOptimal,
+        .newLayout = vk::ImageLayout::eFragmentShadingRateAttachmentOptimalKHR,
+        .image = map.image,
+        .subresourceRange = range,
+    };
+    cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &to_use});
+    const VmaAllocator allocator = instance.GetAllocator();
+    scheduler.DeferOperation([allocator, buffer, buffer_allocation] {
+        vmaDestroyBuffer(allocator, buffer, buffer_allocation);
+    });
+    return true;
+}
+
+void Foveation::Refresh() {
+    if (!GazeDriven() || maps.empty()) {
+        return;
+    }
+    const u32 revision =
+        Core::Vr::GazeState::Instance().revision.load(std::memory_order_relaxed);
+    for (Map& map : maps) {
+        if (map.revision == revision || map.columns == 0) {
+            continue;
+        }
+        map.revision = revision;
+        std::vector<u8> rates(size_t{map.columns} * map.rows);
+        ComputeRates(map, rates);
+        UploadRates(map, rates);
+    }
+}
 } // namespace Vulkan

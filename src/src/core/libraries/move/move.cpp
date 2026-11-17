@@ -88,6 +88,27 @@ s32 PS4_SYSV_ABI sceMoveReadStateLatest(s32 handle, OrbisMoveData* data) {
     const auto input = Core::Vr::Runtime::Instance().GetHandInput(hand);
     data->button_data.button_data = input.buttons;
     data->button_data.trigger_data = input.trigger;
+    // Diagnostic hook, for reaching a scene no one is holding a controller for: presses
+    // the Move button (and the trigger) for 200 ms every 2.5 s. Off unless asked for.
+    static const bool auto_press = [] {
+        const char* value = std::getenv("SHADPS4_DBG_AUTOPRESS");
+        return value != nullptr && value[0] == '1';
+    }();
+    if (auto_press) {
+        static const auto auto_start = std::chrono::steady_clock::now();
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::steady_clock::now() - auto_start)
+                                 .count();
+        if (elapsed >= 8000 && elapsed < 45000 && (elapsed % 3000) < 600) {
+            data->button_data.button_data |= (1 << 2);
+            data->button_data.trigger_data = 255;
+            static long long last_note{};
+            if (elapsed - last_note >= 1000) {
+                last_note = elapsed;
+                LOG_INFO(Lib_Move, "AUTOPRESS move elapsed={} ms", elapsed);
+            }
+        }
+    }
     data->timestamp = Libraries::Kernel::sceKernelGetProcessTime();
     data->count = 1;
     return ORBIS_OK;

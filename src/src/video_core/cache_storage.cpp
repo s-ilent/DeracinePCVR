@@ -47,12 +47,13 @@ void ProcessIO(const std::stop_token& stoken) {
             break;
         }
 
-        while (num_requests) {
+        while (true) {
             std::packaged_task<void()> request{};
             {
                 std::scoped_lock lock{m_request};
                 if (req_queue.empty()) {
-                    continue;
+                    // Nothing queued: the count and the queue disagree briefly; wait again.
+                    break;
                 }
                 request = std::move(req_queue.front());
                 req_queue.pop();
@@ -60,10 +61,12 @@ void ProcessIO(const std::stop_token& stoken) {
 
             if (request.valid()) {
                 request();
-                request.get_future().wait();
             }
 
-            --num_requests;
+            {
+                std::scoped_lock lk{submit_mutex};
+                --num_requests;
+            }
         }
     }
 }
@@ -140,8 +143,7 @@ void DataBase::Close() {
 template <typename T>
 bool WriteVector(const BlobType type, std::filesystem::path&& path_, std::vector<T>&& v) {
     {
-        auto request = std::packaged_task<void()>{[=]() {
-            auto path{path_};
+        auto request = std::packaged_task<void()>{[v = std::move(v), path = std::move(path_), type]() mutable {
             path.replace_extension(GetBlobFileExtension(type));
             if (EmulatorSettings.IsPipelineCacheArchived()) {
                 ASSERT_MSG(!ar_is_read_only,
