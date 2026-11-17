@@ -118,6 +118,15 @@ Full document: [upstream-reconciliation.md](upstream-reconciliation.md). Summary
    classification of the earlier failures (the demonstrated one is a trigger delay longer than the
    process lifetime, not a RenderDoc or hardware limitation).
 5. **Recycler teardown path** (R6) and **pool sizing** (R11/R12): decide after (1)–(3), with numbers.
+6. **An independent report of UE4 colour-grading LUT corruption must be resolved before
+   promotion.** The workstream holding the HMD slot is running a controlled recycler off/on
+   comparison on a build for exactly that symptom. If LUT contents are disturbed with the
+   recycler on, it is R3 with a concrete case - a pass that reads contents the cache considers
+   irrelevant - and the recycler stays opt-in regardless of its CPU-side saving. Their build
+   (A02FB23F, default-on, before the four lifecycle fixes) and the current candidate
+   (7B658961, opt-in) are not the same thing, so the comparison has to be repeated on the
+   candidate before either conclusion is kept.
+
 
 ## 6. Isolation
 
