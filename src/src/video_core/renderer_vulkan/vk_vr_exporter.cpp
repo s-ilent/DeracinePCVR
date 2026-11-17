@@ -104,6 +104,7 @@ Frame* VrExporter::AcquireLocal(u32 width, u32 height) {
     frame.image_view = target->view;
     frame.width = target->width;
     frame.height = target->height;
+    frame.format = Core::Vr::OpenXrHost::FrameFormat;
     frame.id = static_cast<u8>(target->index);
     frame.host_buffer = static_cast<s8>(target->index);
     return &frame;
@@ -149,6 +150,7 @@ bool VrExporter::Setup(vk::Format format) {
         slot->frame.host_buffer = static_cast<s8>(i);
         slot->frame.width = offer->width;
         slot->frame.height = offer->height;
+        slot->frame.format = format;
         // All or nothing, so the host never sees a mix of the two paths.
         zero_copy = zero_copy && Import(*slot, *offer, format);
         if (!zero_copy && !CreateCopy(*slot, *offer, format)) {
