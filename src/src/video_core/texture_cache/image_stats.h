@@ -9,30 +9,50 @@
 
 #include "common/logging/log.h"
 #include "common/types.h"
+#include "video_core/renderer_vulkan/vk_common.h"
+
+#include <vk_mem_alloc.h>
 
 namespace VideoCore {
+
+/// Whether the texture cache's per-second counters are reported. One place, because both the
+/// counters and the timers that feed them ask, and the answer has to be the same for both.
+/// SHADPS4_DBG_OVERLAP=1 turns them on; the existing OVERLAPS line uses the same variable.
+inline bool ImageStatsEnabled() {
+    static const bool enabled = std::getenv("SHADPS4_DBG_OVERLAP") != nullptr;
+    return enabled;
+}
 
 /// Adds the wall time of its scope to a counter, in nanoseconds. Cheap enough (two clock reads)
 /// to sit around a call that is suspected of costing something, which is the only honest way to
 /// answer "is this resource churn worth recycling".
+///
+/// Nothing is read and nothing is added while the counters are off: a diagnostic that costs the
+/// normal path two clock reads per texture-cache call is a diagnostic that distorts what it
+/// measures, and this one wraps `ResolveOverlap`, which runs hundreds of times a frame.
 class ScopedTimer {
 public:
-    explicit ScopedTimer(std::atomic<u64>& target)
-        : target{target}, start{std::chrono::steady_clock::now()} {}
+    explicit ScopedTimer(std::atomic<u64>& counter)
+        : target{ImageStatsEnabled() ? &counter : nullptr},
+          start{target != nullptr ? std::chrono::steady_clock::now()
+                                  : std::chrono::steady_clock::time_point{}} {}
 
     ~ScopedTimer() {
+        if (target == nullptr) {
+            return;
+        }
         const auto done = std::chrono::steady_clock::now();
-        target.fetch_add(static_cast<u64>(
-                             std::chrono::duration_cast<std::chrono::nanoseconds>(done - start)
-                                 .count()),
-                         std::memory_order_relaxed);
+        target->fetch_add(static_cast<u64>(
+                              std::chrono::duration_cast<std::chrono::nanoseconds>(done - start)
+                                  .count()),
+                          std::memory_order_relaxed);
     }
 
     ScopedTimer(const ScopedTimer&) = delete;
     ScopedTimer& operator=(const ScopedTimer&) = delete;
 
 private:
-    std::atomic<u64>& target;
+    std::atomic<u64>* target;
     std::chrono::steady_clock::time_point start;
 };
 
@@ -50,8 +70,7 @@ class ImageStats {
 public:
     /// Whether the counters are being reported.
     static bool Enabled() {
-        static const bool enabled = std::getenv("SHADPS4_DBG_OVERLAP") != nullptr;
-        return enabled;
+        return ImageStatsEnabled();
     }
 
     /// A Vulkan image was created by `vkCreateImage` through VMA.
@@ -139,6 +158,12 @@ public:
         }
     }
 
+    /// The allocator the images come from, so the per-second line can say how much device memory
+    /// the emulator's own allocations hold. Set once, at texture-cache construction.
+    static void SetAllocator(VmaAllocator vma_allocator) {
+        allocator = vma_allocator;
+    }
+
     /// Writes and clears the second's totals.
     static void Report() {
         if (!Enabled()) {
@@ -153,13 +178,26 @@ public:
         }
         constexpr double ToMiB = 1.0 / (1024.0 * 1024.0);
         constexpr double ToMs = 1.0 / 1e6;
+        // How much device memory the emulator's own VMA allocations hold. Slow to compute (it
+        // walks every allocation), which is why it is here once a second and not in the path.
+        u64 vram_bytes = 0;
+        u64 vram_blocks = 0;
+        if (allocator != VK_NULL_HANDLE) {
+            VmaTotalStatistics statistics{};
+            vmaCalculateStatistics(allocator, &statistics);
+            for (u32 heap = 0; heap < VK_MAX_MEMORY_HEAPS; ++heap) {
+                vram_bytes += statistics.memoryHeap[heap].statistics.blockBytes;
+                vram_blocks += statistics.memoryHeap[heap].statistics.blockCount;
+            }
+        }
         LOG_INFO(Render_Vulkan,
                  "RENDERSTAT expands={} covered_expands={} refreshes={} upload_mips={} "
                  "upload_mb={:.1f} skipped_mips={} skipped_mb={:.1f} images_created={} "
                  "images_destroyed={} image_mb={:.1f} recycler_hits={} recycler_misses={} "
                  "pool_images={} pool_mb={:.1f} recycler_destroys={} copies={} copy_mb={:.1f} "
                  "buffered_copies={} create_ms={:.3f} destroy_ms={:.3f} overlap_ms={:.3f} "
-                 "depth_ms={:.3f} expand_ms={:.3f} refresh_ms={:.3f}",
+                 "depth_ms={:.3f} expand_ms={:.3f} refresh_ms={:.3f} vram_mb={:.1f} "
+                 "vram_blocks={}",
                  expands.exchange(0), covered_expands.exchange(0), refreshes.exchange(0),
                  upload_mips.exchange(0),
                  static_cast<double>(upload_bytes.exchange(0)) * ToMiB, skipped_mips.exchange(0),
@@ -176,7 +214,8 @@ public:
                  static_cast<double>(overlap_ns.exchange(0)) * ToMs,
                  static_cast<double>(depth_ns.exchange(0)) * ToMs,
                  static_cast<double>(expand_ns.exchange(0)) * ToMs,
-                 static_cast<double>(refresh_ns.exchange(0)) * ToMs);
+                 static_cast<double>(refresh_ns.exchange(0)) * ToMs,
+                 static_cast<double>(vram_bytes) * ToMiB, vram_blocks);
     }
 
     /// Where the texture cache's own time goes, in nanoseconds. Public because the timer needs a
@@ -189,6 +228,7 @@ public:
     static inline std::atomic<u64> refresh_ns{};
 
 private:
+    static inline VmaAllocator allocator{};
     static inline std::atomic<u64> images_created{};
     static inline std::atomic<u64> images_destroyed{};
     static inline std::atomic<u64> image_bytes_created{};
