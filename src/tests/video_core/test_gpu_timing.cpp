@@ -6,6 +6,9 @@
 // where the GPU was never idle, busy time lost to an unusable pair, or ticks reported as if they
 // were nanoseconds. These pin the rules down without a device.
 
+#include <array>
+#include <span>
+
 #include <gtest/gtest.h>
 
 #include "video_core/renderer_vulkan/vk_gpu_timing_math.h"
@@ -103,6 +106,69 @@ TEST(GpuTiming, AZeroLengthIntervalIsStillCounted) {
     ASSERT_TRUE(measured.counted);
     EXPECT_EQ(measured.busy_ns, 0u);
     EXPECT_EQ(measured.gap_ns, 0u);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Labelled operation intervals. The stamps are a submission's top of pipe, one per mark, and its
+// bottom of pipe; each mark owns the time from its own stamp to the next one.
+// ---------------------------------------------------------------------------------------------
+
+using Vulkan::AttributeIntervals;
+
+using Stamps = std::array<u64, 6>;
+
+TEST(GpuTimingOps, NoMarksLeaveTheWholeSubmissionUnowned) {
+    const Stamps stamps{1000, 2000, 0, 0, 0, 0};
+    const auto attributed = AttributeIntervals(std::span{stamps.data(), 2}, 1.0, FullMask);
+    EXPECT_TRUE(attributed.mark_ns.empty());
+    // Nothing was marked, so no operation may be charged for the submission.
+    EXPECT_EQ(attributed.head_ns, 1000u);
+    EXPECT_EQ(attributed.unusable, 0u);
+}
+
+TEST(GpuTimingOps, OneMarkOwnsTheTimeToTheBottomOfTheSubmission) {
+    const Stamps stamps{1000, 1500, 4000, 0, 0, 0};
+    const auto attributed = AttributeIntervals(std::span{stamps.data(), 3}, 1.0, FullMask);
+    ASSERT_EQ(attributed.mark_ns.size(), 1u);
+    EXPECT_EQ(attributed.head_ns, 500u);
+    // The last mark runs to the submission's bottom: 4000 - 1500, not to a next mark.
+    EXPECT_EQ(attributed.mark_ns[0], 2500u);
+}
+
+TEST(GpuTimingOps, EachMarkOwnsTheIntervalToTheNextOne) {
+    const Stamps stamps{100, 200, 700, 900, 0, 0};
+    const auto attributed = AttributeIntervals(std::span{stamps.data(), 4}, 1.0, FullMask);
+    ASSERT_EQ(attributed.mark_ns.size(), 2u);
+    EXPECT_EQ(attributed.head_ns, 100u);
+    EXPECT_EQ(attributed.mark_ns[0], 500u);
+    EXPECT_EQ(attributed.mark_ns[1], 200u);
+}
+
+TEST(GpuTimingOps, TheTickPeriodScalesEveryInterval) {
+    const Stamps stamps{0, 100, 300, 0, 0, 0};
+    const auto attributed = AttributeIntervals(std::span{stamps.data(), 3}, 0.5, FullMask);
+    ASSERT_EQ(attributed.mark_ns.size(), 1u);
+    EXPECT_EQ(attributed.head_ns, 50u);
+    EXPECT_EQ(attributed.mark_ns[0], 100u);
+}
+
+// A reversed interval is counted and contributes nothing, and it must not spoil the marks around
+// it: this is the case that would otherwise look like one enormous operation.
+TEST(GpuTimingOps, AReversedIntervalIsCountedAndSpoilsNothingElse) {
+    const Stamps stamps{100, 500, 300, 900, 0, 0};
+    const auto attributed = AttributeIntervals(std::span{stamps.data(), 4}, 1.0, FullMask);
+    ASSERT_EQ(attributed.mark_ns.size(), 2u);
+    EXPECT_EQ(attributed.head_ns, 400u);
+    EXPECT_EQ(attributed.mark_ns[0], 0u); // 300 < 500: unusable, and not a huge span.
+    EXPECT_EQ(attributed.mark_ns[1], 600u);
+    EXPECT_EQ(attributed.unusable, 1u);
+}
+
+TEST(GpuTimingOps, ASubmissionWithoutBothEndsAttributesNothing) {
+    const Stamps stamps{1000, 0, 0, 0, 0, 0};
+    const auto attributed = AttributeIntervals(std::span{stamps.data(), 1}, 1.0, FullMask);
+    EXPECT_TRUE(attributed.mark_ns.empty());
+    EXPECT_EQ(attributed.head_ns, 0u);
 }
 
 } // namespace

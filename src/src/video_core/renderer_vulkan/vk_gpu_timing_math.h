@@ -3,6 +3,10 @@
 
 #pragma once
 
+#include <optional>
+#include <span>
+#include <vector>
+
 #include "common/types.h"
 
 namespace Vulkan {
@@ -64,5 +68,61 @@ private:
     /// last_end_ == 0 standing in for "nothing before it".
     bool have_previous_{};
 };
+
+/// Attribute one submission's operation intervals to the marks that opened them.
+///
+/// Why this is separate from the class above and from the Vulkan calls: the interesting failure
+/// here is a plausible-looking misattribution. An interval there are n + 2 stamps - the
+/// submission's top of pipe, one per mark, and its bottom - so:
+///
+///   top -> first mark      the part of the submission before anything marked: unattributed
+///   mark i -> the stamp after it
+///                          charged to mark i: the next mark, or the submission's own bottom
+///
+/// The head is reported on its own and is never added to an operation. A barrier or a copy that was
+/// recorded between two operations lands inside the interval of the operation before it - that is
+/// what "time to the next mark" means, and it is why copies and barriers are marked in their own
+/// right wherever the emulator knows it recorded one.
+///
+/// A pair that came back reversed is counted as unusable and measures nothing, rather than being
+/// added as a huge interval or silently dropped.
+struct OpAttribution {
+    u64 head_ns{};              ///< Top of pipe to the first mark: no operation owns it.
+    std::vector<u64> mark_ns;   ///< One per mark, in the order the marks were made.
+    u64 unusable{};             ///< Intervals whose stamps came back reversed.
+};
+
+/// `stamps` holds the submission's top of pipe, then one stamp per mark, then its bottom of pipe.
+[[nodiscard]] inline OpAttribution AttributeIntervals(std::span<const u64> stamps, double tick_ns,
+                                                      u64 valid_mask) {
+    OpAttribution attribution;
+    // n marks means n + 2 stamps; anything shorter cannot be attributed at all.
+    if (stamps.size() < 2) {
+        return attribution;
+    }
+    const size_t marks = stamps.size() - 2;
+    attribution.mark_ns.assign(marks, 0);
+    const auto interval = [&](size_t from, size_t to) -> std::optional<u64> {
+        const u64 start = stamps[from] & valid_mask;
+        const u64 end = stamps[to] & valid_mask;
+        if (end < start) {
+            ++attribution.unusable;
+            return std::nullopt;
+        }
+        return static_cast<u64>(static_cast<double>(end - start) * tick_ns);
+    };
+    // With no marks this is the whole submission, which is then unowned: the busy figure already
+    // covers it, so it must not be charged to an operation as well.
+    if (const auto head = interval(0, 1)) {
+        attribution.head_ns = *head;
+    }
+    for (size_t i = 0; i < marks; ++i) {
+        // Stamp i + 1 opened mark i; the stamp after it closes the interval.
+        if (const auto span = interval(i + 1, i + 2)) {
+            attribution.mark_ns[i] = *span;
+        }
+    }
+    return attribution;
+}
 
 } // namespace Vulkan

@@ -5,8 +5,11 @@
 
 #include <array>
 #include <atomic>
+#include <compare>
 #include <deque>
 #include <mutex>
+#include <string>
+#include <vector>
 
 #include "common/types.h"
 #include "video_core/renderer_vulkan/vk_common.h"
@@ -49,8 +52,10 @@ class GpuTiming {
 public:
     /// A Vulkan timestamp pair per submission. Slots are reused in a ring; the scheduler keeps at
     /// most MAX_IN_FLIGHT_SUBMISSIONS submissions in flight (it waits once it is that far ahead),
-    /// so a slot comes round again long after the GPU has finished with it.
-    static constexpr u32 TimerPairs = 512;
+    /// so a slot comes round again long after the GPU has finished with it, and the ring only has to
+    /// be comfortably larger than that limit - not large enough to hold a whole frame's worth of
+    /// submissions. Each slot also holds the marks of the submission that wrote it.
+    static constexpr u32 TimerPairs = 128;
 
     GpuTiming(const Instance& instance, MasterSemaphore& semaphore);
     ~GpuTiming();
@@ -97,11 +102,72 @@ public:
     };
     static Reading TakeReading();
 
+    /// What an interval was, so a cost can be read against the kind of work that spent it.
+    enum class Op : u8 {
+        Pass,     ///< A render pass, from the moment it began.
+        Dispatch, ///< A compute dispatch.
+        Copy,     ///< A blit, resolve or clear the emulator recorded.
+        Count,
+    };
+
+    /// The numbers a label is built from, rather than a string: the marks are written on the GPU
+    /// thread for every pass and dispatch of a frame, and formatting a name there would cost more
+    /// than the measurement. A pass carries its target size, its attachment configuration and both
+    /// shader hashes; a dispatch its compute hash and group count; a copy its extent and bytes.
+    struct OpLabel {
+        u32 width{};
+        u32 height{};
+        u32 extra{};
+        u64 vs{};
+        u64 ps{};
+        u8 colors{};
+        bool depth{};
+        auto operator<=>(const OpLabel&) const = default;
+    };
+
+    /// Marks kept for one submission. A submission carries every pass, dispatch and copy recorded
+    /// into it, and a measured frame of this title carries about a hundred operations across a few
+    /// submissions, so this is the room for a busy one with a wide margin. Beyond it the rest of the
+    /// submission is charged to the last mark and the overflow is counted, so a submission too heavy
+    /// for even this loses detail and not correctness.
+    static constexpr u32 MarksPerSubmission = 256;
+
+    /// Whether labels are being attributed: the setting is on and the device can time.
+    static bool ProfilingOps();
+
+    /// Opens an interval for `op`. Call it where the work actually begins and, for a render pass,
+    /// *outside* the pass: the profiler never ends a pass to place a timestamp, so attribution
+    /// stays what the renderer recorded rather than something the measurement changed.
+    void Mark(vk::CommandBuffer cmdbuf, Op op, const OpLabel& label);
+
+    /// One operation's window total, for the frame statistics.
+    struct TopOp {
+        std::string kind;
+        std::string label;
+        double ms{};
+        u64 count{};
+    };
+
+    /// The costliest operations since the last call, highest first, and what no operation owned
+    /// (the top of a submission up to its first mark). Both are cleared by the call, like the other
+    /// per-window counters here. `overflow` counts marks that did not fit the submission they
+    /// belonged to.
+    static std::vector<TopOp> TakeTopOps(u32 limit, double& measured_ms, double& unowned_ms,
+                                         u64& overflow);
+
 private:
+    /// A mark made in the submission now being recorded: which query holds it, and what it was.
+    struct MarkRecord {
+        u32 query;
+        Op op;
+        OpLabel label;
+    };
+
     /// A submission waiting for the GPU to be through it, and the pair it wrote.
     struct Pending {
         u64 tick;
         u32 slot;
+        std::vector<MarkRecord> marks;
     };
 
     const Instance& instance;
@@ -121,6 +187,10 @@ private:
     std::mutex mutex;
     /// This scheduler's previous submission end, and the busy/gap it has measured.
     GpuTimelineMath math;
+    /// The marks made in the submission being recorded, emptied into `pending` when it is closed.
+    std::vector<MarkRecord> marks;
+    /// A mark that did not fit: counted, and said so in the report, rather than silently dropped.
+    u64 oversized{};
     std::deque<Pending> pending;
 
     static inline std::atomic<u32> ready_instances{};

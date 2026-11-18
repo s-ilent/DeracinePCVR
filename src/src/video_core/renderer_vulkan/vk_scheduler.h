@@ -529,8 +529,15 @@ public:
     /// Attempts to execute operations whose tick the GPU has caught up with.
     void PopPendingOperations();
 
-    /// Starts a new rendering scope with provided state.
-    void BeginRendering(const RenderState& new_state);
+    /// Starts a new rendering scope with provided state. `vs_hash` and `ps_hash` are the guest
+    /// shaders the pass is opened for, so SHADPS4_GPU_TIMING can label what a pass cost; 0 where the
+    /// caller drives the pass itself and has no shader to name.
+    void BeginRendering(const RenderState& new_state, u64 vs_hash = 0, u64 ps_hash = 0);
+
+    /// SHADPS4_GPU_TIMING: opens a labelled interval for a compute dispatch.
+    void MarkDispatch(u64 shader_hash);
+    /// SHADPS4_GPU_TIMING: opens a labelled interval for a copy the emulator records.
+    void MarkCopy(u32 width, u32 height, u32 kb);
 
     /// Ends current rendering scope.
     void EndRendering(std::source_location where = std::source_location::current());

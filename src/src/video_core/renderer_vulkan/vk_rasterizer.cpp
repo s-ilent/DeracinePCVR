@@ -13,6 +13,7 @@
 #include "video_core/renderer_vulkan/readconst_snapshot_diag.h"
 #include "video_core/renderer_vulkan/vk_foveation.h"
 #include "video_core/renderer_vulkan/vk_gpu_profile.h"
+#include "video_core/renderer_vulkan/vk_gpu_timing.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -433,7 +434,14 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
 
     pipeline->BindResources(set_writes, buffer_barriers, push_data);
     UpdateDynamicState(pipeline, is_indexed);
-    scheduler.BeginRendering(state);
+    u64 pass_vs = 0;
+    u64 pass_ps = 0;
+    if (GpuTiming::ProfilingOps()) {
+        const auto work = ProfileWork(pipeline);
+        pass_vs = work.vs;
+        pass_ps = work.ps;
+    }
+    scheduler.BeginRendering(state, pass_vs, pass_ps);
     scheduler.NoteDraw();
     FrameStats::Draw();
     QualityDiag::NoteDraw();
@@ -753,7 +761,14 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
 
     pipeline->BindResources(set_writes, buffer_barriers, push_data);
     UpdateDynamicState(pipeline, is_indexed);
-    scheduler.BeginRendering(state);
+    u64 pass_vs = 0;
+    u64 pass_ps = 0;
+    if (GpuTiming::ProfilingOps()) {
+        const auto work = ProfileWork(pipeline);
+        pass_vs = work.vs;
+        pass_ps = work.ps;
+    }
+    scheduler.BeginRendering(state, pass_vs, pass_ps);
     scheduler.NoteDraw();
     FrameStats::Draw();
     QualityDiag::NoteDraw();
@@ -829,6 +844,10 @@ void Rasterizer::DispatchDirect() {
     }
 
     scheduler.EndRendering();
+    if (GpuTiming::ProfilingOps()) {
+        // Dispatches end any pass first, so this mark is outside a render pass like the passes'.
+        scheduler.MarkDispatch(ProfileWork(pipeline).vs);
+    }
     pipeline->BindResources(set_writes, buffer_barriers, push_data);
 
     const auto cmdbuf = scheduler.CommandBuffer();
@@ -864,6 +883,9 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
     const auto [buffer, base] = buffer_cache.ObtainBuffer(address + offset, size, false);
 
     scheduler.EndRendering();
+    if (GpuTiming::ProfilingOps()) {
+        scheduler.MarkDispatch(ProfileWork(pipeline).vs);
+    }
     pipeline->BindResources(set_writes, buffer_barriers, push_data);
 
     const auto cmdbuf = scheduler.CommandBuffer();

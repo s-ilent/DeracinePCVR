@@ -1,9 +1,17 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <cstring>
+#include <map>
+#include <span>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include <fmt/format.h>
 
 #include "common/logging/log.h"
 #include "video_core/renderer_vulkan/vk_gpu_timing.h"
@@ -18,6 +26,52 @@ namespace {
 /// scheduler tries for itself, and three identical lines at startup would say less than one.
 std::atomic<bool> g_unsupported_logged{};
 
+/// Where the per-operation totals are gathered out of the retired submissions, and read once a
+/// window by the frame statistics. Guarded by its own lock: collecting happens on whichever thread
+/// retires a submission and the report on the presenter's.
+struct OpTotal {
+    double ms{};
+    u64 count{};
+};
+std::mutex g_ops_mutex;
+std::map<std::pair<u8, GpuTiming::OpLabel>, OpTotal> g_ops_totals;
+/// Time inside a measured submission that no mark owned: the top of pipe up to the first mark.
+u64 g_ops_unowned_ns{};
+/// Marks that did not fit the submission they belonged to.
+u64 g_ops_overflow{};
+
+const char* OpName(GpuTiming::Op op) {
+    switch (op) {
+    case GpuTiming::Op::Pass:
+        return "pass";
+    case GpuTiming::Op::Dispatch:
+        return "dispatch";
+    case GpuTiming::Op::Copy:
+        return "copy";
+    default:
+        return "other";
+    }
+}
+
+/// A label the marks were made with, spelled out only when a report is written. Every pass of a
+/// frame marks, so building these strings at mark time would cost more than the measurement.
+std::string OpLabelText(GpuTiming::Op op, const GpuTiming::OpLabel& label) {
+    switch (op) {
+    case GpuTiming::Op::Pass: {
+        std::string text = fmt::format("{}x{} {} colour{}", label.width, label.height, label.colors,
+                                       label.colors == 1 ? "" : "s");
+        text += label.depth ? " + depth" : "";
+        return fmt::format("{} vs {:x} ps {:x}", text, label.vs, label.ps);
+    }
+    case GpuTiming::Op::Dispatch:
+        return fmt::format("dispatch shader {:x}", label.vs);
+    case GpuTiming::Op::Copy:
+        return fmt::format("copy {}x{} ({} KB)", label.width, label.height, label.extra);
+    default:
+        return "other";
+    }
+}
+
 } // namespace
 
 bool GpuTiming::Enabled() {
@@ -31,6 +85,10 @@ bool GpuTiming::Enabled() {
     return enabled;
 }
 
+bool GpuTiming::ProfilingOps() {
+    return Enabled() && Measuring();
+}
+
 GpuTiming::GpuTiming(const Instance& instance_, MasterSemaphore& semaphore_)
     : instance{instance_}, semaphore{semaphore_} {
     const auto physical = instance.GetPhysicalDevice();
@@ -41,8 +99,8 @@ GpuTiming::GpuTiming(const Instance& instance_, MasterSemaphore& semaphore_)
     valid_mask = bits == 0 ? 0 : (bits >= 64 ? ~u64{0} : (u64{1} << bits) - 1);
 
     // Nothing records a timestamp into a command buffer here, so no host query reset is asked
-    // for: each pair resets its own two queries from inside the submission that then writes them,
-    // which keeps the reuse ordered on the GPU's own timeline.
+    // for: every query a submission reads is one that same submission wrote, so nothing has to be
+    // cleared between them.
     if (bits == 0 || tick_ns <= 0.0) {
         if (!g_unsupported_logged.exchange(true, std::memory_order_relaxed)) {
             LOG_WARNING(Render_Vulkan,
@@ -56,7 +114,7 @@ GpuTiming::GpuTiming(const Instance& instance_, MasterSemaphore& semaphore_)
     const auto device = instance.GetDevice();
     auto [result, created] = device.createQueryPool({
         .queryType = vk::QueryType::eTimestamp,
-        .queryCount = TimerPairs * 2,
+        .queryCount = TimerPairs * (MarksPerSubmission + 2),
     });
     if (result != vk::Result::eSuccess) {
         if (!g_unsupported_logged.exchange(true, std::memory_order_relaxed)) {
@@ -67,9 +125,9 @@ GpuTiming::GpuTiming(const Instance& instance_, MasterSemaphore& semaphore_)
     pool = created;
     ready_instances.fetch_add(1, std::memory_order_relaxed);
     LOG_INFO(Render_Vulkan,
-             "GPU timing: a timestamp pair around every submission, {} pairs, {:.2f} ns a tick, "
-             "{} timestamp bits",
-             TimerPairs, tick_ns, bits);
+             "GPU timing: a timestamp pair around every submission, and a mark per operation ({} "
+             "pairs of {}, {:.2f} ns a tick, {} timestamp bits)",
+             TimerPairs, MarksPerSubmission, tick_ns, bits);
 }
 
 GpuTiming::~GpuTiming() {
@@ -88,13 +146,35 @@ void GpuTiming::OpenSubmission(vk::CommandBuffer cmdbuf) {
     if (open) {
         return;
     }
-    // The slot's previous pair was submitted at least TimerPairs submissions ago and the
+    // The slot's queries were used by a submission at least TimerPairs submissions ago and the
     // scheduler never has more than MAX_IN_FLIGHT_SUBMISSIONS in flight, so the GPU is long since
-    // through with it. Resetting here, rather than from the host, keeps that ordering on the GPU's
-    // own timeline.
-    cmdbuf.resetQueryPool(pool, slot * 2, 2);
-    cmdbuf.writeTimestamp(vk::PipelineStageFlagBits::eTopOfPipe, pool, slot * 2);
+    // through with them. Every one of them is rewritten before it is read again.
+    const u32 base = slot * (MarksPerSubmission + 2);
+    cmdbuf.writeTimestamp(vk::PipelineStageFlagBits::eTopOfPipe, pool, base);
+    marks.clear();
     open = true;
+}
+
+void GpuTiming::Mark(vk::CommandBuffer cmdbuf, Op op, const OpLabel& label) {
+    if (pool == nullptr) {
+        return;
+    }
+    std::scoped_lock lock{mutex};
+    if (!open) {
+        return;
+    }
+    if (marks.size() >= MarksPerSubmission) {
+        // Counted rather than dropped: a submission that carried more operations than there is room
+        // for is one whose report is short, and that has to be visible in it.
+        ++oversized;
+        return;
+    }
+    const u32 base = slot * (MarksPerSubmission + 2);
+    const u32 query = base + 1 + static_cast<u32>(marks.size());
+    // Bottom of pipe is what the existing per-draw profiler uses inside render passes on this
+    // tree; a pass here is marked before it begins, where no stage restriction applies at all.
+    cmdbuf.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, pool, query);
+    marks.push_back(MarkRecord{.query = query, .op = op, .label = label});
 }
 
 void GpuTiming::CloseSubmission(vk::CommandBuffer cmdbuf, u64 signal_value) {
@@ -105,15 +185,25 @@ void GpuTiming::CloseSubmission(vk::CommandBuffer cmdbuf, u64 signal_value) {
     if (!open) {
         return;
     }
-    cmdbuf.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, pool, slot * 2 + 1);
+    const u32 base = slot * (MarksPerSubmission + 2);
+    // The bottom of pipe goes straight after the marks, so a retired submission's stamps are one
+    // contiguous read.
+    cmdbuf.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, pool,
+                          base + 1 + static_cast<u32>(marks.size()));
     if (pending.size() >= TimerPairs) {
-        // Unreachable while the scheduler holds the in-flight limit, kept so that a slot can
-        // never be reused with an unread pair still owed: the submission is counted as dropped
-        // rather than silently losing a slot to a stale entry.
+        // Unreachable while the scheduler holds the in-flight limit, kept so that a slot can never
+        // be reused with an unread pair still owed: the submission is counted as dropped rather
+        // than silently losing a slot to a stale entry.
         pending.pop_front();
         dropped.fetch_add(1, std::memory_order_relaxed);
     }
-    pending.push_back(Pending{.tick = signal_value, .slot = slot});
+    if (oversized != 0) {
+        std::scoped_lock ops_lock{g_ops_mutex};
+        g_ops_overflow += oversized;
+        oversized = 0;
+    }
+    pending.push_back(Pending{.tick = signal_value, .slot = slot, .marks = std::move(marks)});
+    marks.clear();
     slot = (slot + 1) % TimerPairs;
     open = false;
 }
@@ -127,28 +217,49 @@ void GpuTiming::Collect() {
     // Exactly the test the scheduler uses to reclaim anything else: whatever already proven idle,
     // and no refresh of the timeline the driver would have to answer for.
     while (!pending.empty() && semaphore.IsFree(pending.front().tick)) {
-        const auto [tick, which] = pending.front();
+        Pending entry = std::move(pending.front());
         pending.pop_front();
 
-        std::array<u64, 2> stamps{};
+        const size_t marks = entry.marks.size();
+        std::vector<u64> stamps(marks + 2);
         const vk::Result result = device.getQueryPoolResults(
-            pool, which * 2, 2, stamps.size() * sizeof(u64), stamps.data(), sizeof(u64),
+            pool, entry.slot * (MarksPerSubmission + 2), stamps.size(),
+            stamps.size() * sizeof(u64), stamps.data(), sizeof(u64),
             vk::QueryResultFlagBits::e64);
         if (result != vk::Result::eSuccess) {
             unreadable.fetch_add(1, std::memory_order_relaxed);
             continue;
         }
-        const auto measured = math.Add(stamps[0], stamps[1], tick_ns, valid_mask);
-        if (!measured.counted) {
+
+        // The submission's own execution and the gap before it come from its two ends, unchanged.
+        const auto measured =
+            math.Add(stamps.front(), stamps[marks + 1], tick_ns, valid_mask);
+        if (measured.counted) {
+            busy_ns.fetch_add(measured.busy_ns, std::memory_order_relaxed);
+            // Only time this scheduler spent with nothing of its own in flight: the submission
+            // before it ended here, and the GPU started this one there.
+            gap_ns.fetch_add(measured.gap_ns, std::memory_order_relaxed);
+            submits.fetch_add(1, std::memory_order_relaxed);
+        } else {
             invalid.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (marks == 0) {
             continue;
         }
 
-        busy_ns.fetch_add(measured.busy_ns, std::memory_order_relaxed);
-        // Only time this scheduler spent with nothing of its own in flight: the submission before
-        // it ended here, and the GPU started this one there.
-        gap_ns.fetch_add(measured.gap_ns, std::memory_order_relaxed);
-        submits.fetch_add(1, std::memory_order_relaxed);
+        const auto attributed = AttributeIntervals(stamps, tick_ns, valid_mask);
+        std::scoped_lock ops_lock{g_ops_mutex};
+        g_ops_unowned_ns += attributed.head_ns;
+        const size_t attributed_marks =
+            std::min(attributed.mark_ns.size(), entry.marks.size());
+        for (size_t i = 0; i < attributed_marks; ++i) {
+            const MarkRecord& mark = entry.marks[i];
+            auto& total =
+                g_ops_totals[std::pair<u8, OpLabel>{static_cast<u8>(mark.op), mark.label}];
+            total.ms += static_cast<double>(attributed.mark_ns[i]) / 1e6;
+            ++total.count;
+        }
+        invalid.fetch_add(attributed.unusable, std::memory_order_relaxed);
     }
 }
 
@@ -161,6 +272,38 @@ GpuTiming::Reading GpuTiming::TakeReading() {
     reading.unreadable = unreadable.exchange(0, std::memory_order_relaxed);
     reading.invalid = invalid.exchange(0, std::memory_order_relaxed);
     return reading;
+}
+
+std::vector<GpuTiming::TopOp> GpuTiming::TakeTopOps(u32 limit, double& measured_ms,
+                                                   double& unowned_ms, u64& overflow) {
+    std::map<std::pair<u8, OpLabel>, OpTotal> taken;
+    {
+        std::scoped_lock ops_lock{g_ops_mutex};
+        taken.swap(g_ops_totals);
+        unowned_ms = static_cast<double>(g_ops_unowned_ns) / 1e6;
+        g_ops_unowned_ns = 0;
+        overflow = g_ops_overflow;
+        g_ops_overflow = 0;
+    }
+    std::vector<std::pair<std::pair<u8, OpLabel>, OpTotal>> ranked{taken.begin(), taken.end()};
+    std::ranges::sort(ranked, [](const auto& lhs, const auto& rhs) {
+        return lhs.second.ms > rhs.second.ms;
+    });
+    measured_ms = 0.0;
+    std::vector<TopOp> top;
+    top.reserve(std::min<size_t>(limit, ranked.size()));
+    for (const auto& [key, total] : ranked) {
+        measured_ms += total.ms;
+        if (top.size() >= limit) {
+            continue;
+        }
+        const auto op = static_cast<Op>(key.first);
+        top.push_back(TopOp{.kind = OpName(op),
+                            .label = OpLabelText(op, key.second),
+                            .ms = total.ms,
+                            .count = total.count});
+    }
+    return top;
 }
 
 } // namespace Vulkan

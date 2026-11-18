@@ -755,10 +755,32 @@ void FrameStats::EndFrame() {
                      since_start_ms);
         }
     }
+    // SHADPS4_GPU_TIMING: the costliest labelled operations of the window, for when "the GPU
+    // spent this much of the frame" is not a small enough answer. Time between two marks belongs
+    // to the earlier one, so a copy or a barrier recorded between two passes is inside the pass
+    // before it - the profiler marks copies in their own right where the emulator knows it
+    // recorded one, and never invents an operation to hold time it cannot place.
+    if (GpuTiming::ProfilingOps()) {
+        double measured_ms = 0.0;
+        double unowned_ms = 0.0;
+        u64 overflow = 0;
+        const auto top = GpuTiming::TakeTopOps(8, measured_ms, unowned_ms, overflow);
+        if (!top.empty() || overflow != 0) {
+            std::string list;
+            for (const auto& op : top) {
+                list += fmt::format("{}{:.2f} ms x{} [{}] {}", list.empty() ? "" : "; ", op.ms / n,
+                                    op.count, op.kind, op.label);
+            }
+            LOG_INFO(Render_Vulkan,
+                     "gpu operations: {:.2f} ms a frame attributed, {:.2f} ms a frame between a "
+                     "submission's top and its first mark (unattributed), {} operations over the "
+                     "per-submission limit; costliest: {}",
+                     measured_ms / n, unowned_ms / n, overflow, list);
+        }
+    }
     const auto per_frame = [n](Counter counter) {
         return static_cast<double>(g_counters[static_cast<size_t>(counter)].Take()) / n;
-    };
-    const double lookups = per_frame(Counter::ImageLookups);
+    };    const double lookups = per_frame(Counter::ImageLookups);
     const double binds = per_frame(Counter::PipelineBinds);
     if (lookups > 0.0 || binds > 0.0) {
         const double stages = per_frame(Counter::StagePrograms);
@@ -843,7 +865,7 @@ static bool ContinuesPass(const RenderState& current, const RenderState& next) {
            !theirs.depth_clear && !theirs.stencil_clear;
 }
 
-void Scheduler::BeginRendering(const RenderState& new_state) {
+void Scheduler::BeginRendering(const RenderState& new_state, u64 vs_hash, u64 ps_hash) {
     if (is_rendering && render_state == new_state) {
         return;
     }
@@ -944,12 +966,41 @@ void Scheduler::BeginRendering(const RenderState& new_state) {
         .pStencilAttachment = db.has_stencil ? &stencil_attachment : nullptr,
     };
 
+    if (gpu_timing) {
+        // Marked before the pass begins, where no pipeline-stage restriction applies: the profiler
+        // places its timestamps outside render passes and never ends one to take a measurement, so
+        // what it attributes is the pass the renderer recorded.
+        gpu_timing->Mark(current_cmdbuf, GpuTiming::Op::Pass,
+                         GpuTiming::OpLabel{
+                             .width = render_state.width,
+                             .height = render_state.height,
+                             .vs = vs_hash,
+                             .ps = ps_hash,
+                             .colors = static_cast<u8>(render_state.num_color_attachments),
+                             .depth = db.has_depth || db.has_stencil,
+                         });
+    }
     {
         const FrameStats::CallTimer timer{FrameStats::Call::BeginRendering};
         current_cmdbuf.beginRendering(rendering_info);
     }
 
     FrameStats::RenderPass(render_state);
+}
+
+void Scheduler::MarkDispatch(u64 shader_hash) {
+    if (!gpu_timing) {
+        return;
+    }
+    gpu_timing->Mark(current_cmdbuf, GpuTiming::Op::Dispatch, GpuTiming::OpLabel{.vs = shader_hash});
+}
+
+void Scheduler::MarkCopy(u32 width, u32 height, u32 kb) {
+    if (!gpu_timing) {
+        return;
+    }
+    gpu_timing->Mark(current_cmdbuf, GpuTiming::Op::Copy,
+                     GpuTiming::OpLabel{.width = width, .height = height, .extra = kb});
 }
 
 void Scheduler::EndRendering(std::source_location where) {
