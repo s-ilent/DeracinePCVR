@@ -127,6 +127,16 @@ Check-False "a Windows-newline file gains no bare newlines" ((Get-IniText $crlf)
 [void](Invoke-RenderConfig $game @("-Percent", "200", "-Quiet"))
 Check-False "a bare-newline file gains no Windows newlines" ((Get-IniText $game).Contains("`r`n"))
 
+# The file's last line terminator survives too: the private shadows the benchmark campaign measured
+# on end with one, and writing the file back must leave it the same file.
+$trailing = New-Game "trailing"
+$trailingIni = Join-Path $trailing "gameproject\saved\config\ps4\engine.ini"
+[System.IO.File]::WriteAllText($trailingIni, ($original -join "`n") + "`n")
+[void](Invoke-RenderConfig $trailing @("-Percent", "200", "-Quiet"))
+Check-True "a file that ends with a newline still does" ((Get-IniText $trailing).EndsWith("`n"))
+Check-False "and gains no second one" ((Get-IniText $trailing).EndsWith("`n`n"))
+Check "and is otherwise the game's own file with only the scale changed" ((Get-IniText $trailing).Replace("r.ScreenPercentage=200", "r.ScreenPercentage=130")) (($original -join "`n") + "`n")
+
 # --- refusals ---------------------------------------------------------------------------------
 $beforeRefusal = Get-IniValue $game "SystemSettings" "r.ScreenPercentage"
 $out = Invoke-RenderConfig $game @("-Percent", "400", "-Quiet")

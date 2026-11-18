@@ -326,9 +326,13 @@ if ($frameMode -eq "60") {
     }
     $notes += "native 60: the game's own frame sequence, no change to smoothing or frame finishing"
 }
-$newline = Get-Newline $(if ($existed) { [System.IO.File]::ReadAllText($ini) } else { "" })
+$originalText = if ($existed) { [System.IO.File]::ReadAllText($ini) } else { "" }
+$newline = Get-Newline $originalText
 $text = (($parsed | ForEach-Object { $_.Text }) -join $newline)
-$current = if ($existed) { [System.IO.File]::ReadAllText($ini) } else { "" }
+# ReadAllLines drops the file's last line terminator; a file that ended with one keeps it, so what is
+# written back is the same file with the settings changed and nothing else about it different.
+if ($originalText.EndsWith("`n") -and $parsed.Count -gt 0) { $text += $newline }
+$current = $originalText
 if ((Get-ComparableText $current) -eq (Get-ComparableText $text)) {
     Report "unchanged" ("$ini already holds what was asked for")
     exit 0
