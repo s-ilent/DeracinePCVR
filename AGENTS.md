@@ -42,6 +42,18 @@ a single run is not a verification.
 - Keep changes focused. Do not refactor or reformat unrelated code.
 - Treat `optimizacion-graficos` as read-only: do not push to or rewrite it unless asked.
 
+## Development workflow
+
+- `main` is the authoritative development branch. Fetch it before starting work; every new feature
+  branch/worktree starts at current `main`.
+- Keep branches short-lived and each change bounded to one subsystem or feature. Complete its focused
+  validation, then merge directly to `main` once its acceptance criteria pass. Do not create
+  intermediate integration branches or reconstruct already completed work.
+- Prefer targeted tests and builds appropriate to the change; do not run a broad regression matrix
+  unless the risk warrants it. Never merge a known correctness or startup regression.
+- Headset acceptance remains a release gate, not a prerequisite for maintaining `main`. Do not
+  deploy or replace the installed runtime without explicit approval.
+
 ## Building
 
 - Externals: run `python tools/fetch-submodules.py` from the repo root. `git submodule update`
