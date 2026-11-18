@@ -426,6 +426,11 @@ struct OpenXrHost::Impl {
     }
     /// xrEndFrame calls that took 50 ms or more since the last report.
     u32 end_frame_held{};
+    /// Display frames that handed the compositor no new picture, so it showed the picture it
+    /// already had again. Next to a title's delivered frames this is what "dropped" and "repeated"
+    /// mean here: a delivery that was never handed over is dropped, a display frame with nothing
+    /// new in it is a repeat.
+    u32 repeated_frames{};
 
     // The title's frames on their way here.
     std::mutex slot_mutex;
@@ -2146,6 +2151,9 @@ struct OpenXrHost::Impl {
                 correction += angle;
                 correction_worst = std::max(correction_worst, angle);
                 ++correction_samples;
+            } else {
+                // Nothing new to hand over, so the compositor shows the picture it already has.
+                ++repeated_frames;
             }
             if (XR_SUCCEEDED(ended)) {
                 last_frame_ended = Clock::now();
@@ -2783,7 +2791,9 @@ struct OpenXrHost::Impl {
                  "ending a picture {:.2f} ms ({:.1f} at worst, {} of 50 ms or more); head "
                  "tracked {:.0f}% of the "
                  "time, at {:.2f} {:.2f} {:.2f} facing {:.0f} degrees left; pictures were shown "
-                 "{:.1f} degrees from where they were drawn for ({:.1f} at most)",
+                 "{:.1f} degrees from where they were drawn for ({:.1f} at most); {} of the "
+                 "title's frames were never handed over and {} display frames showed the picture "
+                 "before",
                  static_cast<float>(delivered - reported_delivered) / seconds, gap * 1e3, gaps,
                  static_cast<float>(copied_frames) / seconds, frames / seconds, StateName(state),
                  copied_frames != 0 ? copy_time / copied_frames * 1e3 : 0.0,
@@ -2793,7 +2803,11 @@ struct OpenXrHost::Impl {
                  std::atan2(-forward.x, -forward.z) * 57.29578f,
                  correction_samples != 0 ? correction / static_cast<float>(correction_samples)
                                          : 0.0f,
-                 correction_worst);
+                 correction_worst,
+                 delivered - reported_delivered > copied_frames
+                     ? delivered - reported_delivered - copied_frames
+                     : 0u,
+                 repeated_frames);
         if ((has_hand_tracking || (use_grips && actions_ready)) && !controllers_used) {
             const float held = pad_samples != 0 ? 1.0f / static_cast<float>(pad_samples) : 0.0f;
             LOG_INFO(Core_Vr,
@@ -2861,6 +2875,7 @@ struct OpenXrHost::Impl {
         pad_from_head = {};
         controller_samples = 0;
         end_frame_time = 0.0;
+        repeated_frames = 0;
         end_frame_worst = 0.0;
         end_frame_held = 0;
         copy_time = 0.0;
