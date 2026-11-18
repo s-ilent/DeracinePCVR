@@ -15,9 +15,12 @@
 param(
     [Parameter(Mandatory)][string]$Exe,
     [Parameter(Mandatory)][string]$Out,
+    # The explicitly designated private game shadow. Required: the runner writes the pinned
+    # engine.ini into it, so it must never be the active installation or a shared directory.
+    [Parameter(Mandatory)][string]$ShadowRoot,
     [string]$Worktree = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path,
     [string]$Lab = '',
-    [string]$Game = 'D:\Temp\Deracine\CUSA11919-guardrails-2026-11-17',
+    [string]$Game = '',
     [string]$Label = '',
     [int]$Vblank = 60,
     [double]$Warmup = 10.0,
@@ -43,24 +46,36 @@ $ErrorActionPreference = 'Stop'
 $inv = [System.Globalization.CultureInfo]::InvariantCulture
 $script:emulator = $null
 $script:runStart = $null
+if ([string]::IsNullOrWhiteSpace($Game)) { $Game = $ShadowRoot }
+
+# --- positive process ownership (no name-based sweep) ----------------------------------------
+. (Join-Path $PSScriptRoot 'process_ownership.ps1')
+$script:ownedProcesses = [System.Collections.Generic.List[object]]::new()
+
+# Defined before the trap: a trap cannot call a function that is defined later in the script body.
+function Stop-LabGame {
+    try {
+        $result = Stop-OwnedProcesses -Records $script:ownedProcesses -TableProvider { Get-ProcessTable }
+        foreach ($entry in @($result.Stopped)) {
+            Write-Output ('cleanup: stopped pid {0} ({1})' -f $entry.Id, $entry.Role)
+        }
+        foreach ($entry in @($result.Skipped)) {
+            Write-Output ('cleanup: skipped pid {0} ({1}): {2}' -f $entry.Id, $entry.Code, $entry.Reason)
+        }
+        if ($result.Ambiguous) {
+            Write-Output 'cleanup: the owned process set could not be fully resolved; see the skips above'
+        }
+    } catch {
+        Write-Output ('cleanup failed: {0}' -f $_.Exception.Message)
+    }
+}
 
 trap {
     Write-Output ("runner failed: {0}" -f $_.Exception.Message)
     if ($_.InvocationInfo -and $_.InvocationInfo.PositionMessage) {
         Write-Output $_.InvocationInfo.PositionMessage
     }
-    try {
-        if ($script:emulator -and -not $script:emulator.HasExited) {
-            Stop-Process -Id $script:emulator.Id -Force -ErrorAction SilentlyContinue
-        }
-    } catch { }
-    Get-Process -Name shadps4 -ErrorAction SilentlyContinue | ForEach-Object {
-        try {
-            if ($null -ne $script:runStart -and $_.StartTime -ge $script:runStart) {
-                Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
-            }
-        } catch { }
-    }
+    Stop-LabGame
     exit 4
 }
 
@@ -111,7 +126,7 @@ if (-not $Label) { $Label = $runName }
 # --- preflight and the guard ----------------------------------------------------------------
 $preflightPath = Join-Path $Out 'preflight.json'
 & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'preflight.ps1') -Worktree $Worktree `
-    -Out $preflightPath -Game $Game
+    -Out $preflightPath -Game $Game -ShadowRoot $ShadowRoot -Python $Python
 if ($LASTEXITCODE -ne 0) { throw "preflight failed with exit $LASTEXITCODE" }
 $preDoc = Get-Content -LiteralPath $preflightPath -Raw | ConvertFrom-Json
 
@@ -133,18 +148,7 @@ function Invoke-Guard([string]$Op, [string]$Path) {
 }
 
 function Fail-Run([string]$Reason) {
-    try {
-        if ($script:emulator -and -not $script:emulator.HasExited) {
-            Stop-Process -Id $script:emulator.Id -Force -ErrorAction SilentlyContinue
-        }
-    } catch { }
-    Get-Process -Name shadps4 -ErrorAction SilentlyContinue | ForEach-Object {
-        try {
-            if ($null -ne $script:runStart -and $_.StartTime -ge $script:runStart) {
-                Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
-            }
-        } catch { }
-    }
+    Stop-LabGame
     # Keep the evidence of a failed session: without the log, the next attempt has to guess.
     try {
         $labLogPath = Join-Path $Lab 'user\log\shad_log.txt'
@@ -209,6 +213,18 @@ $labUser = Join-Path $Lab 'user'
 $dumpFlag = Join-Path $labUser 'dump_render_targets'
 $dumpRoot = Join-Path $labUser 'rt_dump'
 $engineIni = Join-Path $Game 'gameproject\saved\config\ps4\engine.ini'
+
+# --- private game-shadow proof, before anything is written into the game shadow ---------------
+# The shadow checker resolves junctions and reparse points, rejects the active installation,
+# shared directories, protected labs and path escapes, and verifies the eboot against the
+# shadow's own manifest. It fails closed; preflight records the same proof.
+$shadowEvidence = Join-Path $Out 'shadow.json'
+& $Python (Join-Path $PSScriptRoot 'game_shadow.py') check --game $Game --shadow-root $ShadowRoot `
+    --eboot $gameEboot --json 2>&1 | Set-Content -LiteralPath $shadowEvidence -Encoding utf8
+if ($LASTEXITCODE -ne 0) {
+    throw "the selected game path is not a private benchmark shadow; refusing to write engine.ini (see $shadowEvidence)"
+}
+$engineIniBefore = if (Test-Path -LiteralPath $engineIni) { Get-Sha256 $engineIni } else { $null }
 
 Invoke-Guard 'copy_dest' $labExe
 Invoke-Guard 'write' $labSettings
@@ -325,19 +341,12 @@ if ($RenderDocCaptureDir) {
         -PassThru -WindowStyle Hidden -RedirectStandardOutput $consoleOut -RedirectStandardError $consoleErr
 }
 $script:emulator = $emulator
-
-function Stop-LabGame {
-    if ($emulator -and -not $emulator.HasExited) {
-        Stop-Process -Id $emulator.Id -Force -ErrorAction SilentlyContinue
-    }
-    Get-Process -Name shadps4 -ErrorAction SilentlyContinue | ForEach-Object {
-        try {
-            if ($_.StartTime -ge $runStart) {
-                Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
-            }
-        } catch { }
-    }
-}
+# Record exactly what this run launched. A RenderDoc run's emulator is the wrapper's child, which
+# the ownership module resolves from the live parent links; never a process matched by name.
+$launchRole = if ($RenderDocCaptureDir) { 'wrapper' } else { 'emulator' }
+$launchExe = if ($RenderDocCaptureDir) { $RenderDocCmd } else { $labExe }
+Register-LaunchedProcess -Process $emulator -Role $launchRole -ExpectedPath $launchExe `
+    -Into $script:ownedProcesses | Out-Null
 
 # --- log following --------------------------------------------------------------------------
 $logPos = 0
@@ -727,8 +736,12 @@ $document = [ordered]@{
             eboot          = $gameEboot
             eboot_sha256   = Get-Sha256 $gameEboot
             root           = [IO.Path]::GetFullPath($Game)
+            shadow_root    = [IO.Path]::GetFullPath($ShadowRoot)
+            shadow_evidence = $shadowEvidence
             content_source = 'private shadow: eboot copy plus junctions to the shared read-only content'
             engine_ini     = $engineIni
+            engine_ini_sha256_before = $engineIniBefore
+            engine_ini_sha256_after  = (Get-Sha256 $engineIni)
         }
         guest    = [ordered]@{
             screen_percentage = 300
