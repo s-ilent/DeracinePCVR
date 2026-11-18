@@ -807,7 +807,7 @@ bool ReadCopyTimings(vk::Device device, u64 tick) {
     return true;
 }
 } // Anonymous namespace
-void Image::CopyImage(Image& src_image) {
+void Image::CopyImage(Image& src_image, std::source_location where) {
     Vulkan::GpuProfile::Note(Vulkan::GpuProfile::HostWork::ImageCopy);
     const auto& src_info = src_image.info;
 
@@ -897,6 +897,28 @@ void Image::CopyImage(Image& src_image) {
     }
     ImageStats::NoteCopy(copy_bytes);
 
+    // SHADPS4_DBG_COPY_LOG=1: name every copy the emulator records, with the parameters and the
+    // execution site, so a copy counted in RENDERSTAT's `copies`/`copy_mb` can be identified
+    // instead of inferred. Off by default; this is CPU-side bookkeeping and changes neither
+    // command order nor the GPU timing. Added for GPU-05 in docs/performance/target-ledger.md.
+    static const bool log_copies = [] {
+        const char* value = std::getenv("SHADPS4_DBG_COPY_LOG");
+        return value != nullptr && value[0] == '1';
+    }();
+    if (log_copies) {
+        LOG_INFO(Render_Vulkan,
+                 "COPY site={}:{} bytes={} regions={} mips={} | "
+                 "src=0x{:x} {} {} {}x{}x{} levels={} samples={} size={} | "
+                 "dst=0x{:x} {} {} {}x{}x{} levels={} samples={} size={}",
+                 where.file_name(), where.line(), copy_bytes, regions.size(), num_mips,
+                 src_info.guest_address, AmdGpu::NameOf(src_info.type),
+                 vk::to_string(src_info.pixel_format), src_info.size.width, src_info.size.height,
+                 src_info.size.depth, src_info.resources.levels, src_info.num_samples,
+                 src_info.guest_size, info.guest_address, AmdGpu::NameOf(info.type),
+                 vk::to_string(info.pixel_format), info.size.width, info.size.height,
+                 info.size.depth, info.resources.levels, info.num_samples, info.guest_size);
+    }
+
     scheduler->EndRendering();
 
     src_image.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {});
@@ -941,6 +963,12 @@ void Image::CopyImage(Image& src_image) {
                               g_copy_timing.used);
         ++g_copy_timing.recorded;
     }
+    // Give the transfer its own GPU interval, so it is no longer charged to whatever operation was
+    // marked before it (GPU-05 in docs/performance/target-ledger.md). Called where the copy work
+    // actually begins: no command is reordered, no pass is split for a timestamp, and the existing
+    // SHADPS4_DBG_XFER measurement is untouched.
+    scheduler->MarkCopy(base_width, base_height, copy_bytes);
+
     if (!regions.empty()) {
         cmdbuf.copyImage(src_image.GetImage(), src_image.backing->state.layout, GetImage(),
                          backing->state.layout, regions);

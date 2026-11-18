@@ -5,6 +5,7 @@
 
 #include <algorithm>
 
+#include <source_location>
 #include <span>
 
 #include "common/enum.h"
@@ -152,7 +153,9 @@ struct Image {
     void Download(std::span<const vk::BufferImageCopy> download_copies, vk::Buffer buffer,
                   u64 offset, u64 download_size);
 
-    void CopyImage(Image& src_image);
+    // `where` defaults to the caller, so the copy's execution site is recorded without every call
+    // site having to pass it. Used by the SHADPS4_DBG_COPY_LOG line only.
+    void CopyImage(Image& src_image, std::source_location where = std::source_location::current());
     void CopyImageWithBuffer(Image& src_image, vk::Buffer buffer, u64 offset);
     void CopyMip(Image& src_image, u32 mip, u32 slice);
 

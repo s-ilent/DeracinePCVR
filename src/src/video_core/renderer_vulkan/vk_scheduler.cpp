@@ -1021,6 +1021,25 @@ void Scheduler::MarkDispatch(u64 shader_hash) {
     gpu_timing->Mark(current_cmdbuf, GpuTiming::Op::Dispatch, GpuTiming::OpLabel{.vs = shader_hash});
 }
 
+void Scheduler::MarkCopy(u32 width, u32 height, u64 bytes) {
+    if (!gpu_timing) {
+        return;
+    }
+    // Marked at the copy command, like a blit pass is marked at its beginning: the interval runs
+    // from here to the next mark, so the transfer is charged to itself rather than to the operation
+    // marked before it. `extra` carries the byte count, as the label documents for a copy.
+    gpu_timing->Mark(current_cmdbuf, GpuTiming::Op::Copy,
+                     GpuTiming::OpLabel{
+                         .width = width,
+                         .height = height,
+                         .extra = static_cast<u32>(bytes),
+                         .vs = 0,
+                         .ps = 0,
+                         .colors = 0,
+                         .depth = false,
+                     });
+}
+
 void Scheduler::EndRendering(std::source_location where) {
     if (!is_rendering) {
         return;

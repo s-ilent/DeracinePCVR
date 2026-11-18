@@ -553,6 +553,14 @@ public:
     /// SHADPS4_GPU_TIMING: opens a labelled interval for a compute dispatch.
     void MarkDispatch(u64 shader_hash);
 
+    /// SHADPS4_GPU_TIMING: opens a labelled interval for a copy the emulator records itself
+    /// (an image re-creation, an expand, or the compute-copy fast path in the rasterizer), carrying
+    /// its extent and byte count. Marks are placed at the copy command and nowhere else, so no
+    /// command is reordered and no render pass is split for a timestamp. Without this the transfer
+    /// is charged to whatever operation was marked before it — which is how a preservation copy
+    /// inflates the dispatch interval in front of it (see GPU-05 in docs/performance/target-ledger.md).
+    void MarkCopy(u32 width, u32 height, u64 bytes);
+
     /// Ends current rendering scope.
     void EndRendering(std::source_location where = std::source_location::current());
 
