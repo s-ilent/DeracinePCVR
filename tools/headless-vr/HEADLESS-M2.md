@@ -124,9 +124,11 @@ recommended entry point.
   606.2 Mpx / 41.4 passes, fps p50 33.5, 77 frames.
 - Gameplay entry (lab 2, independently constructed): `_build/headless/runs/m3-portable-2` — gate
   63 s, 1865.8 / 550.2 / 38.4, fps p50 31.8, 76 frames, gameplay capture visually checked.
-- Unified-build live cell (scene confirmation, not a benchmark cell): 1866.3 draws, 2880×3240 RGBA8
-  eye, 860 Mpx / 55.7 passes, 35.7 fps. The larger target area is a renderer-state difference at the
-  same scene; the band now bounds draws tightly and Mpx/passes loosely so this is accepted.
+- Unified-build live cell (first validated benchmark cell on the migrated executable): gameplay at
+  65 s, 101 windows, 100% in band, unique rendered FPS 38.3, draws 1513-2024, Mpx 880, passes 56.9,
+  GPU 62.6% busy, save verified, clean quit. The gate initially rejected it because the loading
+  transition was the anchor (2208 draws / 5676 Mpx / 308 passes); the anchor now requires the band
+  and the same log validates.
 - Workload and bands: `_build/headless/validation/results/RESULTS.md` §2 (M2-confirmed).
 - Save provenance and hashes: `_build/headless/validation/results/SAVE.json` and
   [`save-slot/MANIFEST.json`](save-slot/MANIFEST.json).

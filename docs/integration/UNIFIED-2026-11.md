@@ -5,13 +5,13 @@
 | | |
 |---|---|
 | Branch | `integration/deracine-unified-2026-11` |
-| Tip | source content `5e618d1`; later commits are documentation only |
-| Source commit of the shipped binary | `5e618d1` |
+| Tip | source content `4c03616`; later commits are documentation only |
+| Source commit of the shipped binary | `4c03616` (build validated at `D8FA1D34…`) |
 | Base | `acda49e` (`recovery/baseline`), replayed onto the source-only published history `cf10f9a5` |
 | Worktree | `M:\Development\Deracine-work\wt-unified-pub` (migration/fix worktree; `wt-unified` keeps the pre-rewrite tree) |
-| Commits since base | 194 (25 since the published base `cf10f9a5`) |
-| Diff since base | 173 files, +28,016 / −340 |
-| Diff since published base | 59 files, +7,710 / −161 |
+| Commits since base | 197 (28 since the published base `cf10f9a5`) |
+| Diff since base | 175 files, +28,191 / −340 |
+| Diff since published base | 61 files, +7,888 / −164 |
 | Executable | `wt-unified-pub\build\shadPS4.exe`, 73,333,760 bytes |
 | SHA-256 | `D8FA1D342D635EC258E8B16D9094832C0C13FDE26B29CDA9DA9C12B39C50114B` |
 
@@ -89,7 +89,7 @@ Baseline comparison, same machine and toolchain:
 | `acda49e` (batch 1 of this integration) | 542 | 532 | 10 | documented inherited Windows set |
 | unified `fc01c02` (before M2) | 770 | 765 | 4 | +228 tests, 0 new failures, 6 inherited failures fixed |
 | unified `647b87b` (with M2) | 776 | 772 | 4 | +6 `ScriptedTimeline` tests; same four inherited failures |
-| **unified `5e618d1` (migrated + review fixes)** | **790** | **786** | **4** | +14 scripted lifetime/worker tests; same four inherited failures |
+| **unified `4c03616` (migrated + review fixes)** | **790** | **786** | **4** | +14 scripted lifetime/worker tests; same four inherited failures |
 
 Fixed relative to the documented baseline: `shadps4_memory_patcher_test` (compat `1f5aaff`) and
 the five patch-family targets (`patch_repository`, `patch_state`, `patch_domain`, `patch_session`,
@@ -104,6 +104,16 @@ hand retarget/live (18), plus the compat patch-manager cases. The benchmark suit
 (`tools/benchmark/tests`, standard-library Python) is **115/115** (scene gate, RGB colour gate,
 private-shadow policy, terminology, validator/path guard), and the process-ownership PowerShell
 suite is **13/13**; both run without a GPU.
+
+**Live headless smoke (GPU lock, no headset, no SteamVR).** The published executable
+`D8FA1D34…` was driven from the slot-1 save into gameplay by the committed M2 sequence. The run
+reached `phase=gameplay` at 65 s with 101 measured windows, **100 % in band**, unique rendered FPS
+**38.3** (`D8FA1D34` built from the migrated source), draws **1513–2024**, Mpx **880**, passes
+**56.9**, GPU busy 62.6 %, save verified, normal quit. The first pass exposed a gate defect: the
+loading-to-gameplay transition (2208 draws / 5676 Mpx / 308 passes) was the first window above the
+800-draw gate and became the anchor, rejecting a window that was 98 % in band. The anchor now
+requires the band too; the same log validates. Evidence: `_build/unified/smoke-publish/`
+(`run.json`, `shad_log.txt`). This is a **smoke/validation cell, not a performance claim**.
 
 **Validation limitations (explicit):** no emulator, game, SteamVR or GPU run was performed. The
 HMD slot was held by another agent (`wt-crossfork-int`) for the whole integration, and the project
@@ -172,9 +182,8 @@ active `pc-vr/` folder; the deployed binary there is `E6A5A165…`, untouched).
 
 ### Remaining steps before safe deployment
 1. Rebuild from `647b87b` on a clean machine and confirm the same test result (documented above).
-2. Run one **headless gameplay cell** with `tools/benchmark/headless-gameplay.ps1` inside the GPU
-   lock (first live use of the new benchmark). M2 entry is two-lab verified, but this exact
-   benchmark profile has not been measured live; a cell is a measurement, not a projection.
+2. Repeat the headless gameplay cell from a second independently constructed lab for **this exact
+   benchmark profile** (the M2 entry is two-lab verified; this profile has one live cell).
 3. On a worn headset, with permission: VR smoke test — PSVR/OpenXR init, both eyes, tracking,
    audio; confirm the M2 switches (all unset in a normal session) change nothing; then the
    classroom benchmark for unique rendered FPS. Do not use compositor cadence.
@@ -298,6 +307,12 @@ All items are committed on the migrated branch; the migration/replay mapping is 
    `GpuModified` propagation are untouched; the recycler remains excluded; depth pass, barrier,
    camera clock and downsampling remain opt-in.
 
-Validation for this section: 790 C++ tests / 786 passed / same four inherited failures; 115 Python
+8. **Live smoke finding (fixed).** The first live headless gameplay cell on the unified build
+   reached gameplay but was rejected because the loading transition became the window anchor.
+   `4c03616` makes anchor selection require the band; the same log now validates (100 % in band).
+   That is the value of the live gate: it caught a measurement defect that offline tests could not.
+
+Validation for this section: 790 C++ tests / 786 passed / same four inherited failures; 116 Python
 benchmark tests and 13 process-ownership cases pass; emulator builds clean; executable SHA-256 in
-§A. No live gameplay/headset run was performed, so the runtime acceptance gates in §E remain.
+§A. One live headless gameplay cell passed (no headset, no SteamVR); headset acceptance remains a
+separate gate.

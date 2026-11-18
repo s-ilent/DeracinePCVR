@@ -76,7 +76,7 @@ fast-forward.
 ## 4. Final state
 
 Source content at the documentation commit (the published tip is this plus documentation commits):
-`5e618d1` — 25 commits since `cf10f9a5`, 59 files, +7,710 / −161.
+`4c03616` — 28 commits since `cf10f9a5`, 61 files, +7,888 / −164.
 
 Validation on the final tree:
 
@@ -85,11 +85,14 @@ Validation on the final tree:
 - CTest: **790 tests, 786 passed, 4 failed** — the same four inherited failures (gcn and usbd
   `_NOT_BUILT`, `ReadConstSnapshotDiag.IsolationDisabledAfterTestB`,
   `BachataRuntimeClient.ValidatesSocketPathUnderRuntimeRoot`); the 20 scripted-input tests pass;
-- benchmark Python suite: **115 tests pass** (scene gate, RGB gate, shadow policy, terminology,
+- benchmark Python suite: **116 tests pass** (scene gate, RGB gate, shadow policy, terminology,
   validator/path guard);
 - process-ownership PowerShell suite: **13/13**.
 
-No live gameplay or headset run was performed in this phase; GPU/headset acceptance remains a
-separate gate. The benchmark's classroom path now also requires a one-time shadow manifest, which
-is deliberately not created by the integration agent (the private lab was not modified):
+One live headless gameplay cell was run under the GPU lock (no headset, no SteamVR) after the
+build: it reached gameplay and exposed the transition-anchor defect, fixed in `4c03616`; the same
+log validates at 100% in band (unique FPS 38.3, draws 1513-2024, Mpx 880, passes 56.9). Headset
+acceptance remains a separate gate. The benchmark's classroom path now also requires a one-time
+shadow manifest, which is deliberately not created by the integration agent (the private lab was
+not modified):
 `pwsh -File tools\benchmark\new-shadow-manifest.ps1 -ShadowRoot <private shadow> -Verify`.
