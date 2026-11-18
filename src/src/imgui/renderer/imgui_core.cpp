@@ -15,6 +15,7 @@
 #include "font_stack.h"
 #include "imgui/imgui_layer.h"
 #include "imgui_core.h"
+#include "imgui_exit_guard.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_vulkan.h"
 #include "imgui_internal.h"
@@ -40,6 +41,14 @@ static std::atomic<std::uint32_t> force_gamepad_input_capture_count{0};
 namespace ImGui {
 
 namespace Core {
+
+namespace {
+/// One process-wide decision: Shutdown and the at_quick_exit callback race to save the settings;
+/// this makes whichever arrives first the only saver, and makes the loser a no-op even though the
+/// ImGui context and the ini filename buffer are already gone.
+ExitSaveGuard exit_save_guard;
+std::atomic<bool> shutdown_done{false};
+} // namespace
 
 void AcquireGamepadInputCapture() {
     force_gamepad_input_capture_count.fetch_add(1, std::memory_order_relaxed);
@@ -155,7 +164,15 @@ void Initialize(const ::Vulkan::Instance& instance, const Frontend::WindowSDL& w
         GetIO().FontGlobalScale *= dpi;
     }
 
-    std::at_quick_exit([] { SaveIniSettingsToDisk(GetIO().IniFilename); });
+    std::at_quick_exit([] {
+        // A context destroyed by Shutdown has already saved its settings. The guard makes this
+        // callback a no-op then; the explicit null check keeps even an unexpected lifecycle from
+        // dereferencing GImGui.
+        if (GetCurrentContext() == nullptr) {
+            return;
+        }
+        exit_save_guard.SaveOnQuickExit([] { SaveIniSettingsToDisk(GetIO().IniFilename); });
+    });
 }
 
 void OnResize() {
@@ -167,6 +184,12 @@ void OnSurfaceFormatChange(vk::Format surface_format) {
 }
 
 void Shutdown(const vk::Device& device) {
+    // Instance destruction can reach here more than once in a bad teardown; the first call owns
+    // the device, the context and the filename buffers.
+    if (shutdown_done.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+
     auto result = device.waitIdle();
     if (result != vk::Result::eSuccess) {
         LOG_WARNING(ImGui, "Failed to wait for Vulkan device idle on shutdown: {}",
@@ -175,9 +198,20 @@ void Shutdown(const vk::Device& device) {
 
     TextureManager::StopWorker();
 
-    const ImGuiIO& io = GetIO();
+    ImGuiIO& io = GetIO();
     const auto ini_filename = (void*)io.IniFilename;
     const auto log_filename = (void*)io.LogFilename;
+
+    // Persist while the context is still alive. The at_quick_exit callback used to be the only
+    // saver; on this path it runs after DestroyContext and dereferenced GImGui ("No current
+    // context" assert). Saving here and marking the context destroyed makes the callback a
+    // no-op, and the ordinary quick-exit path (where Shutdown never runs) still saves from the
+    // callback.
+    exit_save_guard.SaveBeforeDestroy([&] {
+        if (ini_filename != nullptr) {
+            SaveIniSettingsToDisk(io.IniFilename);
+        }
+    });
 
     Vulkan::Shutdown();
     Sdl::Shutdown();

@@ -1519,3 +1519,28 @@ gtest_discover_tests(shadps4_scripted_timeline_test
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     DISCOVERY_TIMEOUT 60
 )
+
+# ===========================================================================
+# ImGui exit-save lifecycle (pure state, no ImGui/Vulkan dependency)
+# ===========================================================================
+add_executable(shadps4_imgui_exit_guard_test
+    test_imgui_exit_guard.cpp
+)
+
+target_include_directories(shadps4_imgui_exit_guard_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+)
+
+target_compile_features(shadps4_imgui_exit_guard_test PRIVATE cxx_std_23)
+
+target_link_libraries(shadps4_imgui_exit_guard_test PRIVATE
+    GTest::gtest_main
+)
+
+list(APPEND TEST_TARGETS shadps4_imgui_exit_guard_test)
+
+gtest_discover_tests(shadps4_imgui_exit_guard_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)
