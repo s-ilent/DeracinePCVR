@@ -101,13 +101,40 @@ disagrees. Provenance is never silently dropped.
 the CLI is a thin wrapper. The image gate and the scene gate are independent: a run must pass both,
 and a scene-signature score is not colour evidence.
 
+## Private game shadow (required)
+
+The runner writes the pinned `engine.ini` into the game directory it measures, so it will only do
+that for an explicitly designated **private shadow**, never the active installation:
+
+- pass `-ShadowRoot <dir>` (mandatory); `-Game` defaults to it;
+- the shadow contains `benchmark-shadow.json` with `{"private": true, "owner": "<name>",
+  "eboot_sha256": "<hash>"}`. Provision it once with
+  `pwsh -File tools\benchmark\new-shadow-manifest.ps1 -ShadowRoot <dir> -Verify`;
+- `game_shadow.py` resolves junctions, symlinks and reparse points, rejects the active
+  installation, shared directories and protected labs (`shadow-policy.json`), refuses path escapes
+  and an eboot that does not match the manifest. `preflight.ps1` and the runner both fail closed;
+- `run.json` records the shadow proof and the engine.ini hash before and after the write.
+
+## Process ownership
+
+Cleanup stops only what this run launched: the emulator, or a RenderDoc wrapper and its child,
+verified by pid + creation time + executable path against a fresh process table. Another agent's
+emulator is never matched by name; a process whose identity cannot be verified is reported and
+left running. Tests: `pwsh -File tools\benchmark\tests\test_process_ownership.ps1`.
+
 ## Files
 
 ```
 tools/benchmark/
-  runner.ps1            one pinned session: preflight, launch, scene gate, screenshot, warmup,
+  runner.ps1            one pinned session: preflight, private-shadow proof, launch, scene gate,
+                        screenshot, warmup,
                         window, stop, postflight, run.json, self-validation
-  preflight.ps1         hashes protected files/worktrees before a session
+  preflight.ps1         hashes protected files/worktrees and verifies the private shadow
+  game_shadow.py        private-shadow policy: realpath, manifest, eboot pin, blocklist
+  shadow-policy.json    active-install/shared/protected denylist for the shadow + path guard
+  new-shadow-manifest.ps1  one-time provisioning of a shadow's benchmark-shadow.json
+  process_ownership.ps1  positive process ownership for cleanup (pid+creation+path)
+  image_validation.py   RGB colour gate, separate from scene identity
   postflight.ps1        recomputes them; fails on unexpected change
   validator.py          independent validity gate (exit 0 valid / 1 invalid / 2 usage)
   report.py             valid-only report; separate observed / estimated / informational
