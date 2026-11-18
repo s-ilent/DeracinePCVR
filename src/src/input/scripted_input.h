@@ -24,7 +24,24 @@ namespace Input {
 /// "recenter" for the player asking for the view to be reset where the head is at that moment,
 /// "worn=0" / "worn=1" for the headset being taken off and put back on.
 /// Lines starting with '#' are ignored. Times count from when the script is started.
+/// A line may also start on a guest frame ("frame=<n>", optionally with "frames=<m>" for how
+/// many frames it lasts), which follows the title's own frame count instead of the clock; the
+/// two kinds mix freely. The script ends once every clock-numbered line has run out and every
+/// frame-numbered line has reached its frame (plus its frames= count, if any).
+///
+/// SHADPS4_INPUT_SCRIPT names the script (unset: none is loaded and nothing runs).
+/// SHADPS4_SCRIPT_FRAME_STALL_SECONDS bounds how long the guest frame counter may stand still
+/// while frame-numbered lines are still pending: once it has not moved for that many seconds the
+/// script is given up on, its inputs released and a warning logged. Default 30; 0 (or less)
+/// disables the watchdog; a value that is not a number falls back to the default. Only read when
+/// a script is started.
 void StartScriptedInput(const std::filesystem::path& script);
+
+/// Stops the replay thread, if one is running, and joins it: shutdown calls this before the VR
+/// runtime and the controllers the script reads are taken down. The wait is bounded (2 s); a
+/// thread that does not stop in time is left detached and a warning is logged, rather than
+/// deadlocking the exit. Safe to call when no script ever ran, and more than once.
+void StopScriptedInput();
 
 /// The loudness a running script wants the microphone to hear right now, 0 for none. Also
 /// what a title takes for blowing hard while the player holds the buttons that stand for it

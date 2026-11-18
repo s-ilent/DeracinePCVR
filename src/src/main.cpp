@@ -545,6 +545,8 @@ int main(int argc, char* argv[]) {
         Input::StartScriptedInput(input_script);
     }
     emulator->Run(ebootPath, gameArgs, overrideRoot);
+    // A normal run leaves through quick_exit (and Emulator::Shutdown); this covers a return.
+    Input::StopScriptedInput();
 
     return 0;
 }

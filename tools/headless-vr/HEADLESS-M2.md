@@ -39,6 +39,7 @@ Every new behaviour is off unless its variable is set. A normal headset session 
 | `SHADPS4_VR_HANDS` | off | the host's hand is returned; no synthetic hand is created |
 | `SHADPS4_VR_MOVE_FROM_PAD` | off | the emulated pad does not touch the Move input |
 | `SHADPS4_INPUT_SCRIPT` | off | no scripted input is loaded (existing mechanism) |
+| `SHADPS4_SCRIPT_FRAME_STALL_SECONDS` | 30 | only with a script: the first 30 s without guest-frame progress (with `frame=` steps pending) ends it and releases its inputs; `0` disables the watchdog |
 | `SHADPS4_DBG_AUTOPRESS` | off | no test input is injected (existing mechanism) |
 | `SHADPS4_EXIT_AFTER` | off | no timed quit |
 | `SHADPS4_CLEAN_EXIT` | off | the normal `quick_exit` path is unchanged |
