@@ -97,7 +97,7 @@ void BlitHelper::ReinterpretColorAsMsDepth(u32 width, u32 height, vk::SampleCoun
     state.depth_stencil_attachment.image_layout = vk::ImageLayout::eDepthAttachmentOptimal;
     state.depth_stencil_attachment.has_depth = true;
     state.depth_stencil_attachment.depth_clear = true;
-    scheduler.BeginRendering(state);
+    scheduler.BeginRendering(state, 0, 0, Vulkan::Scheduler::PassKind::Blit);
 
     const auto cmdbuf = scheduler.CommandBuffer();
     const vk::DescriptorImageInfo image_info = {
@@ -208,7 +208,7 @@ void BlitHelper::CopyBetweenMsImages(u32 width, u32 height, vk::SampleCountFlagB
     state.color_attachments[0].image = dest;
     state.color_attachments[0].image_layout = vk::ImageLayout::eColorAttachmentOptimal;
     state.color_attachments[0].is_clear = true;
-    scheduler.BeginRendering(state);
+    scheduler.BeginRendering(state, 0, 0, Vulkan::Scheduler::PassKind::Blit);
 
     const auto cmdbuf = scheduler.CommandBuffer();
     const vk::DescriptorImageInfo image_info = {
@@ -321,7 +321,7 @@ void BlitHelper::SmoothInto(u32 width, u32 height, vk::Format src_pixel_format,
     state.color_attachments[0].image_view = dst_view;
     state.color_attachments[0].image = dest;
     state.color_attachments[0].image_layout = vk::ImageLayout::eColorAttachmentOptimal;
-    scheduler.BeginRendering(state);
+    scheduler.BeginRendering(state, 0, 0, Vulkan::Scheduler::PassKind::Blit);
 
     const auto cmdbuf = scheduler.CommandBuffer();
     const vk::DescriptorImageInfo image_info = {
@@ -460,7 +460,7 @@ void BlitHelper::CopyColorToDepth32(u32 width, u32 height, vk::Image source,
     state.depth_stencil_attachment.depth_clear = false;
     state.depth_stencil_attachment.has_stencil = has_stencil;
     state.depth_stencil_attachment.stencil_clear = false;
-    scheduler.BeginRendering(state);
+    scheduler.BeginRendering(state, 0, 0, Vulkan::Scheduler::PassKind::Blit);
 
     const auto cmdbuf = scheduler.CommandBuffer();
     const vk::DescriptorImageInfo image_info = {

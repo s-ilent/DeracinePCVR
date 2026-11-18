@@ -529,15 +529,23 @@ public:
     /// Attempts to execute operations whose tick the GPU has caught up with.
     void PopPendingOperations();
 
+    /// What a pass the scheduler is asked to begin is, as far as SHADPS4_GPU_TIMING's labelling
+    /// goes: the title's own pass, or one the emulator records to copy or convert an image. The
+    /// distinction matters because a copy is not a render pass the title asked for, and charging
+    /// its time to "a pass with no shader" would hide it among the title's.
+    enum class PassKind : u8 {
+        Title,
+        Blit,
+    };
+
     /// Starts a new rendering scope with provided state. `vs_hash` and `ps_hash` are the guest
     /// shaders the pass is opened for, so SHADPS4_GPU_TIMING can label what a pass cost; 0 where the
     /// caller drives the pass itself and has no shader to name.
-    void BeginRendering(const RenderState& new_state, u64 vs_hash = 0, u64 ps_hash = 0);
+    void BeginRendering(const RenderState& new_state, u64 vs_hash = 0, u64 ps_hash = 0,
+                        PassKind kind = PassKind::Title);
 
     /// SHADPS4_GPU_TIMING: opens a labelled interval for a compute dispatch.
     void MarkDispatch(u64 shader_hash);
-    /// SHADPS4_GPU_TIMING: opens a labelled interval for a copy the emulator records.
-    void MarkCopy(u32 width, u32 height, u32 kb);
 
     /// Ends current rendering scope.
     void EndRendering(std::source_location where = std::source_location::current());

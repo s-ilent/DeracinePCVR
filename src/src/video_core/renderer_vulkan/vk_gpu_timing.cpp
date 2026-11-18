@@ -66,7 +66,11 @@ std::string OpLabelText(GpuTiming::Op op, const GpuTiming::OpLabel& label) {
     case GpuTiming::Op::Dispatch:
         return fmt::format("dispatch shader {:x}", label.vs);
     case GpuTiming::Op::Copy:
-        return fmt::format("copy {}x{} ({} KB)", label.width, label.height, label.extra);
+        // Marked where the emulator records the copy, which knows the target but not always the
+        // bytes: the size alone is still worth reading next to the title's passes.
+        return label.extra != 0 ? fmt::format("copy {}x{} ({} KB)", label.width, label.height,
+                                              label.extra)
+                                : fmt::format("copy {}x{}", label.width, label.height);
     default:
         return "other";
     }
@@ -274,8 +278,14 @@ GpuTiming::Reading GpuTiming::TakeReading() {
     return reading;
 }
 
-std::vector<GpuTiming::TopOp> GpuTiming::TakeTopOps(u32 limit, double& measured_ms,
-                                                   double& unowned_ms, u64& overflow) {
+const char* GpuTiming::OpKindName(Op op) {
+    return OpName(op);
+}
+
+std::vector<GpuTiming::TopOp> GpuTiming::TakeTopOps(
+    u32 limit, double& measured_ms, double& unowned_ms, u64& overflow,
+    std::array<KindTotal, static_cast<size_t>(Op::Count)>& by_kind) {
+    by_kind = {};
     std::map<std::pair<u8, OpLabel>, OpTotal> taken;
     {
         std::scoped_lock ops_lock{g_ops_mutex};
@@ -294,11 +304,16 @@ std::vector<GpuTiming::TopOp> GpuTiming::TakeTopOps(u32 limit, double& measured_
     top.reserve(std::min<size_t>(limit, ranked.size()));
     for (const auto& [key, total] : ranked) {
         measured_ms += total.ms;
+        const auto op = static_cast<Op>(key.first);
+        const size_t kind_index = static_cast<size_t>(op);
+        if (kind_index < by_kind.size()) {
+            by_kind[kind_index].ms += total.ms;
+            by_kind[kind_index].count += total.count;
+        }
         if (top.size() >= limit) {
             continue;
         }
-        const auto op = static_cast<Op>(key.first);
-        top.push_back(TopOp{.kind = OpName(op),
+        top.push_back(TopOp{.kind = OpKindName(op),
                             .label = OpLabelText(op, key.second),
                             .ms = total.ms,
                             .count = total.count});

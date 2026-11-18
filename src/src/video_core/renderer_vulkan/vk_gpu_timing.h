@@ -148,12 +148,24 @@ public:
         u64 count{};
     };
 
+    /// What a window's measured time went on, by kind. Printed whether or not any one operation of
+    /// that kind is costly enough for the top list, so time spent on copies cannot go unmentioned
+    /// just because each copy is small.
+    struct KindTotal {
+        double ms{};
+        u64 count{};
+    };
+
+    /// The name of an operation kind, for a report.
+    static const char* OpKindName(Op op);
+
     /// The costliest operations since the last call, highest first, and what no operation owned
     /// (the top of a submission up to its first mark). Both are cleared by the call, like the other
     /// per-window counters here. `overflow` counts marks that did not fit the submission they
-    /// belonged to.
-    static std::vector<TopOp> TakeTopOps(u32 limit, double& measured_ms, double& unowned_ms,
-                                         u64& overflow);
+    /// belonged to. `by_kind` is filled in for every kind, zeroed first.
+    static std::vector<TopOp> TakeTopOps(
+        u32 limit, double& measured_ms, double& unowned_ms, u64& overflow,
+        std::array<KindTotal, static_cast<size_t>(Op::Count)>& by_kind);
 
 private:
     /// A mark made in the submission now being recorded: which query holds it, and what it was.

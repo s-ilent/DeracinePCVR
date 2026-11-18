@@ -764,18 +764,30 @@ void FrameStats::EndFrame() {
         double measured_ms = 0.0;
         double unowned_ms = 0.0;
         u64 overflow = 0;
-        const auto top = GpuTiming::TakeTopOps(8, measured_ms, unowned_ms, overflow);
+        std::array<GpuTiming::KindTotal, static_cast<size_t>(GpuTiming::Op::Count)> by_kind{};
+        const auto top = GpuTiming::TakeTopOps(8, measured_ms, unowned_ms, overflow, by_kind);
         if (!top.empty() || overflow != 0) {
+            std::string kinds;
+            for (size_t i = 0; i < by_kind.size(); ++i) {
+                if (by_kind[i].count == 0) {
+                    continue;
+                }
+                kinds += fmt::format("{}{} {:.2f} ms x{}", kinds.empty() ? "" : ", ",
+                                     GpuTiming::OpKindName(static_cast<GpuTiming::Op>(i)),
+                                     by_kind[i].ms / n, by_kind[i].count);
+            }
             std::string list;
             for (const auto& op : top) {
                 list += fmt::format("{}{:.2f} ms x{} [{}] {}", list.empty() ? "" : "; ", op.ms / n,
                                     op.count, op.kind, op.label);
             }
             LOG_INFO(Render_Vulkan,
-                     "gpu operations: {:.2f} ms a frame attributed, {:.2f} ms a frame between a "
+                     "gpu operations: {:.2f} ms a frame attributed ({}), {:.2f} ms a frame between a "
                      "submission's top and its first mark (unattributed), {} operations over the "
-                     "per-submission limit; costliest: {}",
-                     measured_ms / n, unowned_ms / n, overflow, list);
+                     "per-submission limit; each marked interval runs to the next mark, so a barrier "
+                     "or a copy recorded between two of them is inside the one before it; "
+                     "costliest: {}",
+                     measured_ms / n, kinds, unowned_ms / n, overflow, list);
         }
     }
     const auto per_frame = [n](Counter counter) {
@@ -865,7 +877,8 @@ static bool ContinuesPass(const RenderState& current, const RenderState& next) {
            !theirs.depth_clear && !theirs.stencil_clear;
 }
 
-void Scheduler::BeginRendering(const RenderState& new_state, u64 vs_hash, u64 ps_hash) {
+void Scheduler::BeginRendering(const RenderState& new_state, u64 vs_hash, u64 ps_hash,
+                               PassKind kind) {
     if (is_rendering && render_state == new_state) {
         return;
     }
@@ -969,13 +982,15 @@ void Scheduler::BeginRendering(const RenderState& new_state, u64 vs_hash, u64 ps
     if (gpu_timing) {
         // Marked before the pass begins, where no pipeline-stage restriction applies: the profiler
         // places its timestamps outside render passes and never ends one to take a measurement, so
-        // what it attributes is the pass the renderer recorded.
-        gpu_timing->Mark(current_cmdbuf, GpuTiming::Op::Pass,
+        // what it attributes is the pass the renderer recorded. A pass the emulator records to copy
+        // an image is marked as a copy, so it is not lost among the title's own passes.
+        const bool blit = kind == PassKind::Blit;
+        gpu_timing->Mark(current_cmdbuf, blit ? GpuTiming::Op::Copy : GpuTiming::Op::Pass,
                          GpuTiming::OpLabel{
                              .width = render_state.width,
                              .height = render_state.height,
-                             .vs = vs_hash,
-                             .ps = ps_hash,
+                             .vs = blit ? 0 : vs_hash,
+                             .ps = blit ? 0 : ps_hash,
                              .colors = static_cast<u8>(render_state.num_color_attachments),
                              .depth = db.has_depth || db.has_stencil,
                          });
@@ -993,14 +1008,6 @@ void Scheduler::MarkDispatch(u64 shader_hash) {
         return;
     }
     gpu_timing->Mark(current_cmdbuf, GpuTiming::Op::Dispatch, GpuTiming::OpLabel{.vs = shader_hash});
-}
-
-void Scheduler::MarkCopy(u32 width, u32 height, u32 kb) {
-    if (!gpu_timing) {
-        return;
-    }
-    gpu_timing->Mark(current_cmdbuf, GpuTiming::Op::Copy,
-                     GpuTiming::OpLabel{.width = width, .height = height, .extra = kb});
 }
 
 void Scheduler::EndRendering(std::source_location where) {
