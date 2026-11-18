@@ -1,0 +1,30 @@
+{
+  "description": "Required save fixture for the headless gameplay cell. The files are user-owned game data and are not committed; the harness copies them from -SavedataSource into its private lab and refuses a lab without slot 1.",
+  "game": "CUSA11919",
+  "stage": "m00_00_10_10",
+  "files": [
+    {
+      "name": "MGS_GameData_1",
+      "bytes": 17313,
+      "sha256": "C30D33846D35B090B3F89D4D1E6AD8C73B6B6DA264852BFEC9ECF8CD4214F93C",
+      "role": "slot 1, current classroom progress (Continue)"
+    },
+    {
+      "name": "MGS_SystemData",
+      "bytes": 2897,
+      "sha256": "EAB7FE140A57988167D45D8ABCB38C4AA0F518062CE26CD77D2BF027FD48745D",
+      "role": "system save metadata; the title reads it before Continue"
+    },
+    {
+      "name": "sce_sys/param.sfo",
+      "bytes": 1596,
+      "sha256": "A5081D3FC574F20A7DB84E6208097720FB094A9B37ACDE4A3C43D5788B111926",
+      "role": "save-slot metadata; part of the fixture"
+    }
+  ],
+  "notes": [
+    "A lab with only slot 0 (MGS_GameData_0, stage m00_00_80_10) never leaves the menu: there is no Continue target with this progress.",
+    "Do not publish or copy these files into Git, a release, or a shared machine profile.",
+    "The harness verifies these hashes in meta.save_data for every cell and refuses a mismatch."
+  ]
+}
