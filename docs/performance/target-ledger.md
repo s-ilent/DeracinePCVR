@@ -39,6 +39,7 @@
 | `investigating` | An investigation is in flight. Record the run IDs and the owner in the history. |
 | `blocked` | Open, but cannot proceed until the stated gate clears (hardware, a decision, or prerequisite evidence from another target). |
 | `completed` | Its question has been answered. Frozen unless genuinely new evidence appears. |
+| `closed` | Accepted synonym for `completed`, used by some records. Same meaning and same freeze. |
 | `rejected` | The candidate approach was refused and must not be re-run unchanged; the target is no longer a queue item. |
 
 A target may hold **closed experiments** (recorded in §8) while remaining `queued` for a
@@ -131,6 +132,14 @@ Verdict: valid, 52/52 in-band samples, `unique_fps` 22.171, `draws_mean` 1,871.5
 > run's log contains both lines, so that gate **was** active; `run.json`'s `env` block does not
 > record `SHADPS4_DBG_CALL_TIMES`. Treat these two numbers as real but re-state the flag when
 > re-running, and do not repeat the omission.
+>
+> **The same trap applies to `gpu timeline` and `gpu operations`.** They are printed only when
+> **`SHADPS4_GPU_TIMING=1`** (`vk_scheduler.cpp:730`, `:760`, `:850`; the gate lives in
+> `vk_gpu_timing.cpp`). `SHADPS4_FRAME_STATS=1` alone prints the `frame stats` line and *not* the
+> timeline or the operation attribution — verified 2026-11-19, when a run with `FRAME_STATS=1` and
+> no `GPU_TIMING` produced no `gpu timeline` line. Every M2 cell that quotes a command thread, GPU
+> execution or pass/dispatch attribution was run with `SHADPS4_GPU_TIMING=1`; none of the M2
+> manifests records it. **Record both variables explicitly in the manifest of every new cell.**
 
 Selected window (t = 117 s), reproduced from
 `lab/user/log/shad_log.txt`:
@@ -172,7 +181,33 @@ inflates the CPU side by ~4–5×; use this run for VUID/SYNC status, never for 
   which band a cell was judged against before comparing two cells.
 - VRAM in the M2 cells is steady at ~3,367–3,372 MB (`RENDERSTAT vram_mb`).
 
-### 4.5 Standing constraints
+### 4.5 The game configuration the cell actually runs (open validity question)
+
+The emulator log shows every run opening `/app0/gameproject/saved/config/ps4/engine.ini` — i.e. the
+**shadow's** copy, not a game-shipped file. Readings from 2026-11-19:
+
+- `_build/frame-time-profile-full-2026-11-18` (the shadow every M2 cell in this ledger uses) and
+  `D:\Temp\Deracine\CUSA11919-qual` both carry only
+  `[SystemSettings] r.ScreenPercentage=300` / `r.MSAACount=2`.
+- `D:\Temp\Deracine\1.0\Image0\...\ps4\engine.ini` additionally carries
+  `[/Script/MorpheusEditor.MorpheusRuntimeSettings] PSVRFrameSequence=Render120Scanout120`,
+  `bSmoothFrameRate=False`, a smoothed range to 250 and `t.MaxFPS=0`.
+
+**Correction (2026-11-19, from the user):** that larger file is **not part of the game** — it is an
+artifact the earlier frametime investigation added. Do not describe it as "what the game ships".
+What follows from it is still worth testing: it is a **120 Hz PSVR frame-sequence tweak**, the M2
+shadow does not carry it, and the persistent ~60 FPS front-end ceiling that
+`PASSES-AND-PACING.md` §3/§19 attributes to "the title pacing itself" is a plausible consequence of
+running without it.
+
+**Status:** a private shadow reproducing that tweak has been built
+(`_out/gpu01-depthpass-2026-11-19/shadow-morpheus120/`: 53 assets hard-linked, `engine.ini` written
+fresh, source shadow untouched). **Re-baselining M2 on it is a separate, deliberate change** — the
+band was derived without it and must be re-derived from a live cell (per
+`tools/benchmark/reference/scene-gameplay.json`), and §3 forbids comparing cells that differ in
+configuration. Do not mix it into an A/B whose other arm ran on the old shadow.
+
+### 4.6 Standing constraints
 
 - `docs/AUTONOMOUS_ENGINEERING.md` is mandatory for benchmark, capture and protected-path work;
   its enforcement lives in `tools/benchmark/` (validity validator, preflight/postflight hashes,
@@ -196,7 +231,7 @@ inflates the CPU side by ~4–5×; use this run for VUID/SYNC status, never for 
 | CPU-06 | Render-state preparation | `queued` | P1 | 2.21 ms/frame over 2,060 calls; ~193 draws skipped after it | Test safe reordering after the empty-draw decision |
 | CPU-07 | Driver queue submission | `queued` | P1 | `vkQueueSubmit` 1.77 ms/frame, 3 calls | Determine driver work vs back-pressure vs dependency |
 | CPU-08 | Unclassified translation | `queued` | P1 | ~9.0 ms/frame command-thread gap (selected window) | Find the largest missing exclusive cost with existing timers |
-| GPU-01 | Depth/scene preservation copies | `queued` | P0 | ~3.9 copies and ~139 MB/frame (M2 window), `depth_ms` ~3.7 ms | Matched A/B of the existing opt-in depth-write pass |
+| GPU-01 | Depth/scene preservation copies | `completed` | P0 | 2 × 71.19 MiB + 2 × 0.125 MiB copies/frame; pass removes one (GPU exec −4.07 ms) | Closed — no FPS benefit on a CPU-bound frame; a second ~71 MiB copy is unidentified |
 | GPU-02 | Guest compute `799062d096fa2314` | `queued` | P1 | 8 dispatches/frame, 4.86–5.45 ms/frame aggregate | Identify shader, geometry, I/O and critical path |
 | GPU-03 | Render passes and load/store | `queued` | P1 | pass attribution 8.44–8.70 ms/frame; heaviest pass 5.85–6.53 ms | Attribute pass cost vs load/store/barrier transitions |
 | GPU-04 | Depth-pass and barrier-in-pass switches | `queued` | P1 | opt-in, both off by default; matched-workload benefit unproven | Re-test the *safe* options only, in matched M2 |
@@ -265,6 +300,11 @@ inflates the CPU side by ~4–5×; use this run for VUID/SYNC status, never for 
   - 2026-11-17 — front-end measurement ~3.5 ms/frame; unsafe skip tried and rejected (GPU-04).
   - 2026-11-19 — M2 window measured `depth_ms` 133.5 ms / 36 frames ≈ 3.7 ms/frame; not
     decomposed.
+  - 2026-11-19 — **cross-reference GPU-01**: the depth-pass A/B measured `depth_ms` 3.85 → 4.14 ms
+    and `overlap_ms` 3.97 → 4.26 ms (overlapping ranges) and `images_created` unchanged, so the
+    depth pass does **not** remove this work. CPU-02's cost is therefore independent of GPU-01 and
+    remains open on its own; if the new ~71 MiB/frame copy turns out to feed the depth alias, these
+    two must be re-measured together.
 
 ### CPU-03 — Vulkan image creation/destruction
 
@@ -294,6 +334,12 @@ inflates the CPU side by ~4–5×; use this run for VUID/SYNC status, never for 
   - 2026-11-17 — front-end ~0.78 + 2.5 ms; recycler prototype measured (MEM-01).
   - 2026-11-19 — M2 window ~0.72 + 2.14 ms per frame over 36 frames; creation classes not yet
     separated.
+  - 2026-11-19 — **cross-reference GPU-01**: in the matched A/B, `images_created` 3.91 → 3.90 and
+    `images_destroyed` 3.89 → 3.88 are **unchanged** by the depth pass, and `create_ms` 0.72 → 0.86
+    / `destroy_ms` 1.76 → 2.49 have overlapping ranges. This confirms the assignment's correction
+    (the pass replaces an eligible colour→depth **copy operation**, not the image recreations) and
+    means CPU-03 is **not** addressed by GPU-01: its ~4 creations/frame and ~3.3 ms/frame of
+    create+destroy remain, and it is now the larger of the two remaining members of the chain.
 
 ### CPU-04 — `FindImage` slow path / global generation
 
@@ -418,7 +464,10 @@ inflates the CPU side by ~4–5×; use this run for VUID/SYNC status, never for 
 
 ### GPU-01 — Depth/scene preservation copies
 
-- **Status:** `queued` · **Priority:** P0 · **Last update:** 2026-11-19
+- **Status:** `completed` · **Priority:** P0 · **Last update:** 2026-11-19
+- **Experiment:** `gpu01-depthpass-2026-11-19` (matched M2 gameplay A/B, `SHADPS4_DBG_DEPTH_PASS=0`
+  vs `=1`). **Verdict: the candidate is active and does exactly what it claims on GPU copy work,
+  but it is off the critical path — no unique-FPS benefit in matched M2 gameplay.**
 - **Measured:** the depth alias changes `R32_SFLOAT` ↔ `D32_SFLOAT_S8_UINT`; the full surface is
   **74.65 MB** (0x4ac0000) at 5760×3240, **1 sample**, and the guest uses it as both a compute
   storage image and the scene depth/stencil target. Historical conversion copy:
@@ -426,15 +475,17 @@ inflates the CPU side by ~4–5×; use this run for VUID/SYNC status, never for 
   depth-write pass replacement; ~2 depth representations/frame. Later `XFER_GPU` measured
   **avg 1.949–1.991 ms** per copy (`copies=148`, no drops, no not-ready) — an upper bound that
   includes queue wait.
-- **Current M2 state (recorded by this ledger):** in the last RENDERSTAT window of
-  `translation-cost-2026-11-19` (36 frames) the run shows `copies=140`, `copy_mb=4992.1`,
-  `depth_ms=133.5`, `overlap_ms=137.9` — i.e. **≈3.9 copies and ≈139 MB of copy traffic per
-  frame, with ≈3.7 ms `depth_ms` and ≈3.8 ms `overlap_ms` per frame**. That is the right order
-  of magnitude for ~2 × 74.65 MB depth-representation copies per frame plus the 32³ LUT's two
-  expands; the exact split is not yet attributed and is exactly what GPU-05's missing direct-copy
-  markers would settle. **The copies do still occur on `main`**: the depth-write pass that
-  replaces them is integrated but **off by default** (`SHADPS4_DBG_DEPTH_PASS`, commits `56a6f8a`
-  + `58346e9`).
+- **Current M2 state (recorded by this ledger, superseded by the result below):** in the last
+  RENDERSTAT window of `translation-cost-2026-11-19` (36 frames) the run showed `copies=140`,
+  `copy_mb=4992.1`, `depth_ms=133.5`, `overlap_ms=137.9` — ≈3.9 copies and ≈139 MB of copy traffic
+  per frame. **The composition is now measured, not estimated:** two full-surface 71.19 MiB copies
+  per frame (two `5760×3240×4` surfaces; `5760×3240×4 = 74,649,600 B = 71.191 MiB`, and
+  `2 × 71.191 + 2 × 0.125 = 142.633 MiB/frame`, which the `copy_mb` counter matches), plus two
+  0.125 MiB 32³ LUT conversions. `RENDERSTAT copy_mb` is in **MiB** while `_build/ALIASING-REPORT.md`
+  quotes the same surface as **74.65 MB** (decimal) — the same quantity, different units; do not
+  treat them as different surfaces. **The copies do still occur on `main`**: the depth-write pass
+  that replaces one of them is integrated but **off by default** (`SHADPS4_DBG_DEPTH_PASS`, commits
+  `56a6f8a` + `58346e9`).
 - **Measurement semantics:** "measured in multiple, noncomparable runs" — the 3.6–4.9 ms figure
   and the 1.99 ms figure come from different builds/configurations and must not be subtracted
   from each other. `XFER_GPU` absorbs waits and is not pure transfer time.
@@ -457,13 +508,96 @@ inflates the CPU side by ~4–5×; use this run for VUID/SYNC status, never for 
   `Stencil8`), so the stencil plane must not be dropped; neither path carries stencil across a
   representation change, and it is preserved in place. `gl_FragDepth` writes rely on
   `VK_EXT_depth_range_unrestricted` being enabled for out-of-`[0,1]` values.
-- **Open question:** *Which exact copy commands exist in **current M2**, which contents must be
-  preserved, what is actual GPU execution versus dependency, and which copies delay the frame?*
-- **Next action:** a matched M2 gameplay A/B of the **already integrated** opt-in
-  `SHADPS4_DBG_DEPTH_PASS=0` vs `=1` on one binary and one scene, with render-target dumps,
-  `XFER_GPU`, the RENDERSTAT copy/`depth_ms`/`overlap_ms` counters and unique FPS per arm,
-  interleaved, ≥3 repeats, correctness gates recorded. This is the recommended first
-  investigation (§7).
+- **Result (2026-11-19, `gpu01-depthpass-2026-11-19`).** One binary built from current `main`'s
+  renderer content (`314a2cb`; exe `8991510F22CB8D4EC376DB4CA3458C713E4B5E90780FD994A780812B144E635A`,
+  whose `src` tree is byte-identical to `origin/main`), one scene
+  (`deracine-headless-gameplay-300-msaa2-vblank120`: vblank 120, eye 2880, MSAA 2, 120 refresh/cap,
+  save slot 1 verified), identical diagnostics in both arms (`SHADPS4_DBG_OVERLAP=1`,
+  `SHADPS4_GPU_TIMING=1`).
+
+  | cell | unique FPS | draws | Mpx | passes | GPU busy | samples |
+  |---|---|---|---|---|---|---|
+  | `arm0-s4` (`=0`) | 33.94 | 1,866 | 950 | 60.6 | 50.7 % | 225 (98.7 % in band) |
+  | `arm0-s5` (`=0`) | 33.16 | 1,866 | 867 | 56.3 | 50.7 % | 227 (100 %) |
+  | `arm1-s5` (`=1`) | **32.82** | 1,866 | 917 | 59.0 | **35.0 %** | 207 (99.5 %) |
+
+  Per-frame medians over the last 30 `RENDERSTAT` windows (`arm0-s5` → `arm1-s5`):
+
+  | counter | `=0` | `=1` | reading |
+  |---|---|---|---|
+  | `copies` (GPU) | 3.91 | **2.93** | one copy/frame removed |
+  | `copy_mb` (GPU) | 138.55 MiB | **69.37 MiB** | −69.2 MiB ≈ exactly one 71.19 MiB surface copy |
+  | `images_created` (CPU) | 3.91 | 3.90 | **unchanged** |
+  | `images_destroyed` (CPU) | 3.89 | 3.88 | **unchanged** |
+  | `create_ms` / `destroy_ms` (CPU) | 0.72 / 1.76 | 0.86 / 2.49 | overlapping ranges; no reliable change |
+  | `depth_ms` / `overlap_ms` (CPU) | 3.85 / 3.97 | 4.14 / 4.26 | overlapping ranges; no reliable change |
+  | GPU executing | 14.50 ms | **10.43 ms** | **−4.07 ms (−28 %)** |
+  | command thread | 26.37 ms | 24.82 ms | still the frame's long pole |
+
+  **What the pass does:** it replaces exactly **one** of the two ~71.19 MiB per-frame
+  representation copies with the full-screen depth-write pass, cutting that frame's GPU execution
+  by 4.07 ms — matching the independently measured 3.6–4.9 ms per copy
+  (`_build/ALIASING-REPORT.md`). **What it does not do:** it does not touch image re-creation
+  (`images_created`/`images_destroyed` and `create_ms`/`destroy_ms` are unchanged), it does not
+  reduce the CPU-side `ResolveDepthOverlap` cost, and it does **not** improve unique rendered FPS
+  (33.16 → 32.82, −1.0 %, i.e. inside the copy arm's own 33.16–33.94 spread of 2.3 %), because the
+  M2 gameplay frame is CPU-bound: command thread ~25–26 ms against ~10–15 ms of GPU execution.
+
+  This **confirms the 2026-11-17 quarantine verdict** ("$+13.4\%$ then $-7.2\%$, aggregate +2.8 %,
+  inside the 10 % noise floor") and **does not reproduce** the +34–40 % headline, now on the
+  workload that verdict demanded (a matched gameplay cell). It also confirms the assignment's
+  correction: the pass replaces eligible colour→depth copy *operations*, not the image recreations.
+
+- **New finding — one ~71.19 MiB/frame copy remains unidentified.** The copy arm performs **two**
+  full-surface 71.19 MiB copies per frame (plus two 0.125 MiB 32³ LUT conversions = 142.6 MiB,
+  which the counters match to 0.1 %). The pass is gated on `R32_SFLOAT` → `D32_SFLOAT` /
+  `D32_SFLOAT_S8_UINT`, 1 sample, same extent, depth-range-unrestricted, and removes only **one** of
+  them. The other ~71 MiB/frame copy is **not** the depth conversion and has no owner in this
+  ledger — it is a new, unclaimed target worth ~4 ms of GPU execution per frame.
+
+- **New evidence for GPU-05 (copy attribution).** `gpu operations` differs between the arms in a way
+  that names the problem: `=0` reports `pass 8.97 ms x869, dispatch 5.43 ms x213`; `=1` reports
+  `pass 9.46 ms x976, dispatch 0.69 ms x238, **copy 0.18 ms x17**`. In the copy arm the ~4 ms
+  depth copy is **unmarked** and is charged to the preceding interval (the compute dispatch that
+  writes the surface); once the pass marks its work as a copy, that dispatch interval falls to its
+  true compute cost. This is a direct, measured demonstration of the mis-attribution GPU-05 exists
+  to fix, and it also shows a blit pass does appear as `[copy]` when it is expensive enough to
+  reach the costliest list.
+
+- **Measurement-validity findings from this investigation (affect all M2 cells).**
+  1. `gpu timeline` (command thread, GPU executing) and `gpu operations` require
+     **`SHADPS4_GPU_TIMING=1`**; `SHADPS4_FRAME_STATS` alone prints the frame-stats line only. Any
+     cell that reports a command thread was run with that variable set — record it (the earlier M2
+     cells did not, the same provenance gap as `SHADPS4_DBG_CALL_TIMES`).
+  2. `SHADPS4_DBG_CALL_TIMES=1` **plus** `SHADPS4_DBG_XFER=1` collapse M2 gameplay to **0.6 fps**
+     (one frame per stats window), which makes the gameplay gate unsatisfiable. The two flags are
+     not usable together in this scenario; §8 records the excluded pair.
+  3. `SHADPS4_DBG_DUMP_HMD_AT_SCENE` **does not latch**. One `-EyeDump` run fired the scene gate
+     **75 times**, dumping 26–27 full-resolution render targets per capture, and collapsed gameplay
+     to 0.6 fps. It must not be enabled on a cell whose performance numbers matter until the dump
+     gate is fixed (a harness change, not done here).
+  4. The gameplay gate's failure text can mislead: with one frame per window it reports "no window
+     reached 800 draws (peak 3,074)" even though heavy windows were seen. Read the draw series, not
+     the message.
+  5. Environment instability cost four arm-runs: the pre-existing
+     `address_space.cpp:568 Protect: Unreachable code!` crash and one `0xc0000005` access violation
+     at `0x800dfa8d0` (both hit the `=1` arm **before** gameplay, at 26 draws with `depth_ms`
+     ≈ 0.015, i.e. with the depth pass never engaged), and one startup death with no log at all.
+     **None is attributable to the depth pass**, because the pass was inert at those points; they
+     are recorded as scene/session instability and are the reason arm-level retries are required.
+
+- **Open questions (now narrower):**
+  - *What is the second ~71.19 MiB/frame copy, and what is it for?* (New; the pass does not cover it.)
+  - *Why is only one of the two per-frame conversions eligible for the pass?* (Gate conditions are
+    exact; which one fails is unmeasured.)
+  - *Does the pass help once the CPU side is fixed?* It removes real GPU work (14.50 → 10.43 ms); if
+     the command thread ever stops being the limiter, that work would matter again.
+- **Next action:** **none for this target — it is closed.** Its follow-ups are: (a) give the
+  unidentified second ~71 MiB/frame copy an owner (a new target, or a GPU-05 follow-up, since
+  naming it needs the direct-copy markers); (b) fix the dump gate so visual evidence no longer
+  invalidates a cell; (c) record `SHADPS4_GPU_TIMING` in every future manifest. Do **not** re-run
+  this A/B unchanged — the question is answered, and the same configuration cannot answer it
+  differently.
 - **History:**
   - 2026-11-17 — aliasing characterised (`R32_SFLOAT` ↔ `D32_SFLOAT_S8_UINT`, 74.65 MB,
     2 re-creations/frame); the copy measured at 3.6–4.9 ms and the depth-write pass at
@@ -475,6 +609,12 @@ inflates the CPU side by ~4–5×; use this run for VUID/SYNC status, never for 
   - 2026-11-19 — `XFER_GPU` runs recorded (avg 1.949–1.991 ms/copy) and the M2 RENDERSTAT window
     confirmed the churn is still present on `main` with the pass off (≈3.9 copies / ≈139 MB per
     frame). Matched-playback A/B **not** yet run.
+  - 2026-11-19 — **`gpu01-depthpass-2026-11-19` run and closed.** Five arm-runs across four pairs
+    (the first three pairs were invalidated by the diagnostic set and by harness/environment
+    problems, all recorded above and in §8); the final pair produced two valid cells (33.16 / 32.82).
+    Verdict: pass active, one 71.19 MiB copy/frame removed, GPU execution −4.07 ms/frame, **no
+    unique-FPS benefit** on a CPU-bound frame. Status `queued` → `completed`; a second
+    unidentified ~71 MiB/frame copy found; GPU-05's mis-attribution demonstrated directly.
 
 ### GPU-02 — Guest compute shader `799062d096fa2314`
 
@@ -567,6 +707,12 @@ inflates the CPU side by ~4–5×; use this run for VUID/SYNC status, never for 
     unambiguous, fps effect unresolvable on a 60-locked scene).
   - 2026-11-19 — recorded that both safe options remain off by default with no matched-workload
     result.
+  - 2026-11-19 — **cross-reference GPU-01**: its depth-pass half is now measured in matched M2
+    gameplay — one 71.19 MiB copy/frame removed, GPU execution −4.07 ms/frame, **no unique-FPS
+    benefit** (33.16 → 32.82 on a CPU-bound frame). The pass is therefore **not** promotable on
+    frame-rate grounds, which closes the "unproven in a matched workload" question in the negative.
+    GPU-04's remaining open half is the in-pass barrier only; do not re-test the depth-pass half
+    unchanged.
 
 ### GPU-05 — Copy attribution coverage
 
@@ -843,7 +989,14 @@ inflates the CPU side by ~4–5×; use this run for VUID/SYNC status, never for 
 
 ---
 
-## 7. Recommended first investigation (not started)
+## 7. First investigation (executed — GPU-01 closed 2026-11-19)
+
+> **Status: done.** This was the recommended first investigation and it is now closed as
+> `gpu01-depthpass-2026-11-19`; see GPU-01's record for the measured verdict (pass active, one
+> 71.19 MiB copy/frame removed, GPU execution −4.07 ms/frame, **no unique-FPS benefit** on a
+> CPU-bound frame). No next target has been selected — that follows from these results, and the
+> outstanding configuration change (§4.5) is a separate piece of work. The text below is kept as the
+> record of what was proposed and why.
 
 **Target: GPU-01**, in the coupled `CPU-02 / CPU-03 / GPU-01` chain.
 
@@ -898,6 +1051,9 @@ and set GPU-01's status accordingly before selecting the next target.
 | Launcher-forced 60 Hz vblank | **Fixed** (real defect): the launcher reset `GPU.vblank_frequency` to 60 on every launch. |
 | `633d212` / `fc2fb55` as whole commits | **Rejected as merges** (mixed unrelated work). Useful pieces were reconstructed individually. |
 | Pad/Move/hand-pose/touchpad routes to the Déraciné menu | All fail headless: the menu needs a *located* controller on a *worn* headset. See §4.4 and `PASSES-AND-PACING.md` §20. |
+| `SHADPS4_DBG_CALL_TIMES=1` **together with** `SHADPS4_DBG_XFER=1` on an M2 gameplay cell | **Collapses the frame to 0.6 fps** (one frame per stats window), so the gameplay gate cannot be satisfied and no valid cell is possible. Identical in both arms, so it invalidated the whole pair rather than biasing one. Do not combine them when the cell's performance matters. |
+| `SHADPS4_DBG_DUMP_HMD_AT_SCENE` (`-EyeDump`) on a measuring cell | **Does not latch.** One run fired the scene gate **75 times**, dumping 26–27 full-resolution render targets per capture; gameplay fell to 0.6 fps and the cell was invalid. Use it only when the performance numbers are being discarded, until the dump gate is fixed. |
+| `SHADPS4_DBG_DEPTH_PASS=1` as a frame-rate optimization for M2 gameplay | **Measured 2026-11-19 (`gpu01-depthpass-2026-11-19`), rejected on frame-rate grounds**: it is real work removal (−71.19 MiB/frame of copies, −4.07 ms/frame of GPU execution) but unique FPS went 33.16 → 32.82 on a CPU-bound frame, inside the ±2.3 % copy-arm spread. Not a promotion candidate; do not re-run the A/B unchanged. (The pass itself is safe and integrated; only the *frame-rate* claim is rejected.) |
 
 ---
 
@@ -934,6 +1090,14 @@ and set GPU-01's status accordingly before selecting the next target.
   `_build/INTEGRATION-UNREAL.md`, `_build/PAK-CONFIG-VR-REPORT.md`, `_build/UNREAL-PHASE1.md`.
 - `_handoff/2026-11-17/(dead) Framerate Investigation #1.md` — the pre-ledger investigation log
   (NHL condition, preservation skips, the 73/48/35 fps sequence, front-end baselines).
+- **GPU-01 A/B (2026-11-19):** `_out/gpu01-depthpass-2026-11-19/` — `run-arm.ps1` (private arm
+  wrapper; the tracked `tools/benchmark/headless-gameplay.ps1` is never edited), `pair-s4.sh` /
+  `pair-s5.sh`, `analyze.py`, `compare-ab.py`, `compose-check.py`, `visual-compare.py`,
+  `make-morpheus-shadow.ps1`, and per-arm `arm<N>-s<N>/` directories each containing `run.json`
+  (harness verdict), `arm-manifest.json` (arm variable, shared diagnostics, exe hash and its source
+  tree, runner hash, eboot hash, exact command) and `lab/user/log/shad_log.txt`. The private
+  executable used by every arm is `_out/gpu01-depthpass-2026-11-19/bin/shadPS4.exe`,
+  `8991510F22CB8D4EC376DB4CA3458C713E4B5E90780FD994A780812B144E635A`.
 - Run artifacts with `run.json` provenance under
   `wt-frame-time-2026-11-18/_out/`: `translation-cost-2026-11-19`,
   `findimage-profile-2026-11-19-0128`, `image-cache-4096-clean-b1`,
@@ -1048,3 +1212,57 @@ experiment was performed for this commit.
 
 **Not done, by instruction:** no optimization work, no additional benchmarks, no new
 instrumentation, no renderer change, and no completed investigation reopened.
+
+### 2026-11-19 — GPU-01 investigation (`gpu01-depthpass-2026-11-19`)
+
+Executed the ledger's recommended first investigation and closed GPU-01. Renderer code was **not**
+modified, no instrumentation was added, and the unsafe NHL predicate was not revived.
+
+**What was run.** A matched M2 gameplay A/B of the already-integrated opt-in depth-write pass
+(`SHADPS4_DBG_DEPTH_PASS=0` vs `=1`) on one executable built from current `main`'s renderer
+content, one scene, one lab template, with identical diagnostics in both arms
+(`SHADPS4_DBG_OVERLAP=1`, `SHADPS4_GPU_TIMING=1`) and the runner's own `SHADPS4_FRAME_STATS=1`.
+
+**Result.** The pass is active and real, and it is off the critical path:
+
+- one full-surface **71.19 MiB copy/frame removed** (`copies` 3.91 → 2.93, `copy_mb` 138.55 →
+  69.37 MiB/frame);
+- **GPU execution 14.50 → 10.43 ms/frame (−4.07 ms)**, GPU busy 50.7 → 35.0 %, matching the
+  independently measured 3.6–4.9 ms per copy;
+- **image re-creation unchanged** (`images_created` 3.91 → 3.90, `images_destroyed` 3.89 → 3.88,
+  `create_ms`/`destroy_ms`/`depth_ms`/`overlap_ms` all overlapping);
+- **unique rendered FPS 33.16 → 32.82 (−1.0 %)**, inside the copy arm's own 33.16–33.94 spread
+  (2.3 %). The frame is CPU-bound: command thread 26.37 / 24.82 ms against 14.50 / 10.43 ms of GPU
+  execution.
+
+This confirms the 2026-11-17 quarantine verdict (+13.4 % then −7.2 %, aggregate +2.8 % inside a
+10 % noise floor) and does **not** reproduce the +34–40 % headline, now on the matched gameplay
+workload that verdict demanded.
+
+**New findings recorded.** (1) A second **~71.19 MiB/frame copy is unidentified** and untouched by
+the pass — a new, unclaimed target. (2) Direct measured evidence for GPU-05: in the copy arm the
+~4 ms copy is unmarked and charged to the preceding dispatch interval (`dispatch 5.43 ms`), and once
+the pass marks its work as a copy the interval falls to its true cost (`dispatch 0.69 ms, copy
+0.18 ms`). (3) `gpu timeline`/`gpu operations` require `SHADPS4_GPU_TIMING=1`, not `FRAME_STATS`
+alone — a provenance correction now in §4.2. (4) Three measurement-validity traps are in §8: the
+`CALL_TIMES` + `XFER` pair collapses gameplay to 0.6 fps; the HMD dump gate does not latch (75
+captures in one run); and the gate's failure text misreports peak draws when windows hold one frame.
+(5) The pre-existing `address_space.cpp:568 Protect: Unreachable code!` crash and one
+`0xc0000005` access violation cost four arm-runs; both hit **before** gameplay with `depth_ms`
+≈ 0.015, so neither is attributable to the depth pass.
+
+**Kept honest.** Three of five arm-runs were invalid for reasons unrelated to the arm variable
+(diagnostic cost, harness dump behaviour, environment crashes); only the last pair produced two
+valid cells, and the copy arm has two samples while the pass arm has one. The verdict rests on the
+mechanism being unambiguous (the counters move exactly as the code predicts) plus an FPS difference
+that is inside the measured spread — not on a single lucky cell.
+
+### 2026-11-19 — configuration correction and pending re-baseline
+
+The engine.ini that `D:\Temp\Deracine\1.0\Image0\...\ps4\` carries (Morpheus
+`PSVRFrameSequence=Render120Scanout120`, `t.MaxFPS=0`, smoothing off) is **an artifact added by the
+earlier frametime investigation, not part of the game** — corrected here after an earlier draft of
+this ledger described it as game-shipped. The M2 shadow in use does not carry it, so every M2 cell
+in this ledger ran without the 120 Hz PSVR frame sequence. A private shadow reproducing the tweak is
+prepared (§4.5) and **re-baselining M2 on it is a separate, deliberate change**, per the user's
+decision — not folded into GPU-01's result and not comparable with the cells above.
