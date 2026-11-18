@@ -397,7 +397,10 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
         return;
     }
 
-    PrepareRenderState(pipeline);
+    {
+        const FrameStats::CallTimer timer{FrameStats::Call::PrepareState};
+        PrepareRenderState(pipeline);
+    }
     // A draw that writes nothing changes nothing: the console's GPU only counts what such a
     // draw would let through, for occlusion queries, and those counts are made up here anyway.
     // (Astro Bot has 45 of them in each eye's depth pass.) SHADPS4_SKIP_EMPTY_DRAWS=0 keeps
@@ -414,7 +417,12 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
         ResetBindings();
         return;
     }
-    if (!BindResources(pipeline)) {
+    bool resources_bound;
+    {
+        const FrameStats::CallTimer timer{FrameStats::Call::BindResources};
+        resources_bound = BindResources(pipeline);
+    }
+    if (!resources_bound) {
         if (trace) {
             LOG_INFO(Render_Vulkan, "TRACE   draw dropped: resources could not be bound");
         }
@@ -427,9 +435,12 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
         return;
     }
 
-    buffer_cache.BindVertexBuffers(*pipeline, buffer_barriers);
-    if (is_indexed) {
-        buffer_cache.BindIndexBuffer(index_offset, buffer_barriers);
+    {
+        const FrameStats::CallTimer timer{FrameStats::Call::BindVertices};
+        buffer_cache.BindVertexBuffers(*pipeline, buffer_barriers);
+        if (is_indexed) {
+            buffer_cache.BindIndexBuffer(index_offset, buffer_barriers);
+        }
     }
 
     pipeline->BindResources(set_writes, buffer_barriers, push_data);
@@ -739,7 +750,10 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
         return;
     }
 
-    PrepareRenderState(pipeline);
+    {
+        const FrameStats::CallTimer timer{FrameStats::Call::PrepareState};
+        PrepareRenderState(pipeline);
+    }
     if (!BindResources(pipeline)) {
         return;
     }

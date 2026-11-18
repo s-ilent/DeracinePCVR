@@ -85,6 +85,12 @@ struct FrameStats {
         EndRendering,
         Barrier,
         Submit,
+        /// The rest are not driver calls: they are what the emulator itself spends translating a
+        /// draw, so that the frame statistics can say where a frame's command-thread time goes
+        /// once the driver's own calls are accounted for. Reported on their own line.
+        PrepareState, ///< Turning guest register state into a render state and a pipeline choice.
+        BindResources, ///< Texture and sampler lookup and the descriptor writes that follow.
+        BindVertices, ///< Vertex and index buffer lookup and binding.
         Count,
     };
     static bool CallTimesEnabled();

@@ -465,9 +465,11 @@ namespace {
 std::array<std::atomic<u64>, static_cast<size_t>(FrameStats::Call::Count)> g_call_ns{};
 std::array<std::atomic<u64>, static_cast<size_t>(FrameStats::Call::Count)> g_call_count{};
 constexpr const char* CallNames[] = {
-    "draw", "push constants", "push descriptors", "vertex input", "vertex buffers",
-    "index buffer", "dynamic state", "pipeline", "pass begin", "pass end", "barrier", "submit",
+    "draw",       "push constants",  "push descriptors", "vertex input", "vertex buffers",
+    "index buffer", "dynamic state", "pipeline",         "pass begin",   "pass end",
+    "barrier",    "submit",          "prepare state",    "bind resources", "bind vertices",
 };
+static_assert(std::size(CallNames) == static_cast<size_t>(FrameStats::Call::Count));
 } // namespace
 
 bool FrameStats::CallTimesEnabled() {
@@ -810,19 +812,28 @@ void FrameStats::EndFrame() {
                  per_frame(Counter::Vertices) / 1e3, per_frame(Counter::EmptyDraws));
     }
     if (CallTimesEnabled()) {
-        std::string calls;
-        double total_ms = 0.0;
-        for (size_t i = 0; i < g_call_ns.size(); ++i) {
-            const double ms = static_cast<double>(g_call_ns[i].exchange(0)) / n / 1e6;
-            const double count = static_cast<double>(g_call_count[i].exchange(0)) / n;
-            if (count == 0.0) {
-                continue;
+        constexpr size_t driver_end = static_cast<size_t>(Call::PrepareState);
+        // The driver's own calls first, then what the command thread itself spent translating the
+        // frame. Both come from the same counters, but they are different costs and only the
+        // second is ours.
+        for (size_t part = 0; part < 2; ++part) {
+            const size_t begin = part == 0 ? 0 : driver_end;
+            const size_t end = part == 0 ? driver_end : g_call_ns.size();
+            std::string calls;
+            double total_ms = 0.0;
+            for (size_t i = begin; i < end; ++i) {
+                const double ms = static_cast<double>(g_call_ns[i].exchange(0)) / n / 1e6;
+                const double count = static_cast<double>(g_call_count[i].exchange(0)) / n;
+                if (count == 0.0) {
+                    continue;
+                }
+                total_ms += ms;
+                calls += fmt::format("{}{} {:.0f}x {:.2f} ms", calls.empty() ? "" : ", ",
+                                     CallNames[i], count, ms);
             }
-            total_ms += ms;
-            calls += fmt::format("{}{} {:.0f}x {:.2f} ms", calls.empty() ? "" : ", ", CallNames[i],
-                                 count, ms);
+            LOG_INFO(Render_Vulkan, "{} per frame: {:.2f} ms in all: {}",
+                     part == 0 ? "driver calls" : "translation steps", total_ms, calls);
         }
-        LOG_INFO(Render_Vulkan, "driver calls per frame: {:.2f} ms in all: {}", total_ms, calls);
     }
     c.frames = 0;
     c.since = now;
