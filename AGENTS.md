@@ -7,6 +7,8 @@ for the C++ tree live in `src/AGENTS.md` and override inherited upstream guidanc
 - Player-facing docs: `README.md`
 - Architecture, PSVR library mapping, memory offsets, porting history: `DEVELOPMENT.md`
 - v0.21.0 merge log and resolved build/runtime errors: `HANDOFF_V0.21.0.md`
+- The game's Morpheus/Unreal settings, the frame modes, and what has actually been measured:
+  `docs/psvr-morpheus-ue4-settings.md`
 
 ## Autonomous engineering contract
 
@@ -29,6 +31,9 @@ a single run is not a verification.
   - `src/src/core/libraries/vr_tracker/` — `libSceVrTracker` (`vr_tracker.cpp`).
   - `src/src/video_core/renderer_vulkan/` — `vk_presenter.cpp`, `vk_vr_exporter.cpp`.
 - `tools/` — helper scripts, including `download-artifact.py` and `fetch-submodules.py`.
+- `tools/tests/launcher-test.ps1` and `tools/tests/morpheus-config-test.ps1` — the launcher's settings
+  parsing and the game's configuration controls. They need neither a game nor an emulator, and they
+  must keep passing when `pc-vr/launch.ps1`, `pc-vr/render-config.ps1` or `pc-vr/settings.txt` change.
 - `.github/workflows/build-windows.yml` — Windows x86_64 CI build.
 
 ## Rules
