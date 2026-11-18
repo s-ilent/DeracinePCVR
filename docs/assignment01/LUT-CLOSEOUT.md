@@ -66,3 +66,12 @@ investigation did not converge. No LUT-related code is enabled by default, and n
   isolates `9bdf2bf`, or a reference frame from the initial build showing the patches absent).
 - A corrupted frame is never a valid performance result; any performance run must pass the visual
   check.
+
+## Related
+
+- `LUT-SAMPLER-STATE.md` — the LUT's sampler state (permanent, default-off `SHADPS4_DBG_SAMPLER`
+  diagnostic) and a verdict on the 2D↔3D conversions at `0x2008f80000`: they are 1:1 and ordered,
+  with no coercion on this resource, so they are not leaving stale or reordered slices.
+- `3D-VIEW-MIP-LEVELS.md` — separate, latent: a 2D/2DArray view over a *mipmapped* 3D image asks for
+  more than one level, which VUID-VkImageViewCreateInfo-image-04970 forbids. Not this LUT
+  (single-mip).

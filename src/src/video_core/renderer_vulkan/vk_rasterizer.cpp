@@ -11,6 +11,7 @@
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/quality_diag.h"
 #include "video_core/renderer_vulkan/readconst_snapshot_diag.h"
+#include "video_core/renderer_vulkan/sampler_state_diag.h"
 #include "video_core/renderer_vulkan/vk_foveation.h"
 #include "video_core/renderer_vulkan/vk_gpu_profile.h"
 #include "video_core/renderer_vulkan/vk_gpu_timing.h"
@@ -1535,6 +1536,15 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
             if (tsharp.base_level == 0 && tsharp.last_level == 0) {
                 ssharp.max_aniso.Assign(AmdGpu::AnisoRatio::One);
             }
+        }
+        if (SamplerStateDiag::Enabled()) {
+            // A sampler's associated_image is only meaningful when the shader has that texture.
+            const bool has_texture = sampler.associated_image < stage.images.size();
+            const AmdGpu::Image tsharp =
+                has_texture ? stage.images[sampler.associated_image].GetSharp(stage)
+                            : AmdGpu::Image{};
+            SamplerStateDiag::LogBinding(stage, binding.unified, sampler, ssharp,
+                                         has_texture ? &tsharp : nullptr);
         }
         const auto vk_sampler = texture_cache.GetSampler(ssharp, liverpool->regs.ta_bc_base);
         image_infos.emplace_back(vk_sampler, VK_NULL_HANDLE, vk::ImageLayout::eGeneral);
