@@ -810,6 +810,24 @@ inflates the CPU side by ~4–5×; use this run for VUID/SYNC status, never for 
   to the smaller layer count leaves the destination's remaining layers to the refresh, which is a
   plausible stale-layer mechanism for those resources. Recorded here only so it is not lost with
   this thread; it needs its own bounded look and is not part of LUT-01.
+- **New evidence, recorded 2026-11-19 from the user's own observation.** The user watched a
+  classroom render with **no red patches** minutes into the GPU-01 campaign, and reports it as
+  "fixed during that benchmark run, but we can't reproduce it otherwise". The benchmark build is
+  `main` @ `314a2cb` (`8991510F…`, deliberately hash-pinned in
+  `_out/gpu01-depthpass-2026-11-19/run-arm.ps1`). Every other binary on this machine is a **17 Nov
+  build of the older cross-fork-renderer line**: `DeracinePCVR/pc-vr/shadps4.exe` = `E6A5A165`
+  (17 Nov 15:59 — the recovery audit's *experimental* install, not an approved known-good),
+  `lab/pc-vr-quality/shadps4.exe` = `C17BBC8A` (06:14), and
+  `_run/pc-vr-recycler-try/shadps4.exe` = `A02FB23F` (20:03, the lab that produced the red-patch
+  evidence). **Hypothesis, not proven:** the patches are a property of that older renderer rather
+  than of this resource — `f6510f1` (`integration/cross-fork-renderer`) and `main` differ by
+  **+2562/−1881 lines in `src/src/video_core` alone** (the image recycler, foveation and the
+  alias/preserve tracing are gone on `main`; blit helper, texture cache, presenter and scheduler
+  are reworked). The depth-write pass is **not** the difference: `CopyColorToDepth32` is present in
+  `f6510f1` *and* `main`, and absent only from the patch-free golden `1d2f393`. Settling it needs
+  one same-lab A/B across the two binaries — a run plus a visual check the user owns — or a
+  comparison of the captures that already exist; neither has been done, and neither belongs to
+  LUT-01.
 - **History:**
   - 2026-11-17 — LUT identified as the UE4 32³ grading LUT; recycler trial produced the red
     overlay that opened the correctness question.
