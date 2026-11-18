@@ -129,22 +129,17 @@ Check "g  a folder" (Use-Path "$base\a") "$g\CUSA12392\eboot.bin"
 Check "g  an eboot.bin" (Use-Path "$g\CUSA12392\eboot.bin") "$g\CUSA12392\eboot.bin"
 Check "g  nothing there" (Use-Path "$base\a\nothing.bin") ""
 
+# The instructions Déraciné's launcher gives, which do not depend on the runtime: the same two Move
+# controllers, whether the runtime is SteamVR or Virtual Desktop.
 $steam = (Get-VrInstructions 'F:\steam\steamapps\common\SteamVR\steamxr_win64.json') -join "`n"
-Check "SteamVR instructions name the Index" ($steam -match 'Index') $true
-Check "SteamVR instructions require no Virtual Desktop" ($steam -match 'Virtual Desktop is not needed') $true
-Check "SteamVR instructions preserve native DualSense input" ($steam -match 'disable Steam Input') $true
-Check "SteamVR instructions explain the tracking limit" ($steam -match 'does not track bare hands') $true
-Check "SteamVR instructions say how to move the gamepad" ($steam -match 'Hold the PS button') $true
 $vd = (Get-VrInstructions 'C:\Program Files\Virtual Desktop Streamer\OpenXR\virtualdesktop-openxr.json') -join "`n"
-Check "VDXR instructions still forward hand tracking" ($vd -match 'hand tracking forwarded') $true
-Check "VDXR instructions do not describe an Index" ($vd -match 'Index') $false
 $unknown = (Get-VrInstructions '') -join "`n"
-Check "Unknown runtime instructions do not assume Virtual Desktop" ($unknown -match 'Virtual Desktop') $false
-Check "Unknown runtime instructions say how to move the gamepad" ($unknown -match 'Hold the PS button') $true
-Check "VDXR instructions say how to move the gamepad" ($vd -match 'Hold the PS button') $true
 foreach ($text in @($steam, $vd, $unknown)) {
-    Check "Instructions say how to turn round" ($text -match 'hold L1') $true
-    Check "Instructions say the headset's controllers play besides a gamepad" ($text -match 'whenever they were used after it') $true
+    Check "Instructions require two Move controllers" ($text -match 'TWO PlayStation Move') $true
+    Check "Instructions name the headset controllers" ($text -match 'Index Knuckles') $true
+    Check "Instructions say tracking is automatic" ($text -match 'tracking is handled automatically via OpenXR') $true
+    Check "Instructions map the face buttons" ($text -match 'Triangle, Circle, Square, Cross') $true
+    Check "Instructions say nothing of another game" ($text -match 'Astro|Bot') $false
 }
 $script:settings = [ordered]@{}
 Check "Desktop defaults to stereo" (Get-DesktopView) "stereo"
@@ -173,15 +168,20 @@ Check "Launcher clears inherited crop by default" $env:SHADPS4_VR_DESKTOP_CROP "
 
 foreach ($assignment in $ast.EndBlock.Statements) {
     if ($assignment -is [System.Management.Automation.Language.AssignmentStatementAst] -and
-        $assignment.Left.Extent.Text -in @('$widths', '$consoleHeights', '$caps', '$gameLanguages')) {
+        $assignment.Left.Extent.Text -in @('$widths', '$consoleHeights', '$gameLanguages',
+                                           '$frameModeValues', '$renderPercentValues',
+                                           '$renderPercentChoices')) {
         . ([scriptblock]::Create($assignment.Extent.Text))
     }
 }
 
-# Sizes and frame rates offered.
+# Sizes and the settings the menu offers.
 Check "The console's smaller sizes keep their own shape" ((@(816, 960, 1200) | ForEach-Object { EyeHeight $_ }) -join ",") "870,1080,1280"
 Check "Larger sizes keep the shape of 1440x1536" ((@(1440, 2880, 3600) | ForEach-Object { EyeHeight $_ }) -join ",") "1536,3072,3840"
-Check "80 frames a second is offered (a Rift S refreshes at 80 Hz)" ($caps -contains 80) $true
+Check "Two native frame modes are offered" ($frameModeValues -join ",") "60,120"
+Check "The shipped frame mode is the console's own" $frameModeValues[0] "60"
+Check "Five render scales are offered, the game's own first" ($renderPercentValues -join ",") ",100,130,200,300"
+Check "Every render scale has a name" $renderPercentChoices.Count $renderPercentValues.Count
 
 # The Visual C++ runtime: looked for where a 64-bit program finds it, whatever PowerShell this is.
 $runtimeFolder = Join-Path $base "system"
@@ -237,13 +237,13 @@ function Show-Form($form) {
         }
     }
     Check "Desktop view and crop controls do not overlap" $view.Bounds.IntersectsWith($crop.Bounds) $false
-    $resolution = $form.Controls["resolution"]
-    $fps = $form.Controls["fps"]
+    $frameMode = $form.Controls["frameMode"]
+    $renderPercent = $form.Controls["renderPercent"]
     if ($script:menuAction -eq "choose") {
-        Check "Menu defaults to 2880 an eye" $widths[$resolution.Value] 2880
-        Check "Menu defaults to 60 frames a second" $caps[$fps.SelectedIndex] 60
-        $resolution.Value = [array]::IndexOf($widths, 960)
-        $fps.SelectedIndex = [array]::IndexOf($caps, 80)
+        Check "Menu defaults to the game's own frame rate" $frameModeValues[$frameMode.SelectedIndex] "60"
+        Check "Menu defaults to leaving the render scale alone" $renderPercentValues[$renderPercent.SelectedIndex] ""
+        $frameMode.SelectedIndex = [array]::IndexOf($frameModeValues, "120")
+        $renderPercent.SelectedIndex = [array]::IndexOf($renderPercentValues, "200")
         Check "Menu defaults to Windows' language" $language.SelectedIndex 0
         $language.SelectedIndex = 1 + [array]::IndexOf($gameLanguages, "fr-FR")
         Check "Menu defaults to stereo" $view.SelectedIndex 0
@@ -257,8 +257,8 @@ function Show-Form($form) {
         return [System.Windows.Forms.DialogResult]::OK
     }
     Check "Menu restores French" $language.SelectedIndex (1 + [array]::IndexOf($gameLanguages, "fr-FR"))
-    Check "Menu restores 960 an eye" $widths[$resolution.Value] 960
-    Check "Menu restores 80 frames a second" $caps[$fps.SelectedIndex] 80
+    Check "Menu restores the frame rate" $frameModeValues[$frameMode.SelectedIndex] "120"
+    Check "Menu restores the render scale" $renderPercentValues[$renderPercent.SelectedIndex] "200"
     if ($script:menuAction -eq "restore") { $language.SelectedIndex = 0 }
     Check "Menu restores combined eyes" $view.SelectedIndex 2
     Check "Menu restores crop" $crop.Checked $true
@@ -274,8 +274,8 @@ $script:menuForm.Dispose()
 Check "Menu saves combined eyes" (Setting "desktop_view") "combined"
 Check "Menu saves French" (Setting "language") "fr-FR"
 Check "Menu saves crop" (Setting "desktop_crop") "1"
-Check "Menu saves 960 an eye" (Setting "resolution") "960"
-Check "Menu saves 80 frames a second" (Setting "fps") "80"
+Check "Menu saves the frame rate" (Setting "frame_mode") "120"
+Check "Menu saves the render scale" (Setting "render_percent") "200"
 $script:menuAction = "cancel"
 Check "Menu cancellation does not start game" (Show-Menu) $false
 $script:menuForm.Dispose()
