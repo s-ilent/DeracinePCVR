@@ -1234,6 +1234,41 @@ gtest_discover_tests(shadps4_image_coverage_test
 )
 
 # ===========================================================================
+# GPU submission timing: the arithmetic behind SHADPS4_GPU_TIMING's numbers
+#
+# Header-only on purpose: the busy/gap rules decide what the frame statistics report and every
+# way they can be wrong still reads as a plausible number, so they are tested without a device.
+# ===========================================================================
+
+add_executable(shadps4_gpu_timing_test
+    video_core/test_gpu_timing.cpp
+)
+
+target_include_directories(shadps4_gpu_timing_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/tests
+)
+target_compile_features(shadps4_gpu_timing_test PRIVATE cxx_std_23)
+target_compile_definitions(shadps4_gpu_timing_test PRIVATE NOMINMAX)
+
+target_link_libraries(shadps4_gpu_timing_test PRIVATE
+    GTest::gtest_main
+    Vulkan::Headers
+    magic_enum::magic_enum
+    fmt::fmt
+    spdlog::spdlog
+    Boost::headers
+)
+
+list(APPEND TEST_TARGETS shadps4_gpu_timing_test)
+
+gtest_discover_tests(shadps4_gpu_timing_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)
+
+# ===========================================================================
 # C++ runtime hooks for libSceLibcInternal (guest static initialization)
 # ===========================================================================
 

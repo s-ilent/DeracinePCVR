@@ -6,6 +6,7 @@
 #include <array>
 #include <chrono>
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -25,6 +26,7 @@ class VkCtxScope;
 namespace Vulkan {
 
 class Instance;
+class GpuTiming;
 
 struct RenderAttachment {
     vk::ImageView image_view;
@@ -653,6 +655,10 @@ private:
     const Instance& instance;
     MasterSemaphore master_semaphore;
     CommandPool command_pool;
+    /// SHADPS4_GPU_TIMING: a timestamp pair around every submission this scheduler makes, which
+    /// is where the frame statistics get the GPU's execution time and the gap between two of its
+    /// submissions from. Null, and nothing recorded, unless the setting asks for it.
+    std::unique_ptr<GpuTiming> gpu_timing;
     DynamicState dynamic_state;
     vk::CommandBuffer current_cmdbuf;
     vk::PipelineLayout last_push_layout{};

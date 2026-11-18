@@ -26,6 +26,7 @@
 #include "common/thread.h"
 #include "imgui/renderer/texture_manager.h"
 #include "video_core/renderer_vulkan/vk_gpu_profile.h"
+#include "video_core/renderer_vulkan/vk_gpu_timing.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
@@ -710,6 +711,10 @@ void FrameStats::EndFrame() {
         const u64 count = g_stage_times.count[static_cast<size_t>(stage)].exchange(0);
         return count != 0 ? static_cast<double>(total) / static_cast<double>(count) / 1e6 : 0.0;
     };
+    // Kept in a variable because stage_ms() exchanges the counter it reads, so the command
+    // thread's own time on the frame can only be asked for once, and the GPU timing line below
+    // reports it next to the GPU's.
+    const double translate_ms = stage_ms(Stage::Translate);
     if (g_stage_times.count[static_cast<size_t>(Stage::Latency)] != 0) {
         LOG_INFO(Render_Vulkan,
                  "frame path: the title hands its lists over within {:.1f} ms, the GPU thread "
@@ -717,8 +722,38 @@ void FrameStats::EndFrame() {
                  "is taken {:.1f} ms after that and flipped {:.1f} ms later; {:.1f} ms from the "
                  "first command list to the flip",
                  stage_ms(Stage::Submitting), stage_ms(Stage::CatchUp),
-                 stage_ms(Stage::Translate), stage_ms(Stage::Queued), stage_ms(Stage::GpuWait),
+                 translate_ms, stage_ms(Stage::Queued), stage_ms(Stage::GpuWait),
                  stage_ms(Stage::Latency));
+    }
+    // SHADPS4_GPU_TIMING: what the GPU executed, kept apart from the time the command thread spent
+    // translating the frame and from the gaps between submissions. The three are different costs
+    // and the fix for each is different; reporting them together is the point. A gap is time one
+    // scheduler had nothing in flight, not proof the GPU was idle, so it is named as such.
+    if (GpuTiming::Enabled() && GpuTiming::Measuring()) {
+        const GpuTiming::Reading gpu = GpuTiming::TakeReading();
+        static u64 timed_frames = 0;
+        static u64 timed_busy_ns = 0;
+        timed_frames += frames;
+        timed_busy_ns += gpu.busy_ns;
+        if (gpu.submits != 0) {
+            const double frame_ms = seconds * 1e3 / n;
+            const double busy_ms = static_cast<double>(gpu.busy_ns) / n / 1e6;
+            const double gap_ms = static_cast<double>(gpu.gap_ns) / n / 1e6;
+            const double since_start_ms = timed_frames != 0
+                                              ? static_cast<double>(timed_busy_ns) /
+                                                    static_cast<double>(timed_frames) / 1e6
+                                              : 0.0;
+            LOG_INFO(Render_Vulkan,
+                     "gpu timeline: {:.2f} ms of the {:.2f} ms frame executing on the GPU "
+                     "({:.0f}%), command thread {:.2f} ms, {:.1f} submits a frame; {:.2f} ms "
+                     "between consecutive submissions of the same scheduler (summed over {} "
+                     "schedulers, so not GPU idleness); {} dropped, {} unreadable, {} reversed; "
+                     "{:.2f} ms a frame executing since the start",
+                     busy_ms, frame_ms, frame_ms > 0.0 ? 100.0 * busy_ms / frame_ms : 0.0,
+                     translate_ms, static_cast<double>(gpu.submits) / n, gap_ms,
+                     GpuTiming::SchedulersTiming(), gpu.dropped, gpu.unreadable, gpu.invalid,
+                     since_start_ms);
+        }
     }
     const auto per_frame = [n](Counter counter) {
         return static_cast<double>(g_counters[static_cast<size_t>(counter)].Take()) / n;
@@ -766,6 +801,9 @@ Scheduler::Scheduler(const Instance& instance)
 #if TRACY_GPU_ENABLED
     profiler_scope = reinterpret_cast<tracy::VkCtxScope*>(std::malloc(sizeof(tracy::VkCtxScope)));
 #endif
+    if (GpuTiming::Enabled()) {
+        gpu_timing = std::make_unique<GpuTiming>(instance, master_semaphore);
+    }
     AllocateWorkerCommandBuffers();
     priority_pending_ops_thread =
         std::jthread(std::bind_front(&Scheduler::PriorityPendingOpsThread, this));
@@ -971,6 +1009,11 @@ void Scheduler::Wait(u64 tick) {
 }
 
 void Scheduler::PopPendingOperations() {
+    if (gpu_timing) {
+        // Same test as below, on the same cached GPU tick: read the submissions the GPU is already
+        // through with, and never wait for one that it is not.
+        gpu_timing->Collect();
+    }
     // SubmitExecution's in-flight limit periodically advances the cached GPU tick. Querying the
     // timeline semaphore here makes Turnip enter a blocking ioctl on every submission, defeating
     // that batching. Only reclaim objects already proven idle; Finish() drains after its wait.
@@ -997,6 +1040,9 @@ void Scheduler::AllocateWorkerCommandBuffers() {
 
     current_cmdbuf = command_pool.Commit();
     Check(current_cmdbuf.begin(begin_info));
+    if (gpu_timing) {
+        gpu_timing->OpenSubmission(current_cmdbuf);
+    }
     last_push_layout = vk::PipelineLayout{};
 
     // Invalidate dynamic state so it gets applied to the new command buffer.
@@ -1048,6 +1094,11 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
 #endif
 
     EndRendering();
+    if (gpu_timing) {
+        // The pair's bottom of pipe: after the pass is closed, so nothing is measured from inside
+        // a render pass that the GPU could overlap with the one after it.
+        gpu_timing->CloseSubmission(current_cmdbuf, signal_value);
+    }
     draws_since_flush = 0;
     flush_due = false;
     Check(current_cmdbuf.end());
