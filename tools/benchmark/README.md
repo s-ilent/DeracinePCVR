@@ -41,6 +41,66 @@ a window is part of it, so the measured span is 40 s plus quantization and stall
 records the emulator-measured duration (`Σ frames/fps`); the validator accepts 39.0–48.5 s for
 this 40 s scenario and rejects a claimed 40 s that really lasted 0.65 s.
 
+## Colour (RGB) validation
+
+Scene similarity is **identity only**. `scene_signature.py` correlates a normalised 64×36
+grayscale image, so it is deliberately insensitive to hue: an R/B channel swap, a serious
+colour-processing regression, a black frame or a missing stereo eye can still be "the right
+scene". Any claim of colour correctness therefore needs the separate colour gate,
+`image_validation.py`, in addition to the scene gate.
+
+**Neither gate replaces a headset visual check.** Both work on a render-target dump, not on what
+the compositor/headset actually displayed, and neither authorises a visual-quality claim on its
+own.
+
+Motivation: on 2026-11-17 a captured gameplay frame showed large, soft red regions over otherwise
+correct geometry (the red-overlay screenshot in `_run\pc-vr-recycler-try\evidence\`). The **root
+cause is not established**: the recycler hypothesis in
+`docs/assignment01/REVISED-CONCLUSIONS.md` is unproven, and that document's addendum later found
+that the diagnostic PNG dump itself can write R and B swapped. A dump-level RGB gate cannot tell a
+renderer defect from a dump defect by itself, which is why it reports a channel swap explicitly
+instead of folding everything into one score.
+
+`image_validation.py` compares a candidate with the reviewed reference and reports:
+
+* per-channel R/G/B (and A when both images carry it) mean absolute error, max, p95/p99, and the
+  fraction of pixels whose worst colour channel differs by more than `pixel_diff_threshold`;
+* per-region MAE on a configurable grid (default 4×4), with the worst region and its coordinates;
+* black-frame detection (near-zero fraction per channel, whole image and per stereo half), a
+  uniform-image check, and stereo side-by-side missing/duplicated eye detection;
+* R/B channel-swap detection: the direct MAE is compared with the MAE after swapping the
+  reference's R and B; `channel_swap_suspected` is reported when the swapped comparison is
+  materially better;
+* an optional provenance check: the record's reference sha256 (and, when present, its candidate
+  sha256 and capture dimensions) is verified against the files; a mismatch fails the verdict and is
+  never silently ignored.
+
+It never imports `scene_signature.py`; every result carries `scene_identity_untouched: true`.
+Verdicts are `pass`, `fail` and `inconclusive`; black, uniform or unreadable data is
+`inconclusive`, never a silent pass. Defaults are documented in
+`reference/image-tolerances.json` (`max_mae` 2.0, `max_channel_mae` 3.0, `max_p99` 12,
+`max_bad_fraction` 0.01, `max_region_mae` 6.0, plus the black/stereo keys); unknown tolerance keys
+are rejected instead of silently falling back to a default.
+
+A provenance record is a JSON object such as
+`{"reference": {"sha256": ...}, "source": {"commit": ...}, "executable": {"sha256": ...},
+"capture": {"dimensions": [...], "conditions": "..."}}`. `reference.sha256` is required; the other
+fields are recorded in the result for the report, and any recorded value that can be checked
+against the images (candidate sha256, reference/capture dimensions) fails the verdict when it
+disagrees. Provenance is never silently dropped.
+
+```powershell
+# colour gate for one candidate frame (exit 0 pass / 2 fail / 3 inconclusive or usage)
+& $PY $WT\tools\benchmark\image_validation.py compare `
+  --reference $REF --candidate $CAND `
+  --tolerances $WT\tools\benchmark\reference\image-tolerances.json `
+  --provenance $PROV --json
+```
+
+`compare()` is the same function the harness can import (`from image_validation import compare`);
+the CLI is a thin wrapper. The image gate and the scene gate are independent: a run must pass both,
+and a scene-signature score is not colour evidence.
+
 ## Files
 
 ```
@@ -57,11 +117,16 @@ tools/benchmark/
   json_schema_lite.py   schema-structure check for run.json
   gameplay_gate.py      headless gameplay gate: frame-stats parse, scene gate/band, unique FPS,
                         save-manifest verification (standard library only)
+  image_validation.py   RGB/colour gate: per-channel and per-region statistics, black/missing-eye/
+                        channel-swap detection, optional provenance check (Pillow/numpy; never
+                        computes the scene signature)
   headless-gameplay.ps1 one headless gameplay cell: lab, launch, window, normal quit, run.json
   schema/run.schema.json
-  reference/            reviewed classroom reference signature + preview, and scene-gameplay.json
+  reference/            reviewed classroom reference signature + preview, scene-gameplay.json, and
+                        image-tolerances.json (documented colour-gate defaults)
   fixtures/             negative-control images (SIE splash)
-  tests/                unittest suites for the validator, the gameplay gate and the path guard
+  tests/                unittest suites for the validator, the gameplay gate, the colour gate and
+                        the path guard
   README.md
 ```
 
