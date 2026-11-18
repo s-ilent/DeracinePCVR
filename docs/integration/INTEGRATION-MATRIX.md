@@ -1,8 +1,8 @@
 # Déraciné PCVR — integration matrix (2026-11-18)
 
-Unified branch: `integration/deracine-unified-2026-11`, source content `647b87b` (headless M2 merge); later commits are documentation only
+Unified branch: `integration/deracine-unified-2026-11`, source content `5e618d1`; later commits are documentation only. Published on the source-only rewritten history after the migration (see `MIGRATION-2026-11-18.md`); external-review fixes are recorded in `UNIFIED-2026-11.md` §H.
 Base: `acda49e` (`recovery/baseline`, recovered clean baseline)
-Worktree: `M:\Development\Deracine-work\wt-unified`
+Worktree: `M:\Development\Deracine-work\wt-unified-pub` (migration/fix; the pre-rewrite `wt-unified` is retained)
 
 Disposition vocabulary: **INTEGRATED** / **INTEGRATED WITH MODIFICATIONS** / **ALREADY SUPERSEDED** /
 **ALREADY PRESENT** / **EXPERIMENTAL, RETAINED SEPARATELY** / **IN PROGRESS, RETAINED** /

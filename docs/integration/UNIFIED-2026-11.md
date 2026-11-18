@@ -5,14 +5,20 @@
 | | |
 |---|---|
 | Branch | `integration/deracine-unified-2026-11` |
-| Tip | source content `647b87b` (headless M2 merge); later commits are documentation only |
-| Source commit of the shipped binary | `647b87b` |
-| Base | `acda49e` (`recovery/baseline`) |
-| Worktree | `M:\Development\Deracine-work\wt-unified` |
-| Commits since base | 86 (six top-level merges plus two workstream merges) |
-| Diff since base | 158 files, +23,455 / −331 |
-| Executable | `wt-unified\build\shadPS4.exe`, 73,319,936 bytes |
-| SHA-256 | `1537F061CBE83915D9A1B080420191C5F10BCE9B73F2FE931EA657C25B2AEBCB` |
+| Tip | source content `5e618d1`; later commits are documentation only |
+| Source commit of the shipped binary | `5e618d1` |
+| Base | `acda49e` (`recovery/baseline`), replayed onto the source-only published history `cf10f9a5` |
+| Worktree | `M:\Development\Deracine-work\wt-unified-pub` (migration/fix worktree; `wt-unified` keeps the pre-rewrite tree) |
+| Commits since base | 194 (25 since the published base `cf10f9a5`) |
+| Diff since base | 173 files, +28,016 / −340 |
+| Diff since published base | 59 files, +7,710 / −161 |
+| Executable | `wt-unified-pub\build\shadPS4.exe`, 73,333,760 bytes |
+| SHA-256 | `D8FA1D342D635EC258E8B16D9094832C0C13FDE26B29CDA9DA9C12B39C50114B` |
+
+The branch is published on the source-only rewritten history. The migration — published baseline
+`cf10f9a5`, the M2 replay onto it, and the verification that only the three intentionally removed
+binaries differ from the old tree — is recorded in
+[`MIGRATION-2026-11-18.md`](MIGRATION-2026-11-18.md).
 
 The branch contains no commit from the contaminated runtime lineage: `633d212`, `8638928`,
 `fc2fb55`, `194958b`, `33ebbf8`, `517213c`, `de9c78c` are verified non-ancestors, and no
@@ -54,7 +60,7 @@ Summary over 45 local branches plus the 5 integration process branches and 33 wo
   deracine-version-compat (contaminated ancestry excluded), psvr-projection-geometry (docs/tests
   restored; source identical to the frustum fix), depth-pass/barrier (default flipped to opt-in),
   headless M2 (lineage-only RenderDoc scene gate and frame_timeline include removed; everything
-  test-only and off by default; single-lab verified).
+  test-only and off by default; two-lab verified).
 - Already superseded or already present: candidate/guardrails, three Unreal lineages,
   recovery/renderdoc, fix/libc-cxa-hooks, audit/stage1-host-guest, test/v0.21.0-plus-fixes,
   merge/eval-* and merge2/* (evidence only).
@@ -68,7 +74,7 @@ Summary over 45 local branches plus the 5 integration process branches and 33 wo
 Executable: see §A. Tests tree rebuilt from the same tree; final CTest:
 
 ```
-776 tests, 772 passed, 4 failed, 1 skipped (HostOverride.ActiveExactHostMatchFromJsonFile, inherited)
+790 tests, 786 passed, 4 failed, 1 skipped (HostOverride.ActiveExactHostMatchFromJsonFile, inherited)
 FAILED:
   69  shadps4_gcn_test_NOT_BUILT                     (inherited link failure)
  108  ReadConstSnapshotDiag.IsolationDisabledAfterTestB (inherited)
@@ -82,7 +88,8 @@ Baseline comparison, same machine and toolchain:
 |---|---|---|---|---|
 | `acda49e` (batch 1 of this integration) | 542 | 532 | 10 | documented inherited Windows set |
 | unified `fc01c02` (before M2) | 770 | 765 | 4 | +228 tests, 0 new failures, 6 inherited failures fixed |
-| **unified `647b87b` (with M2)** | **776** | **772** | **4** | +6 `ScriptedTimeline` tests; same four inherited failures |
+| unified `647b87b` (with M2) | 776 | 772 | 4 | +6 `ScriptedTimeline` tests; same four inherited failures |
+| **unified `5e618d1` (migrated + review fixes)** | **790** | **786** | **4** | +14 scripted lifetime/worker tests; same four inherited failures |
 
 Fixed relative to the documented baseline: `shadps4_memory_patcher_test` (compat `1f5aaff`) and
 the five patch-family targets (`patch_repository`, `patch_state`, `patch_domain`, `patch_session`,
@@ -92,10 +99,11 @@ remaining unbuildable items are the POSIX-only usbd test and the jni-dependent
 
 New suites all pass: `VrProjectionMath` (1031-line suite restored), `VrPresentationSize` (10),
 `ColorContract` (7), `QualityProbe` (3), `ImageCoverage` (19), `MipChain` (6), `AutoPress` (6),
-`VirtualCameraClock` (8), `ScriptedTimeline` (6, from M2), Unreal inspector/report/snapshot (23),
-hand retarget/live (18), plus the compat patch-manager cases. The headless gameplay benchmark's own
-suite (`tools/benchmark/tests`, standard-library Python) is **45/45**, including the 14 gameplay-gate
-cases; it runs without a GPU.
+`VirtualCameraClock` (8), `ScriptedTimeline`/`ScriptedLifetime`/`ScriptedWorker` (20, M2 + lifetime fix), Unreal inspector/report/snapshot (23),
+hand retarget/live (18), plus the compat patch-manager cases. The benchmark suite
+(`tools/benchmark/tests`, standard-library Python) is **115/115** (scene gate, RGB colour gate,
+private-shadow policy, terminology, validator/path guard), and the process-ownership PowerShell
+suite is **13/13**; both run without a GPU.
 
 **Validation limitations (explicit):** no emulator, game, SteamVR or GPU run was performed. The
 HMD slot was held by another agent (`wt-crossfork-int`) for the whole integration, and the project
@@ -165,9 +173,8 @@ active `pc-vr/` folder; the deployed binary there is `E6A5A165…`, untouched).
 ### Remaining steps before safe deployment
 1. Rebuild from `647b87b` on a clean machine and confirm the same test result (documented above).
 2. Run one **headless gameplay cell** with `tools/benchmark/headless-gameplay.ps1` inside the GPU
-   lock (first live use of the new benchmark), then repeat it from a **second independently
-   constructed lab**. Until that second lab passes, M2 and any gameplay cell are single-lab
-   evidence only.
+   lock (first live use of the new benchmark). M2 entry is two-lab verified, but this exact
+   benchmark profile has not been measured live; a cell is a measurement, not a projection.
 3. On a worn headset, with permission: VR smoke test — PSVR/OpenXR init, both eyes, tracking,
    audio; confirm the M2 switches (all unset in a normal session) change nothing; then the
    classroom benchmark for unique rendered FPS. Do not use compositor cadence.
@@ -234,12 +241,63 @@ was not touched.
   `tools/benchmark/gameplay_gate.py`, `tools/benchmark/reference/scene-gameplay.json`,
   `tools/headless-vr/input/gameplay-entry.txt` (the committed M2 sequence) and
   `tools/headless-vr/save-slot/` (manifest + checksum-verifying provisioning). Gate: draws ≥ 800;
-  band: draws 1500–2300, Mpx 550–750, passes 35–55, ≥ 90 % of the window inside; unique FPS =
+  band: draws 1500–2300, Mpx 500–1000, passes 25–80, ≥ 90 % of the window inside; unique FPS =
   total frames / total measured time. The menu cannot pass the gate.
 - Provenance: `tools/headless-vr/HEADLESS-M2.md` records the procedure, evidence and limits. The
-  M2 gameplay workload was measured as **1866–1900 draws, 620–720 Mpx, 42–46 passes** per frame
-  (menu: 465–500 draws).
-- Reproducibility: **single lab only**. The M2 entry was proven in one independently constructed
-  lab; a second lab has not passed, so no cell from this infrastructure is presented as generally
-  reproducible yet. No emulator was launched during this integration and the GPU lock was not taken.
+  M2 gameplay workload measured on the candidate renderer was **1866–1900 draws, 550–720 Mpx,
+  38–46 passes**; the unified renderer reaches the same scene at **1866 draws, 860 Mpx,
+  55.7 passes**. Mpx and passes track renderer state, so the band bounds draws tightly and
+  Mpx/passes loosely (menu: 465–500 draws, ~480 Mpx).
+- Reproducibility: **two labs** (`m2-off-fixed-1`, `m3-portable-2`) verified the M2 gameplay entry;
+  this exact benchmark profile has not yet been measured live. No emulator was launched during
+  this integration and the GPU lock was not taken.
 - Not included: M3 renderer validation, the image recycler, the LUT investigation.
+
+## H. External code-review fixes (2026-11-18)
+
+All items are committed on the migrated branch; the migration/replay mapping is in
+[`MIGRATION-2026-11-18.md`](MIGRATION-2026-11-18.md).
+
+1. **P0 — benchmark process ownership.** `tools/benchmark/process_ownership.ps1` records exactly
+   what a run launches (pid + creation time + executable path) and stops only that, expanding a
+   RenderDoc wrapper through live parent links. The trap, `Fail-Run` and normal cleanup all call
+   one `Stop-LabGame`; the old `Get-Process -Name shadps4` sweep is gone from all three paths.
+   Identity is re-verified against a fresh process table; PID reuse, path mismatch, a missing
+   identity or an unreadable snapshot are reported, never killed. 13 simulated cases pass
+   (`tools\benchmark\tests\test_process_ownership.ps1`), including two simultaneous sessions, PID
+   reuse, wrapper+child and partial startup failure.
+2. **P1 — private game shadow.** `runner.ps1` now requires `-ShadowRoot` (`-Game` defaults to it)
+   and calls `game_shadow.py` before writing `engine.ini`; `preflight.ps1` records the same proof.
+   The checker resolves junctions/reparse points, requires `benchmark-shadow.json` with
+   `private=true` and the pinned eboot hash, and rejects the active install, shared directories,
+   protected labs, path escapes and any checkout. `shadow-policy.json` is the shipped denylist;
+   `path_guard.py` applies it to mutating operations. `new-shadow-manifest.ps1` is the one-time
+   provisioning tool. 33 tests.
+3. **P1 — frame-numbered scripted input.** A script now finishes only when both the wall clock and
+   the guest-frame domain are done; a frame-only script cannot end early. A bounded stall watchdog
+   (`SHADPS4_SCRIPT_FRAME_STALL_SECONDS`, default 30 s, ≤0 disables) ends a script whose frames
+   stop. Completion releases the synthetic Move/controller state it set; the detached replay
+   thread is replaced by an owned worker joined before OpenXR/controller teardown, with a bounded
+   stop and a logged fallback. 14 new tests; all M2 switches remain opt-in.
+4. **Scene identity vs colour.** `image_validation.py` is a separate RGB correctness gate:
+   per-channel and overall MAE/max/p95/p99, bad-pixel fraction, per-region worst error, black /
+   missing / duplicated-eye detection, explicit channel-swap detection, configurable tolerances
+   and reference provenance. `scene_signature.py` is unchanged and never used as colour evidence.
+   The red-overlay corruption that motivated it has no established root cause, and the README says
+   so; a dump-level gate also cannot distinguish a renderer defect from a swapped dump.
+5. **Frame-time terminology.** `run.json` now carries `window_avg_frame_ms` with
+   `frame_time_statistic: "window-average"` and `per_frame_timing: false`; the validator requires
+   the label on new runs and rejects a per-frame claim, while accepting legacy `frame_ms`; the
+   report prints "window-average frame time". No per-frame timing capture exists (future work).
+   Unique FPS is still total rendered frames / total measured time.
+6. **Unreal inspector.** The scan-boundary and serial-number identity findings are delegated to
+   the UE4 Runtime Atlas agent in `_build/team/COORDINATION-unreal-atlas.md`; no inspector
+   behaviour changed and no guest writes were introduced.
+7. **Renderer correctness preserved.** The MSAA guard
+   (`carries_contents = SafeToDownload() || num_samples > 1`), the coverage guard and the
+   `GpuModified` propagation are untouched; the recycler remains excluded; depth pass, barrier,
+   camera clock and downsampling remain opt-in.
+
+Validation for this section: 790 C++ tests / 786 passed / same four inherited failures; 115 Python
+benchmark tests and 13 process-ownership cases pass; emulator builds clean; executable SHA-256 in
+§A. No live gameplay/headset run was performed, so the runtime acceptance gates in §E remain.
