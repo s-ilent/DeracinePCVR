@@ -212,6 +212,26 @@ if ($MenuReference -eq '') { $MenuReference = Join-Path $script:ReferencesDir 'm
 if ($GameplayReference -eq '') { $GameplayReference = Join-Path $script:ReferencesDir 'gameplay-eye.png' }
 $script:Shadow = $Shadow
 $script:IniPath = Join-Path $script:Shadow 'gameproject\saved\config\ps4\engine.ini'
+# Refuse to write engine.ini outside a designated private shadow. This is the same rule the
+# integrated runner enforces in game_shadow.py; it keeps this harness from touching the active
+# installation or a shared game directory.
+$shadowManifest = Join-Path $script:Shadow 'benchmark-shadow.json'
+if (-not (Test-Path -LiteralPath $shadowManifest -PathType Leaf)) {
+    throw "refusing to write engine.ini: '$($script:Shadow)' has no benchmark-shadow.json (private shadow required)"
+}
+$shadowDoc = Get-Content -LiteralPath $shadowManifest -Raw | ConvertFrom-Json
+if ($shadowDoc.private -ne $true) {
+    throw "refusing: $shadowManifest does not mark the shadow private"
+}
+$ebootHash = (Get-FileHash -LiteralPath $Eboot -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($ebootHash -ne ([string]$shadowDoc.eboot_sha256).ToLowerInvariant()) {
+    throw "refusing: the eboot hash does not match $shadowManifest"
+}
+foreach ($required in @(@('SourceLab', $SourceLab), @('SavedataSource', $SavedataSource), @('Shadow', $Shadow), @('Eboot', $Eboot))) {
+    if (-not (Test-Path -LiteralPath $required[1])) {
+        throw "missing -$($required[0]): $($required[1]); all portable paths must be supplied (no private _build defaults)"
+    }
+}
 $script:SavedataSource = $SavedataSource
 $script:SourceLab = $SourceLab
 $script:RenderDocCmd = 'C:\Program Files\RenderDoc\renderdoccmd.exe'
@@ -331,7 +351,7 @@ function Get-ProcessAudit {
 
 function Get-OtherEmulators([string]$OurExe) {
     $list = New-Object System.Collections.Generic.List[string]
-    foreach ($p in @(Get-Process -Name 'shadps4' -ErrorAction SilentlyContinue)) {
+    foreach ($p in @(Get-Process -Name 'shadps4' -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -eq (Join-Path $Lab 'shadps4.exe') } catch { $false } })) {
         $path = $null
         try { $path = $p.Path } catch {}
         if ($path -ne $OurExe) { $list.Add(('{0}:{1}' -f $p.Id, $path)) }
@@ -1401,7 +1421,7 @@ function Invoke-CellSession {
     Write-ShadowIni $Percent
     # A killed wrapper does not kill its Windows child. Only this lab's own executable is ever
     # stopped here; another lab's leftover is recorded and left alone.
-    $leftovers = @(Get-Process -Name 'shadps4' -ErrorAction SilentlyContinue | Where-Object {
+    $leftovers = @(Get-Process -Name 'shadps4' -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -eq (Join-Path $Lab 'shadps4.exe') } catch { $false } } | Where-Object {
             try { $_.Path -eq $labExe } catch { $false }
         })
     foreach ($p in $leftovers) { try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch {} }
@@ -1692,7 +1712,7 @@ function Invoke-CellSession {
                 } catch {}
             }
             if ($CellMode -eq 'rdoc') {
-                $emus = @(Get-Process -Name 'shadps4' -ErrorAction SilentlyContinue | Where-Object {
+                $emus = @(Get-Process -Name 'shadps4' -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -eq (Join-Path $Lab 'shadps4.exe') } catch { $false } } | Where-Object {
                         try { $_.Path -eq $labExe } catch { $false }
                     })
                 foreach ($p in $emus) { try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch {} }
