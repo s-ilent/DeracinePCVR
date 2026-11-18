@@ -46,7 +46,9 @@ foreach ($name in $manifestDoc.files.PSObject.Properties.Name) {
 
 New-Item -ItemType Directory -Force -Path $To | Out-Null
 foreach ($name in $manifestDoc.files.PSObject.Properties.Name) {
-    Copy-Item -LiteralPath (Join-Path $source $name) -Destination (Join-Path $To $name) -Force
+    $destination = Join-Path $To $name
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
+    Copy-Item -LiteralPath (Join-Path $source $name) -Destination $destination -Force
 }
 Write-Output "provisioned slot $($manifestDoc.slot) (stage $($manifestDoc.stage)) into $To"
 foreach ($name in $manifestDoc.files.PSObject.Properties.Name) {

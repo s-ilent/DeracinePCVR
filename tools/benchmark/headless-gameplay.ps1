@@ -36,9 +36,17 @@ param(
     [double]$Seconds = 40.0,
     [double]$StatsEvery = 0.5,
     [int]$ExitAfterSeconds = 180,
+    # The camera/headset check needs the dev autopress; it must stop before the menu appears or it
+    # walks the menu and races the scripted entry.
+    [int]$AutopressMilliseconds = 45000,
     [int]$TimeoutSeconds = 300,
     [string]$Python = 'python',
     [switch]$EyeDump,
+    # Gameplay entry is injected when the log shows a settled menu, then re-injected if the title
+    # returns to it; this is what makes independently constructed labs (and slow cold shader
+    # compilation) work with a script whose presses must land while the menu is up.
+    [switch]$NoMenuGatedInput,
+    [int]$MaxInputInjections = 3,
     [switch]$DryRun,
     [string]$ReplayLog = ''
 )
@@ -135,11 +143,14 @@ $envMap = [ordered]@{
     SHADPS4_MOVE_Y             = '0'
     SHADPS4_MOVE_Z             = '-0.135'
     SHADPS4_DBG_AUTOPRESS      = '1'
-    SHADPS4_DBG_AUTOPRESS_TO   = '45000'
-    SHADPS4_INPUT_SCRIPT       = (Resolve-Path -LiteralPath $InputScript).Path
+    SHADPS4_DBG_AUTOPRESS_TO   = "$AutopressMilliseconds"
+    SHADPS4_INPUT_SCRIPT       = $(if ($NoMenuGatedInput) { (Resolve-Path -LiteralPath $InputScript).Path } else { Join-Path $Out 'input-initial.txt' })
     # Normal quit through the emulator's own path; clean presenter teardown (M2).
     SHADPS4_EXIT_AFTER         = "$ExitAfterSeconds"
     SHADPS4_CLEAN_EXIT         = '1'
+}
+if (-not $NoMenuGatedInput) {
+    $envMap['SHADPS4_LIVE_INPUT'] = (Join-Path $Out 'input-live.txt')
 }
 if ($EyeDump) {
     # Scene-gated eye dump at the gameplay gate; the folder is relative to the user directory.
@@ -230,10 +241,18 @@ Get-ChildItem $Lab -Directory -Filter 'rt_dump*' -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
 foreach ($k in $envMap.Keys) { Set-Item -Path "Env:$k" -Value $envMap[$k] }
-# Do not inherit a live script or replay overrides from the caller.
-Remove-Item Env:SHADPS4_LIVE_INPUT -ErrorAction SilentlyContinue
+# Do not inherit a live script or replay overrides from the caller. The gated path sets its own
+# live file above, so it must not be removed here.
+if ($NoMenuGatedInput) { Remove-Item Env:SHADPS4_LIVE_INPUT -ErrorAction SilentlyContinue }
 Remove-Item Env:SHADPS4_DBG_HAND_POSE -ErrorAction SilentlyContinue
 Remove-Item Env:SHADPS4_DBG_DUMP_HMD_FRAMES -ErrorAction SilentlyContinue
+
+if (-not $NoMenuGatedInput) {
+    # Wait at arm's reach with no presses; the script is replaced when a settled menu is detected.
+    $initialText = '0 100000 head=0,0,0,0,0,0 pad=0,-0.17,-0.5,0,0,0'
+    [IO.File]::WriteAllText($envMap['SHADPS4_INPUT_SCRIPT'], $initialText + "`r`n")
+    [IO.File]::WriteAllText($envMap['SHADPS4_LIVE_INPUT'], $initialText + "`r`n")
+}
 
 # --- run --------------------------------------------------------------------------------------
 $log = Join-Path $Lab 'user\log\shad_log.txt'
@@ -244,8 +263,60 @@ Write-Output "launching $labExe -g $Eboot"
 $p = Start-Process -FilePath $labExe -WorkingDirectory $Lab -ArgumentList @('-g', $Eboot) `
     -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
 $deadline = $started.AddSeconds($TimeoutSeconds)
+# Menu-gated entry: independently constructed labs (and cold shader compilation) put the fixed
+# script's presses in the loading screen. Watch the frame-stats windows instead; when a settled
+# menu is measured, replace the live script with presses timed from that moment. Re-inject if the
+# title returns to the menu after a failed load, up to -MaxInputInjections. A window is "menu" only
+# inside the measured menu range, and gameplay is only a window inside the gameplay band, so a
+# heavy load is not mistaken for either.
+$statsRe = [regex]'frame stats at\s+(?<at>\d+)\s+s:.*?per frame\s+(?<passes>[0-9.]+)\s+passes\s+\([^)]*?(?<mpx>[0-9.]+)\s+Mpx\),\s+(?<draws>[0-9.]+)\s+draws'
+$injections = 0
+$lastInjectAt = -1000.0
+$menuRun = 0
+$heavyRun = 0
+$gameplaySeen = $false
 while (-not $p.HasExited -and (Get-Date) -lt $deadline) {
     Start-Sleep -Milliseconds 500
+    if ($NoMenuGatedInput -or -not (Test-Path -LiteralPath $log)) { continue }
+    try { $tail = Get-Content -LiteralPath $log -Tail 60 -ErrorAction Stop } catch { continue }
+    $last = $null
+    foreach ($line in $tail) { $m = $statsRe.Match($line); if ($m.Success) { $last = $m } }
+    if ($null -eq $last) { continue }
+    $at = [double]$last.Groups['at'].Value
+    $draws = [double]$last.Groups['draws'].Value
+    $mpx = [double]$last.Groups['mpx'].Value
+    $passes = [double]$last.Groups['passes'].Value
+    $inBand = ($draws -ge 1500.0 -and $draws -le 2300.0 -and $mpx -ge 500.0 -and
+               $mpx -le 1000.0 -and $passes -ge 25.0 -and $passes -le 80.0)
+    if ($inBand) { $heavyRun++ } else { $heavyRun = 0 }
+    if ($heavyRun -ge 2) { $gameplaySeen = $true }
+    $isMenu = ($draws -ge 350.0 -and $draws -le 800.0 -and $mpx -ge 300.0 -and $mpx -le 750.0)
+    if ($isMenu) { $menuRun++ } else { $menuRun = 0 }
+    if ($isMenu -and $menuRun -ge 4 -and -not $gameplaySeen -and
+        $injections -lt $MaxInputInjections -and ($at - $lastInjectAt) -ge 20.0) {
+        $target = $at
+        # The M2 confirm sweep, shifted onto the detected menu: aim the mirrored hand, then every
+        # input the verified sweep tried (pad cross/options and both Move hands), so a menu whose
+        # focus differs from the one the pointer recipe assumes still has a chance to confirm.
+        $scriptText = @(
+            '0 100000 head=0,0,0,0,0,0 pad=0,-0.17,-0.5,0,0,0',
+            ('{0:0.0} 100000 pad=0.30,-0.12,-0.5,0,0,0' -f ($target + 1.0)),
+            ('{0:0.0} 0.4 cross' -f ($target + 2.0)),
+            ('{0:0.0} 0.4 options' -f ($target + 4.0)),
+            ('{0:0.0} 0.4 move1=2,255' -f ($target + 6.0)),
+            ('{0:0.0} 0.4 move0=6,255' -f ($target + 8.0)),
+            ('{0:0.0} 0.4 move1=6,255' -f ($target + 10.0)),
+            ('{0:0.0} 0.4 move0=2,255' -f ($target + 12.0)),
+            ('{0:0.0} 0.4 cross' -f ($target + 14.0)),
+            ('{0:0.0} 0.4 move1=6,255' -f ($target + 16.0)),
+            ('{0:0.0} 0.4 move0=6,255' -f ($target + 18.0))
+        ) -join "`r`n"
+        [IO.File]::WriteAllText($envMap['SHADPS4_LIVE_INPUT'], $scriptText + "`r`n")
+        $injections++
+        $lastInjectAt = $at
+        $menuRun = 0
+        Write-Output ("menu-gated input injected at {0:N1} s (injection {1})" -f $target, $injections)
+    }
 }
 $timedOut = -not $p.HasExited
 if ($timedOut) {
@@ -277,6 +348,12 @@ $document = [ordered]@{
         gate    = [ordered]@{ min_draws = 800; min_mpx = 450; consecutive_samples = 2 }
         band    = [ordered]@{ draws = '1500-2300'; mpx = '550-750'; passes = '35-55' }
         input   = $InputScript
+        menu_gated_input = [ordered]@{
+            enabled         = (-not $NoMenuGatedInput)
+            injection_count = $injections
+            max_injections  = $MaxInputInjections
+            press_schedule  = 'pose +1 s; Move trigger at +14/+17/+20 s from the detected menu'
+        }
         save    = [ordered]@{
             source = (Resolve-Path $SavesFrom).Path
             slot   = $manifest.slot

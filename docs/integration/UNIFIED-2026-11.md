@@ -5,15 +5,15 @@
 | | |
 |---|---|
 | Branch | `integration/deracine-unified-2026-11` |
-| Tip | source content `4c03616`; later commits are documentation only |
-| C++ source of the shipped binary | `eaf3c1a` (built as `D8FA1D34…`); later commits are benchmark tooling/docs only |
+| Tip | source content `9b918eb`; later commits are acceptance documentation only |
+| C++ source of the shipped binary | `9b918eb` (R6 included; built as `4493A7F9…`); later commits are benchmark tooling/docs only |
 | Base | `acda49e` (`recovery/baseline`), replayed onto the source-only published history `cf10f9a5` |
 | Worktree | `M:\Development\Deracine-work\wt-unified-pub` (migration/fix worktree; `wt-unified` keeps the pre-rewrite tree) |
-| Commits since base | 197 (28 since the published base `cf10f9a5`) |
-| Diff since base | 175 files, +28,191 / −340 |
-| Diff since published base | 61 files, +7,888 / −164 |
-| Executable | `wt-unified-pub\build\shadPS4.exe`, 73,333,760 bytes |
-| SHA-256 | `D8FA1D342D635EC258E8B16D9094832C0C13FDE26B29CDA9DA9C12B39C50114B` |
+| Commits since base | 206 (37 since the published base `cf10f9a5`), acceptance documentation additional |
+| Diff since base | 178 files, +28,395 / −342 |
+| Diff since published base | 64 files, +8,092 / −166 |
+| Executable | `wt-accept\build\shadPS4.exe`, 73,333,248 bytes |
+| SHA-256 | `4493A7F912732BF946B02004E527388392F2314F526F751F5CE6B375A8E9418D` |
 
 The branch is published on the source-only rewritten history. The migration — published baseline
 `cf10f9a5`, the M2 replay onto it, and the verification that only the three intentionally removed
@@ -74,7 +74,7 @@ Summary over 45 local branches plus the 5 integration process branches and 33 wo
 Executable: see §A. Tests tree rebuilt from the same tree; final CTest:
 
 ```
-790 tests, 786 passed, 4 failed, 1 skipped (HostOverride.ActiveExactHostMatchFromJsonFile, inherited)
+794 tests, 790 passed, 4 failed, 1 skipped (HostOverride.ActiveExactHostMatchFromJsonFile, inherited)
 FAILED:
   69  shadps4_gcn_test_NOT_BUILT                     (inherited link failure)
  108  ReadConstSnapshotDiag.IsolationDisabledAfterTestB (inherited)
@@ -89,7 +89,8 @@ Baseline comparison, same machine and toolchain:
 | `acda49e` (batch 1 of this integration) | 542 | 532 | 10 | documented inherited Windows set |
 | unified `fc01c02` (before M2) | 770 | 765 | 4 | +228 tests, 0 new failures, 6 inherited failures fixed |
 | unified `647b87b` (with M2) | 776 | 772 | 4 | +6 `ScriptedTimeline` tests; same four inherited failures |
-| **unified `4c03616` (migrated + review fixes)** | **790** | **786** | **4** | +14 scripted lifetime/worker tests; same four inherited failures |
+| unified `4c03616` (migrated + review fixes) | 790 | 786 | 4 | +14 scripted lifetime/worker tests; same four inherited failures |
+| **unified `9b918eb` (R6 + acceptance)** | **794** | **790** | **4** | +4 `ImGuiExitGuard` tests; same four inherited failures |
 
 Fixed relative to the documented baseline: `shadps4_memory_patcher_test` (compat `1f5aaff`) and
 the five patch-family targets (`patch_repository`, `patch_state`, `patch_domain`, `patch_session`,
@@ -101,33 +102,38 @@ New suites all pass: `VrProjectionMath` (1031-line suite restored), `VrPresentat
 `ColorContract` (7), `QualityProbe` (3), `ImageCoverage` (19), `MipChain` (6), `AutoPress` (6),
 `VirtualCameraClock` (8), `ScriptedTimeline`/`ScriptedLifetime`/`ScriptedWorker` (20, M2 + lifetime fix), Unreal inspector/report/snapshot (23),
 hand retarget/live (18), plus the compat patch-manager cases. The benchmark suite
-(`tools/benchmark/tests`, standard-library Python) is **115/115** (scene gate, RGB colour gate,
+(`tools/benchmark/tests`, standard-library Python) is **116/116** (scene gate, RGB colour gate,
 private-shadow policy, terminology, validator/path guard), and the process-ownership PowerShell
 suite is **13/13**; both run without a GPU.
 
-**Live headless smoke (GPU lock, no headset, no SteamVR).** The published executable
-`D8FA1D34…` was driven from the slot-1 save into gameplay by the committed M2 sequence. The run
-reached `phase=gameplay` at 65 s with 101 measured windows, **100 % in band**, unique rendered FPS
-**38.3** (`D8FA1D34` built from the migrated source), draws **1513–2024**, Mpx **880**, passes
-**56.9**, GPU busy 62.6 %, save verified, normal quit. The first pass exposed a gate defect: the
-loading-to-gameplay transition (2208 draws / 5676 Mpx / 308 passes) was the first window above the
-800-draw gate and became the anchor, rejecting a window that was 98 % in band. The anchor now
-requires the band too; the same log validates. Evidence: `_build/unified/smoke-publish/`
-(`run.json`, `shad_log.txt`). This is a **smoke/validation cell, not a performance claim**.
+**Live headless cells (GPU lock, no headset, no SteamVR).** The pre-R6 executable `D8FA1D34…`
+reached `phase=gameplay` at 65 s in the first lab: 101/101 windows in band, unique rendered FPS
+38.3, draws 1513–2024, Mpx 880, passes 56.9, GPU 62.6 %, save verified, normal quit. That first
+pass exposed a gate defect (the loading transition became the anchor); `4c03616` fixed it.
 
-**Validation limitations (explicit):** no emulator, game, SteamVR or GPU run was performed. The
-HMD slot was held by another agent (`wt-crossfork-int`) for the whole integration, and the project
-rule is that launching the game/SteamVR requires explicit permission. Therefore PSVR/OpenXR
-initialisation, stereo presentation on hardware, audio/SNDX in-game behaviour, frame statistics on
-the classroom and colour on the headset are **not** validated by this report; only compilation and
-offline tests are. The executable hash is build-specific (PE debug GUID); compare code, not hashes.
+The acceptance checkpoint then ran the R6 build `4493A7F9…` in a **second independently constructed
+lab**: the lab was rebuilt from the tracked `pc-vr` template, the save was freshly provisioned and
+verified (four files, including `sce_sys/param.sfo`), and menu-gated input was used because the cold
+lab's menu settles after the fixed script's clock. Result: **VALID**, anchor 61 s, 324/324 windows in
+band, unique rendered FPS **34.14**, draws 1716–1943 (mean 1865.6), Mpx 873.8, passes 56.5, GPU
+53.6 %, clean exit 0, no assertion, no orphan. Evidence: `_build/unified/accept-lab2-sfo/`.
+These are **smoke/validation cells, not performance claims**. Full record:
+[`ACCEPTANCE-2026-11-18.md`](ACCEPTANCE-2026-11-18.md).
+
+**Validation limitations (explicit):** no physical headset, SteamVR or OpenXR session was used.
+The project rule is that headset work needs the worn headset and explicit permission, so PSVR/OpenXR
+initialisation, stereo presentation on hardware, audio/SNDX in-game behaviour and colour on the
+headset are **not** validated by this report. Headless gameplay was validated (one cell before the
+R6 fix, a second-lab cell in the acceptance checkpoint), which exercises the emulated-PSVR path but
+not optics, comfort, tracking feel or the compositor. The executable hash is build-specific
+(PE debug GUID); compare code, not hashes.
 
 ## D. Functional comparison — live runtime vs unified branch
 
 Live runtime of record: `integration/r58-presentsize` @ `de9c78c` (the checked-out branch of the
 active `pc-vr/` folder; the deployed binary there is `E6A5A165…`, untouched).
 
-| Function | Live runtime `de9c78c` | Unified `647b87b` | Why |
+| Function | Live runtime `de9c78c` | Unified (this checkpoint) | Why |
 |---|---|---|---|
 | Déraciné launch path, OpenXR presentation, stereo, PSVR services, Move tracking, audio | yes (base acda49e + later) | **yes** (same base lineage) | Nothing removed from the base. |
 | Resolution controls: `SHADPS4_TITLE_EYE_WIDTH`, `SHADPS4_VR_SCALE`, `render_percent` | yes | **yes** | Preserved unchanged. |
@@ -149,7 +155,7 @@ active `pc-vr/` folder; the deployed binary there is `E6A5A165…`, untouched).
 | Image recycler | absent | **absent** (retained separately) | Quarantined. |
 | Unreal inspector / snapshots / report export / hand rig / retargeter | absent | **present** + 41 tests, guest read-only | `73685be`. |
 | Déraciné version compatibility, SNDX Expected-byte gate, honest launcher report | absent | **present** + tests | `71baaf1`/`35fc0e2`. |
-| Headless launch / synthetic Move hands / scripted entry / timed quit | in progress on feature branches | **present, all opt-in and off by default** | M2 merge `647b87b`; see §G. |
+| Headless launch / synthetic Move hands / scripted entry / timed quit | in progress on feature branches | **present, all opt-in and off by default** | M2 replay `a6946bd`; see §G. |
 | Dedicated headless gameplay benchmark (gate, band, unique FPS, save pin) | absent | **present** (`tools/benchmark/headless-gameplay.ps1` + `gameplay_gate.py` + `reference/scene-gameplay.json`) | New infrastructure; live cell still to be run. |
 
 ## E. Integration report — conflicts, risks, remaining steps
@@ -181,9 +187,9 @@ active `pc-vr/` folder; the deployed binary there is `E6A5A165…`, untouched).
   not deployed; the active `pc-vr/` was not written.
 
 ### Remaining steps before safe deployment
-1. Rebuild from `647b87b` on a clean machine and confirm the same test result (documented above).
-2. Repeat the headless gameplay cell from a second independently constructed lab for **this exact
-   benchmark profile** (the M2 entry is two-lab verified; this profile has one live cell).
+1. Rebuild from `9b918eb` on a clean machine and confirm the same test result (documented above).
+2. Second-lab gameplay cell: **done** on the R6 build (324/324 windows in band, 34.14 unique FPS,
+   clean exit). Repeat only if the executable changes.
 3. On a worn headset, with permission: VR smoke test — PSVR/OpenXR init, both eyes, tracking,
    audio; confirm the M2 switches (all unset in a normal session) change nothing; then the
    classroom benchmark for unique rendered FPS. Do not use compositor cadence.
@@ -258,8 +264,9 @@ was not touched.
   55.7 passes**. Mpx and passes track renderer state, so the band bounds draws tightly and
   Mpx/passes loosely (menu: 465–500 draws, ~480 Mpx).
 - Reproducibility: **two labs** (`m2-off-fixed-1`, `m3-portable-2`) verified the M2 gameplay entry;
-  this exact benchmark profile has not yet been measured live. No emulator was launched during
-  this integration and the GPU lock was not taken.
+  the first integrated benchmark cell was run on `D8FA1D34…`, and the acceptance checkpoint adds a
+  second independently constructed lab on the R6 build. The GPU lock was held only for those bounded
+  headless cells.
 - Not included: M3 renderer validation, the image recycler, the LUT investigation.
 
 ## H. External code-review fixes (2026-11-18)
@@ -311,8 +318,21 @@ All items are committed on the migrated branch; the migration/replay mapping is 
    reached gameplay but was rejected because the loading transition became the window anchor.
    `4c03616` makes anchor selection require the band; the same log now validates (100 % in band).
    That is the value of the live gate: it caught a measurement defect that offline tests could not.
+9. **R6 ImGui quick-exit repair (headless agent's fix, applied).** The published baseline still
+   registered an `at_quick_exit` callback that called `GetIO()` after the clean-exit path destroyed
+   the ImGui context, aborting with "No current context" (0xC0000003). `bc524dd` adds an
+   `ExitSaveGuard` (save before destroy, idempotent Shutdown, guarded callback); it was cherry-picked
+   as `9b918eb`, not reimplemented. The 4 `ImGuiExitGuard` tests pass, and the live clean-exit cell
+   above exited 0 with all teardown markers and no assertion.
+10. **Second-lab acceptance (and the two defects it exposed).** The first independently constructed
+   lab passed; the second initially reached only the menu because (a) the save provisioner omitted
+   `sce_sys/param.sfo` (Continue never loads without it) and (b) fixed-time input fired during the
+   cold load. The manifest/provisioner now pin and copy all four files (the provisioner also had a
+   PowerShell variable collision that prevented copying anything), and the benchmark injects the
+   verified input when a settled menu is measured. The second-lab cell then passed: 324/324 windows
+   in band, 34.14 unique FPS, clean exit. See `ACCEPTANCE-2026-11-18.md`.
 
-Validation for this section: 790 C++ tests / 786 passed / same four inherited failures; 116 Python
+Validation for this section: 794 C++ tests / 790 passed / same four inherited failures; 116 Python
 benchmark tests and 13 process-ownership cases pass; emulator builds clean; executable SHA-256 in
-§A. One live headless gameplay cell passed (no headset, no SteamVR); headset acceptance remains a
-separate gate.
+§A. Two live headless gameplay cells passed (one per lab, no headset, no SteamVR); headset
+acceptance remains a separate gate.

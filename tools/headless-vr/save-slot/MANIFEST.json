@@ -3,15 +3,17 @@
   "title_id": "CUSA11919",
   "slot": 1,
   "stage": "m00_00_10_10",
-  "source_note": "The save that makes Continue load the classroom. It is game/user data: it is NOT committed. Provision it from a save you own with tools/headless-vr/save-slot/provision.ps1, which refuses any file whose sha256 does not match.",
+  "source_note": "The save that makes Continue load the classroom; sce_sys/param.sfo is required or the menu never loads Continue. It is game/user data: it is NOT committed. Provision it from a save you own with tools/headless-vr/save-slot/provision.ps1, which refuses any file whose sha256 does not match.",
   "files": {
     "MGS_GameData_0": "366B88B24B59A4D77BEEBFC72A1848724B36DC53DBC83A5E3FD29474FCE49D9F",
     "MGS_GameData_1": "C30D33846D35B090B3F89D4D1E6AD8C73B6B6DA264852BFEC9ECF8CD4214F93C",
-    "MGS_SystemData": "EAB7FE140A57988167D45D8ABCB38C4AA0F518062CE26CD77D2BF027FD48745D"
+    "MGS_SystemData": "EAB7FE140A57988167D45D8ABCB38C4AA0F518062CE26CD77D2BF027FD48745D",
+    "sce_sys/param.sfo": "A5081D3FC574F20A7DB84E6208097720FB094A9B37ACDE4A3C43D5788B111926"
   },
   "sizes": {
     "MGS_GameData_0": 17047,
     "MGS_GameData_1": 17313,
-    "MGS_SystemData": 2897
+    "MGS_SystemData": 2897,
+    "sce_sys/param.sfo": 1596
   }
 }
