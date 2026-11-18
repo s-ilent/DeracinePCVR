@@ -7,10 +7,12 @@
     Orchestrates the validation matrix by calling _build\headless\headless-vr-gameplay.ps1
     (the teammate harness; this script never launches the emulator itself):
 
-      A  recycler off/off/on/off on the same gameplay scene: an A/A noise floor plus the
-         OFF -> ON -> OFF comparison. One binary, env-only difference.
-      B  R3 image-content check: scene-gated HMD eye images, off/off floor first, then off vs on,
-         compared with _build\bench\capture-compare.py and _build\bench\capture-diff.py.
+      P  recycler pair: one OFF cell then one ON cell, with input-execution verification.
+      A  depth/barrier configuration cells on the gameplay scene, recycler OFF: base (build
+         defaults) twice for the noise floor, then legacy (SHADPS4_DBG_DEPTH_PASS=0 and
+         SHADPS4_DBG_BARRIER_IN_PASS=0), each with -Capture for a post-window gameplay eye image.
+      B  pixel content between the A arms: base/base floor first, then base vs legacy, compared
+         with _build\bench\capture-compare.py and _build\bench\capture-diff.py.
       C  R6 normal shutdown with the recycler ON (needs a build with SHADPS4_EXIT_AFTER and
          SHADPS4_CLEAN_EXIT; the 1a53ceb candidate does not have them).
       D  RenderDoc scene-gated capture with the recycler off, validated with renderdoccmd.
@@ -78,7 +80,7 @@ param(
     [int]$BandMinPasses = 35,
     [int]$BandMaxPasses = 55,
     # C: SHADPS4_EXIT_AFTER seconds; must exceed the gameplay anchor + window.
-    [int]$ExitAfterSeconds = 150,
+    [int]$ExitAfterSeconds = 85,
     [int]$MaxSeconds = 420,
     # A cell order. off/off/on/off gives both the A/A noise floor and OFF->ON->OFF.
     [string]$ArmOrder = 'off,off,on,off',
@@ -92,7 +94,7 @@ param(
     [int]$BProbeMarginSeconds = 5,
     # D: RenderDoc scene gate "<draws>,<mpx>" and the optional time trigger. 800/550 is the
     # gameplay gate: the menu (~485 draws) cannot arm it, so the capture cannot land on the menu.
-    [string]$BRdocScene = '800,550',
+    [string]$BRdocScene = '1500,550',
     [double]$BRdocSeconds = 0,
     # M2 recipe input script; empty = the harness default (menu-continue-move.txt for -Gate gameplay).
     [string]$InputScript = '',
@@ -107,16 +109,33 @@ param(
     [switch]$SkipSaveCheck,
     [string]$LabelPrefix = '',
     [switch]$NoLock,
-    # First priority when the ON arm is suspected of stalling on the menu: run exactly one OFF
-    # cell then one ON cell and classify (not the A matrix). A stuck ON cell is a correctness
-    # finding, not a timing result.
+    # Step 2 of the Lead's order: run exactly one recycler-OFF cell then one recycler-ON cell and
+    # classify. A stall on the ON arm is only reported after input execution is verified; the
+    # earlier reports were a harness live-input bug, not renderer findings.
+    [switch]$RecyclerPair,
+    # Backward-compatible alias for -RecyclerPair (the old smoke-pair name).
     [switch]$SmokePair,
+    # Record the recycler pair from two existing run labels (no GPU): "<off-label>,<on-label>".
+    # Used for the Lead's OFF/ON cells so the matrix does not duplicate them.
+    [string]$PairFromRuns = '',
+    # B from existing -Capture runs (no GPU): "<off1>,<off2>,<on>"; off1 vs off2 is the pixel
+    # floor, off1/off2 vs on are the targets. Used after the b-off-2 capture cell.
+    [string]$BCaptureFromRuns = '',
+    # A acceptance from existing cells (no GPU): "<base1>,<base2>,<legacy>".
+    [string]$AFromRuns = '',
+    # C from an existing clean-exit run label (no GPU).
+    [string]$CFromRun = '',
+    # D validation from existing RenderDoc run labels, comma-separated (no GPU).
+    [string]$DFromRuns = '',
     # Harness attempts per cell (the title has a ~18-20 s startup crash; a crashed attempt is not
     # a measurement). The smoke pair uses this for OFF and 2 for ON to bound the stuck case.
     [int]$Attempts = 3,
     # Run only the listed cell labels (substring match).
     [string[]]$OnlyCells = @(),
     [int]$TimeoutSeconds = 1800,
+    # Wait this long for a quiet machine before a cell (builds in another worktree otherwise
+    # invalidate a cell: the harness flags "another benchmark process was seen").
+    [int]$QuietWaitSeconds = 900,
     # Fail on the first invalid cell instead of continuing to the next mode.
     [switch]$StopOnInvalid
 )
@@ -125,6 +144,8 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Off
 
 # --- constants --------------------------------------------------------------------------------
+$script:UsePair = [bool]($RecyclerPair -or $SmokePair)
+$script:CellBand = @{}
 $script:ValidationDir = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
 if ($OutRoot -eq '') { $OutRoot = Join-Path $script:ValidationDir 'results' }
 $script:Out = $OutRoot
@@ -252,6 +273,8 @@ function Get-LogParse([string]$LogPath) {
         crashes      = New-Object System.Collections.Generic.List[string]
         r6_blocked   = New-Object System.Collections.Generic.List[string]
         log_lines    = 0
+        autopress    = 0
+        move_presses = 0
     }
     foreach ($m in $script:CleanMarkers) { $parse.clean_markers[$m] = $false }
     if (-not $parse.exists) { return $parse }
@@ -261,6 +284,8 @@ function Get-LogParse([string]$LogPath) {
     try {
         while ($null -ne ($line = $reader.ReadLine())) {
             $parse.log_lines++
+            if ($line.Contains('AUTOPRESS')) { $parse.autopress++ }
+            if ($line.Contains('AUTOPRESS move')) { $parse.move_presses++ }
             $m = $script:StatsRegex.Match($line)
             if ($m.Success) {
                 ++$index
@@ -514,6 +539,26 @@ function Measure-Cell([string]$Label) {
     $cell.independent_source = if ($null -ne $cell.result_window) { 'result window read back from shad_log' } else { 'own heavy-phase gate (fallback)' }
     $bandWindow = if ($null -ne $cell.result_window) { $cell.result_window } elseif ($cell.scene.ok) { $cell.scene } else { $null }
 
+    # A configuration arm may declare its own band: the legacy depth/barrier behaviour changes
+    # passes and Mpx by design, while the scene identity (draws + gameplay phase + image gate) is
+    # unchanged. Cells without an override use the candidate band.
+    $bMinMpx = $BandMinMpx; $bMaxMpx = $BandMaxMpx; $bMinPasses = $BandMinPasses; $bMaxPasses = $BandMaxPasses
+    if ($Label -like '*-A-base-*' -or $Label -like '*-A-legacy-*') {
+        # Configuration arms: the legacy depth/barrier behaviour changes Mpx/passes by design.
+        $bMinMpx = 400; $bMaxMpx = 1200; $bMinPasses = 30; $bMaxPasses = 75
+    }
+    if ($Label -like '*-E-*') {
+        # 100 % render lowers Mpx by ~9x; draws (scene identity) are unchanged.
+        $bMinMpx = 20; $bMaxMpx = 300; $bMinPasses = 20; $bMaxPasses = 75
+    }
+    if ($Label -like '*-C-*') {
+        # C's window is shortened so the emulator's timed quit wins; keep the scene band wide.
+        $bMinMpx = 450; $bMaxMpx = 800; $bMinPasses = 30; $bMaxPasses = 75
+    }
+    if ($script:CellBand.ContainsKey($Label) -and $null -ne $script:CellBand[$Label]) {
+        $bMinMpx = $script:CellBand[$Label].min_mpx; $bMaxMpx = $script:CellBand[$Label].max_mpx
+        $bMinPasses = $script:CellBand[$Label].min_passes; $bMaxPasses = $script:CellBand[$Label].max_passes
+    }
     $bandChecks = [ordered]@{
         gameplay_min_draws = $GameplayMinDraws
         draws = $(if ($bandWindow) { $bandWindow.draws_mean } else { $null })
@@ -521,9 +566,9 @@ function Measure-Cell([string]$Label) {
         passes = $(if ($bandWindow) { $bandWindow.passes_mean } else { $null })
         draws_ok = ($null -ne $bandWindow -and [double]$bandWindow.draws_mean -ge $GameplayMinDraws)
         draws_in_band = ($null -ne $bandWindow -and [double]$bandWindow.draws_mean -ge $BandMinDraws -and [double]$bandWindow.draws_mean -le $BandMaxDraws)
-        mpx_in_band = ($null -ne $bandWindow -and [double]$bandWindow.mpx_mean -ge $BandMinMpx -and [double]$bandWindow.mpx_mean -le $BandMaxMpx)
-        passes_in_band = ($null -ne $bandWindow -and [double]$bandWindow.passes_mean -ge $BandMinPasses -and [double]$bandWindow.passes_mean -le $BandMaxPasses)
-        band = ("draws {0}-{1}, Mpx {2}-{3}, passes {4}-{5}" -f $BandMinDraws, $BandMaxDraws, $BandMinMpx, $BandMaxMpx, $BandMinPasses, $BandMaxPasses)
+        mpx_in_band = ($null -ne $bandWindow -and [double]$bandWindow.mpx_mean -ge $bMinMpx -and [double]$bandWindow.mpx_mean -le $bMaxMpx)
+        passes_in_band = ($null -ne $bandWindow -and [double]$bandWindow.passes_mean -ge $bMinPasses -and [double]$bandWindow.passes_mean -le $bMaxPasses)
+        band = ("draws {0}-{1}, Mpx {2}-{3}, passes {4}-{5}" -f $BandMinDraws, $BandMaxDraws, $bMinMpx, $bMaxMpx, $bMinPasses, $bMaxPasses)
     }
     $bandChecks['ok'] = ($bandChecks.draws_ok -and $bandChecks.draws_in_band -and $bandChecks.mpx_in_band -and $bandChecks.passes_in_band)
     $cell.gameplay_gate = $bandChecks
@@ -598,23 +643,37 @@ function Measure-Cell([string]$Label) {
         last_sample_at_s = $(if ($null -ne $lastSample) { $lastSample.at_s } else { $null })
         last_draws = $(if ($null -ne $lastSample) { $lastSample.draws } else { $null })
         recycler_active = $arm_evidence.ok
+        # Input execution evidence: a menu stall is only a possible regression if the presses
+        # actually ran. The stale live-input file bug removed the file at resolution time, so the
+        # live file is rewritten during the run; its presence afterwards is expected.
+        input_script = $(if ($null -ne $cell.meta -and $null -ne $cell.meta.lab) { $cell.meta.lab.input } else { $null })
+        live_input = $(if ($null -ne $cell.meta -and $null -ne $cell.meta.lab) { $cell.meta.lab.live_input } else { $null })
+        live_file_present_after = $(if ($null -ne $cell.meta -and $null -ne $cell.meta.lab -and $cell.meta.lab.live_input) { Test-Path -LiteralPath $cell.meta.lab.live_input } else { $null })
+        autopress_lines = $parse.autopress
+        move_autopress_lines = $parse.move_presses
         log = $logPath
     }
 
     # Save provenance: the classroom only loads from a lab carrying slot 1 (MGS_GameData_1,
     # stage m00_00_10_10). The harness records the lab save hashes in meta.save_data.
     $cell.save = [ordered]@{ source = $script:SaveSourceInfo.source; source_slot1 = $script:SaveSourceInfo.slot1_present; lab_slot1 = $null; matches_source = $null; stage = $script:SaveSourceInfo.stage }
-    if ($null -ne $cell.meta -and $null -ne $cell.meta.save_data) {
-        $labFiles = @($cell.meta.save_data.files)
-        $cell.save.lab_slot1 = [bool]$cell.meta.save_data.slot1_present
-        $same = ($labFiles.Count -eq @($script:SaveSourceInfo.files).Count)
-        if ($same) {
-            foreach ($f in $labFiles) {
-                $src = @($script:SaveSourceInfo.files | Where-Object { $_.name -eq $f.name }) | Select-Object -First 1
-                if ($null -eq $src -or $src.sha256 -ne $f.sha256) { $same = $false; break }
-            }
+    $labSave = $null
+    if ($null -ne $cell.meta) {
+        if ($null -ne $cell.meta.save_data) { $labSave = $cell.meta.save_data }
+        elseif ($null -ne $cell.meta.lab -and $null -ne $cell.meta.lab.save_data) { $labSave = $cell.meta.lab.save_data }
+    }
+    if ($null -ne $labSave) {
+        $labFiles = @($labSave.files)
+        $cell.save.lab_slot1 = [bool]$labSave.slot1_present
+        # Compare the slot files that matter; the harness also carries sce_sys/ (param.sfo, icon0).
+        $same = $true
+        foreach ($name in @('MGS_GameData_0', 'MGS_GameData_1', 'MGS_SystemData')) {
+            $src = @($script:SaveSourceInfo.files | Where-Object { $_.name -eq $name }) | Select-Object -First 1
+            $lab = @($labFiles | Where-Object { $_.name -eq $name }) | Select-Object -First 1
+            if ($null -eq $src -or $null -eq $lab -or $src.sha256 -ne $lab.sha256) { $same = $false; break }
         }
         $cell.save.matches_source = $same
+        $cell.save.extra_files = @($labFiles | Where-Object { $_.name -notin @('MGS_GameData_0', 'MGS_GameData_1', 'MGS_SystemData') } | ForEach-Object { $_.name })
     }
 
     # Independent scene identity: the window read back from the log must agree with result.json
@@ -642,7 +701,7 @@ function Get-HmdImageEntry([string]$RelativeName) {
     $fmt = $m.Groups['fmt'].Value
     $isHmd = (($w -eq 5760 -and $h -eq 3240) -or ($w -eq 2880 -and $h -eq 3240)) -and ($fmt -eq 'R8G8B8A8Unorm')
     return [ordered]@{
-        name = $RelativeName; width = $w; height = $h; format = $fmt
+        name = $RelativeName; addr = $m.Groups['addr'].Value; width = $w; height = $h; format = $fmt
         samples = [int]$m.Groups['samples'].Value; alpha = $m.Groups['alpha'].Success
         hmd = $isHmd
     }
@@ -800,6 +859,21 @@ function Select-HmdEyeImage($Names, [string]$Addr = '') {
     return $hmd[0]
 }
 
+function Get-ImagePairMetrics([string]$BundleA, [string]$FullA, [string]$BundleB, [string]$FullB) {
+    $pa = Join-BundlePath $BundleA $FullA
+    $pb = Join-BundlePath $BundleB $FullB
+    if (-not ((Test-Path -LiteralPath $pa) -and (Test-Path -LiteralPath $pb))) {
+        return [ordered]@{ present = $false; reason = 'file missing' }
+    }
+    $res = Invoke-Python @($script:CaptureDiff, $pa, $pb, '--grid', '3')
+    if ($res.code -ne 0) { return [ordered]@{ present = $false; reason = 'capture-diff failed' } }
+    try { $d = ($res.text | ConvertFrom-Json) } catch { return [ordered]@{ present = $false; reason = 'capture-diff output unparsable' } }
+    return [ordered]@{
+        present = $true; identical = [bool]$d.identical; mean_abs = $d.mean_abs_diff; rms = $d.rms_diff
+        ssim = $d.ssim_global; masked_equal = [bool]$d.masked_hash.equal; paired_by_identity = $true
+    }
+}
+
 function Get-EyeStats($Paths) {
     if (-not (Test-Path $script:EyeHelper)) { return @() }
     $res = Invoke-Python (@($script:EyeHelper, 'stats') + $Paths)
@@ -815,33 +889,35 @@ function Split-EyeImage([string]$Png, [string]$OutDir, [string]$Stem) {
 # --- harness invocation -----------------------------------------------------------------------
 function Get-CellPlan {
     $plan = New-Object System.Collections.Generic.List[object]
-    if ($SmokePair) {
+    if ($script:UsePair) {
         $plan.Add([ordered]@{ mode = 'P'; label = ('{0}-P-off-1' -f $script:Prefix); arm = 'off'; cell_mode = 'cell'; gate = $Gate; extra = @(); attempts = $Attempts; why = 'smoke pair: OFF arm must reach gameplay' })
-        $plan.Add([ordered]@{ mode = 'P'; label = ('{0}-P-on-1' -f $script:Prefix); arm = 'on'; cell_mode = 'cell'; gate = $Gate; extra = @(); attempts = [math]::Min($Attempts, 2); why = 'smoke pair: ON arm suspected of stalling on the menu' })
+        $plan.Add([ordered]@{ mode = 'P'; label = ('{0}-P-on-1' -f $script:Prefix); arm = 'on'; cell_mode = 'cell'; gate = $Gate; extra = @(); attempts = [math]::Min($Attempts, 2); why = 'recycler pair: ON arm checked for a menu stall (input verified)' })
         return $plan
     }
-    $order = @($ArmOrder -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
-    $counts = @{ off = 0; on = 0; baseline = 0 }
-    $i = 0
-    foreach ($arm in $order) {
-        $i++
-        if (-not $counts.ContainsKey($arm)) { throw "ArmOrder value '$arm' is not off/on/baseline" }
-        $counts[$arm]++
-        $plan.Add([ordered]@{ mode = 'A'; label = ('{0}-A-{1}-{2}' -f $script:Prefix, $arm, $counts[$arm]); arm = $arm; cell_mode = 'cell'; gate = $Gate; extra = @(); why = 'A/A floor + OFF->ON->OFF' })
-    }
-    if ($Modes -contains 'B') {
-        $plan.Add([ordered]@{ mode = 'B'; label = ('{0}-B-off-1' -f $script:Prefix); arm = 'off'; cell_mode = 'cell'; gate = $Gate; extra = @(); why = 'B floor arm 1' })
-        $plan.Add([ordered]@{ mode = 'B'; label = ('{0}-B-off-2' -f $script:Prefix); arm = 'off'; cell_mode = 'cell'; gate = $Gate; extra = @(); why = 'B floor arm 2' })
-        $plan.Add([ordered]@{ model = 'B'; mode = 'B'; label = ('{0}-B-on-1' -f $script:Prefix); arm = 'on'; cell_mode = 'cell'; gate = $Gate; extra = @(); why = 'B target arm (recycler on)' })
-    }
+    # A is now the depth/barrier configuration comparison on the gameplay scene, recycler OFF:
+    # base = the build defaults (depth pass ON, barrier in pass ON), repeated for the noise floor;
+    # legacy = SHADPS4_DBG_DEPTH_PASS=0 + SHADPS4_DBG_BARRIER_IN_PASS=0. Both arms capture the
+    # post-window gameplay eye image for B.
+    $aBand = @{ min_mpx = 400; max_mpx = 1200; min_passes = 30; max_passes = 75 }
+    $plan.Add([ordered]@{ mode = 'A'; label = ('{0}-A-base-1' -f $script:Prefix); arm = 'off'; cell_mode = 'cell'; gate = $Gate; extra = @('-Capture'); env = @{}; band = $aBand; why = 'A base (defaults), repeat 1 for the pixel floor' })
+    $plan.Add([ordered]@{ mode = 'A'; label = ('{0}-A-base-2' -f $script:Prefix); arm = 'off'; cell_mode = 'cell'; gate = $Gate; extra = @('-Capture'); env = @{}; band = $aBand; why = 'A base (defaults), repeat 2 for the pixel floor' })
+    $plan.Add([ordered]@{ mode = 'A'; label = ('{0}-A-legacy-1' -f $script:Prefix); arm = 'off'; cell_mode = 'cell'; gate = $Gate; extra = @('-Capture'); env = @{ SHADPS4_DBG_DEPTH_PASS = '0'; SHADPS4_DBG_BARRIER_IN_PASS = '0' }; band = $aBand; why = 'A legacy (depth pass + barrier in pass off)' })
     if ($Modes -contains 'C') {
-        $plan.Add([ordered]@{ mode = 'C'; label = ('{0}-C-on-1' -f $script:Prefix); arm = 'on'; cell_mode = 'cell'; gate = $Gate; extra = @('-ExitAfterSeconds', "$ExitAfterSeconds", '-CleanExit'); env = @{}; why = 'R6 clean shutdown, recycler on' })
+        $plan.Add([ordered]@{ mode = 'C'; label = ('{0}-C-on-1' -f $script:Prefix); arm = 'on'; cell_mode = 'cell'; gate = $Gate; extra = @('-ExitAfterSeconds', "$ExitAfterSeconds", '-CleanExit'); env = @{}; seconds = 20; band = @{ min_mpx = 450; max_mpx = 800; min_passes = 30; max_passes = 75 }; why = 'R6 clean shutdown, recycler on (short window so the timed quit wins)' })
     }
     if ($Modes -contains 'D') {
         $plan.Add([ordered]@{ mode = 'D'; label = ('{0}-D-off-rdoc' -f $script:Prefix); arm = 'off'; cell_mode = 'rdoc'; gate = $Gate; extra = @('-RdocScene', $BRdocScene); env = @{}; why = 'RenderDoc scene-gated capture, recycler off' })
     }
     if ($Modes -contains 'E') {
-        $plan.Add([ordered]@{ mode = 'E'; label = ('{0}-E-off-lowres' -f $script:Prefix); arm = 'off'; cell_mode = 'lowres'; gate = $Gate; extra = @(); env = @{}; why = '100 % render / 120 Hz configuration cell' })
+        # E uses the heavy gate, not the 300%-derived menu->loading->gameplay transition gate: the
+        # 100% menu is ~465 draws, so SceneMinDraws 800 skips menu+loading and the first heavy
+        # phase is gameplay. The captured image is checked before the numbers are accepted.
+        $plan.Add([ordered]@{ mode = 'E'; label = ('{0}-E-off-lowres' -f $script:Prefix); arm = 'off'; cell_mode = 'lowres'; gate = 'heavy'; extra = @('-Capture', '-SyntheticHands', 'on', '-Autopress', '-AutopressSeconds', '45'); env = @{}
+            band = @{ min_mpx = 55; max_mpx = 90; min_passes = 30; max_passes = 55 }
+            scene_min_draws = 800
+            scene_min_mpx = 50
+            expect = @{ eye = '960x1080'; image = '1920x1080'; format = 'R8G8B8A8Unorm'; samples = 1 }
+            why = '100 % render / 120 Hz cell, heavy gate (first heavy phase is gameplay)' })
     }
     return $plan
 }
@@ -851,14 +927,25 @@ function Get-HarnessArgs($Item) {
     $hz = if ($Item.cell_mode -eq 'lowres') { 120 } else { $Hz }
     $args = @('-NoProfile', '-File', $Harness, '-Exe', $Exe, '-Label', $Item.label,
         '-Arm', $Item.arm, '-Mode', $Item.cell_mode, '-Gate', $Item.gate,
-        '-RenderPercent', "$percent", '-Hz', "$hz", '-Seconds', "$Seconds", '-Warmup', "$Warmup",
-        '-MaxSeconds', "$MaxSeconds", '-SceneMinDraws', "$SceneMinDraws", '-SceneMinMpx', "$SceneMinMpx",
+        '-RenderPercent', "$percent", '-Hz', "$hz", '-Seconds', "$(if ($null -ne $Item.seconds) { $Item.seconds } else { $Seconds })", '-Warmup', "$Warmup",
+        '-MaxSeconds', "$MaxSeconds", '-SceneMinDraws', "$(if ($null -ne $Item.scene_min_draws) { $Item.scene_min_draws } else { $SceneMinDraws })",
+        '-SceneMinMpx', "$(if ($null -ne $Item.scene_min_mpx) { $Item.scene_min_mpx } else { $SceneMinMpx })",
         '-SceneSamples', "$SceneSamples", '-GameplayMinDraws', "$GameplayMinDraws",
+        '-SettleTolerancePct', "$(if ($null -ne $Item.settle_tolerance) { $Item.settle_tolerance } else { 5 })",
         '-BandMinDraws', "$BandMinDraws", '-BandMaxDraws', "$BandMaxDraws",
-        '-BandMinMpx', "$BandMinMpx", '-BandMaxMpx', "$BandMaxMpx",
-        '-BandMinPasses', "$BandMinPasses", '-BandMaxPasses', "$BandMaxPasses")
+        '-BandMinMpx', "$(if ($null -ne $Item.band) { $Item.band.min_mpx } else { $BandMinMpx })",
+        '-BandMaxMpx', "$(if ($null -ne $Item.band) { $Item.band.max_mpx } else { $BandMaxMpx })",
+        '-BandMinPasses', "$(if ($null -ne $Item.band) { $Item.band.min_passes } else { $BandMinPasses })",
+        '-BandMaxPasses', "$(if ($null -ne $Item.band) { $Item.band.max_passes } else { $BandMaxPasses })")
     $attempts = if ($null -ne $Item.attempts) { [int]$Item.attempts } else { $Attempts }
     $args += @('-Attempts', "$attempts")
+    if ($null -ne $Item.env -and $Item.env.Count -gt 0) {
+        $pairs = @($Item.env.Keys | ForEach-Object { '{0}={1}' -f $_, $Item.env[$_] })
+        $args += @('-Env', ($pairs -join ';'))
+    }
+    if ($null -ne $Item.expect) {
+        $args += @('-ExpectEye', $Item.expect.eye, '-ExpectImage', $Item.expect.image, '-ExpectFormat', $Item.expect.format, '-ExpectSamples', "$($Item.expect.samples)")
+    }
     if ($InputScript -ne '') { $args += @('-InputScript', $InputScript) }
     # Only pass the gameplay reference when it exists: the harness's image gate treats a missing
     # reference as "not yet validated" and still requires the gameplay image to differ from the
@@ -871,6 +958,7 @@ function Get-HarnessArgs($Item) {
 
 function Invoke-Cell($Item) {
     $label = $Item.label
+    if ($null -ne $Item.band) { $script:CellBand[$label] = $Item.band }
     $logDir = Join-Path $script:CellsDir $label
     New-Item -ItemType Directory -Force -Path $logDir | Out-Null
     $stdout = Join-Path $logDir 'cell.stdout.txt'
@@ -882,19 +970,6 @@ function Invoke-Cell($Item) {
         elseif ($BDumpFrames -ne '') { $hargs += @('-DumpFrames', $BDumpFrames) }
     }
 
-    # Environment for the emulator must be set inside the Windows PowerShell that runs the
-    # harness: a variable set in this process does not survive wsl.exe -> bash -> pwsh.exe. For
-    # every cell with extra env, invoke a small wrapper that sets it and forwards the arguments.
-    if ($envExtra.Count -gt 0) {
-        $wrapperPath = Join-Path $logDir 'invoke.ps1'
-        $wrapper = New-Object System.Collections.Generic.List[string]
-        foreach ($key in $envExtra.Keys) { $wrapper.Add(('$env:{0} = ''{1}''' -f $key, ([string]$envExtra[$key]).Replace("'", "''"))) }
-        $wrapper.Add(('& ''{0}'' @args' -f $Harness.Replace("'", "''")))
-        $wrapper.Add('exit $LASTEXITCODE')
-        Write-TextFile $wrapperPath (($wrapper -join "`r`n") + "`r`n")
-        $hargs = @('-NoProfile', '-File', $wrapperPath) + @($hargs | Select-Object -Skip 3)
-    }
-
     $started = Get-Date
     try {
         if ($NoLock) {
@@ -902,7 +977,7 @@ function Invoke-Cell($Item) {
             $code = $LASTEXITCODE
         } else {
             $lockArgs = @('-e', 'bash', $script:LockLinux, 'run', '--owner', 'validate-eng', '--kind', 'headless',
-                '--reason', ('validation ' + $Item.mode + ': ' + $Item.why), '--ttl', '1800', '--require-quiet', '--',
+                '--reason', ('validation ' + $Item.mode + ': ' + $Item.why), '--ttl', '1800', '--require-quiet', '--quiet-wait', "$QuietWaitSeconds", '--',
                 'pwsh.exe') + $hargs
             & wsl.exe @lockArgs 2>&1 | Tee-Object -FilePath $stdout | ForEach-Object { Write-Host $_ }
             $code = $LASTEXITCODE
@@ -920,8 +995,8 @@ function Invoke-Cell($Item) {
     }
 }
 
-# --- smoke pair: OFF gameplay vs ON suspected menu stall -------------------------------------
-function Invoke-SmokePair {
+# --- recycler pair: OFF gameplay vs ON checked for a regression --- -------------------------------------
+function Invoke-RecyclerPair {
     $items = @(Get-CellPlan)
     $recs = New-Object System.Collections.Generic.List[object]
     foreach ($item in $items) {
@@ -931,21 +1006,28 @@ function Invoke-SmokePair {
         $recs.Add([pscustomobject]@{ item = $item; run = $run; cell = $cell })
     }
     $off = $recs[0].cell; $on = $recs[1].cell
+    $result = Get-RecyclerPairVerdict $off $on
+    $result['generated'] = (Get-Date).ToString('o')
+    $result['exit_codes'] = @($recs | ForEach-Object { $_.run.exit_code })
+    Write-PairReport $result
+    return $result
+}
+
+function Get-RecyclerPairVerdict($off, $on) {
     $offG = ($null -ne $off.measured -and $off.measured.phase -eq 'gameplay')
     $onG = ($null -ne $on.measured -and $on.measured.phase -eq 'gameplay')
-    $onActive = ($null -ne $on.arm_evidence -and $on.arm_evidence.ok)
     $status = 'INCONCLUSIVE'
     $finding = $null
     if ($offG -and -not $onG) {
-        $status = 'FINDING-R3-SUSPECTED'
-        $finding = 'the recycler-ON arm never left the menu while the recycler-OFF arm reached gameplay: a concrete correctness finding (R3). The recycler stays off; the ON cell is invalid for timing.'
+        $status = 'RECYCLER-REGRESSION-SUSPECTED'
+        $finding = 'the recycler-ON arm never left the menu while the recycler-OFF arm reached gameplay; reported as a possible correctness regression only with the input-execution evidence recorded in the ON cell (presses ran, live file rewritten, no loading dip). The recycler stays off; the ON cell is invalid for timing.'
     } elseif ($offG -and $onG) {
         $status = 'BOTH-REACHED'
     } elseif (-not $offG) {
         $status = 'OFF-DID-NOT-REACH'
         $finding = 'the recycler-OFF arm did not reach gameplay either: no conclusion about ON; fix the scene entry or retry before reading anything into the ON arm.'
     }
-    $result = [ordered]@{
+    return [ordered]@{
         generated = (Get-Date).ToString('o'); status = $status; finding = $finding
         off = [ordered]@{ label = $off.label; valid = $off.measured.valid; phase = $off.measured.phase; reason = $off.measured.reason
             draws = $(if ($off.gameplay_gate) { $off.gameplay_gate.draws } else { $null }); mpx = $(if ($off.gameplay_gate) { $off.gameplay_gate.mpx } else { $null })
@@ -957,11 +1039,13 @@ function Invoke-SmokePair {
             passes = $(if ($on.gameplay_gate) { $on.gameplay_gate.passes } else { $null }); fps_p50 = $on.measured.fps_p50; frames = $on.measured.frames
             recycler_hits = $on.measured.recycler_hits_per_frame; recycler_misses = $on.measured.recycler_misses_per_frame
             menu_stuck = $on.menu_stuck; save = $on.save; log = $on.menu_stuck.log }
-        exit_codes = @($recs | ForEach-Object { $_.run.exit_code })
     }
-    Write-JsonFile (Join-Path $script:Out 'SMOKE-PAIR.json') $result
+}
+
+function Write-PairReport($result) {
+    Write-JsonFile (Join-Path $script:Out 'RECYCLER-PAIR.json') $result
     $lines = New-Object System.Collections.Generic.List[string]
-    $lines.Add('# Smoke pair — OFF must load, ON suspected stuck on the menu')
+    $lines.Add('# Recycler pair — OFF must reach gameplay, ON checked for a regression')
     $lines.Add('')
     $lines.Add(('Generated {0}. Status: **{1}**. {2}' -f (Get-Date).ToString('o'), $status, $finding))
     $lines.Add('')
@@ -972,10 +1056,9 @@ function Invoke-SmokePair {
                     $(if ($r.label -like '*-on-*') { 'on' } else { 'off' }), $r.label, $r.phase, $r.valid, (Format-Num $r.draws '0'), (Format-Num $r.mpx '0'), (Format-Num $r.passes '0'), (Format-Num $r.fps_p50), $r.frames, (Format-Num $r.recycler_hits '0.000'), (Format-Num $r.recycler_misses '0.000'), $(if ($r.menu_stuck) { $r.menu_stuck.stayed_on_menu } else { $null }), $r.log))
     }
     $lines.Add('')
-    $lines.Add('A stuck-menu ON cell is a correctness finding, not a timing result: the menu shows ~465-500 draws / ~480 Mpx, so its fps must not be quoted against gameplay. Save provenance is in `SAVE.json`; every cell records the lab save hashes in `meta.save_data`.')
+    $lines.Add('A menu-stuck ON cell is only reported as a possible regression after the input execution is verified: the input script copy, the AUTOPRESS/move log lines, the live file rewritten at the scene anchor, and the absence of a loading dip. Its menu fps is never quoted against gameplay. The earlier stuck reports were a harness live-input bug, not renderer findings. Save provenance is in `SAVE.json`; every cell records the lab save hashes in `meta.save_data`.')
     $lines.Add('')
-    Write-TextFile (Join-Path $script:Out 'SMOKE-PAIR.md') (($lines -join "`r`n") + "`r`n")
-    return $result
+    Write-TextFile (Join-Path $script:Out 'RECYCLER-PAIR.md') (($lines -join "`r`n") + "`r`n")
 }
 
 # --- verdicts ---------------------------------------------------------------------------------
@@ -996,94 +1079,81 @@ function Test-ArmAgreement($Cells, [double]$TolerancePct = 5.0) {
 
 function Get-Acceptance($Cells) {
     $valid = @($Cells | Where-Object { $null -ne $_ -and $_.measured -and $_.measured.valid })
-    $off = @($valid | Where-Object { $_.measured.arm -eq 'off' })
-    $on = @($valid | Where-Object { $_.measured.arm -eq 'on' })
+    $base = @($valid | Where-Object { $_.label -like '*-A-base-*' })
+    $legacy = @($valid | Where-Object { $_.label -like '*-A-legacy-*' })
     $result = [ordered]@{
         cells = @($Cells | ForEach-Object { $_.label })
         valid = @($valid | ForEach-Object { $_.label })
         discarded = @($Cells | Where-Object { $null -eq $_ -or $null -eq $_.measured -or -not $_.measured.valid } | ForEach-Object { $_.label })
-        arm_agreement = Test-ArmAgreement $valid
-        off_cells = $off.Count
-        on_cells = $on.Count
-        floor = $null
-        fps = $null
-        alloc = $null
-        status = 'PENDING'
-        reasons = @()
+        base_cells = $base.Count
+        legacy_cells = $legacy.Count
+        arm_agreement = Test-ArmAgreement $base
+        floor = $null; fps = $null; alloc = $null; gameplay_gate = $null
+        status = 'PENDING'; reasons = @()
     }
     $reasons = New-Object System.Collections.Generic.List[string]
-    # An ON arm that never leaves the menu while the OFF arm does is a correctness finding, not a
-    # timing result. Capture it explicitly before the ordinary acceptance rules.
-    $onAll = @($Cells | Where-Object { $null -ne $_ -and $null -ne $_.measured -and $_.measured.arm -eq 'on' })
-    $onGameplay = @($onAll | Where-Object { $_.measured.phase -eq 'gameplay' })
-    $offGameplay = @($off | Where-Object { $_.measured.phase -eq 'gameplay' })
-    $r3Suspected = ($onAll.Count -gt 0 -and $onGameplay.Count -eq 0 -and $offGameplay.Count -gt 0)
-    $result['r3_finding'] = [ordered]@{
-        suspected = $r3Suspected
-        off_gameplay_cells = @($offGameplay | ForEach-Object { $_.label })
-        on_cells = @($onAll | ForEach-Object {
-                [ordered]@{ label = $_.label; valid = $_.measured.valid; phase = $_.measured.phase; reason = $_.measured.reason
-                    menu_draws = $(if ($null -ne $_.menu_stuck) { $_.menu_stuck.menu_draws_mean } else { $null })
-                    frames = $_.measured.frames; recycler_active = $(if ($null -ne $_.menu_stuck) { $_.menu_stuck.recycler_active } else { $null })
-                    log = $(if ($null -ne $_.menu_stuck) { $_.menu_stuck.log } else { $null }) } })
-        note = $(if ($r3Suspected) { 'the recycler-on arm never entered gameplay while the recycler-off arm did: concrete correctness finding (R3), recycler stays off; do not read its fps' } else { '' })
-    }
-    if ($r3Suspected) {
-        foreach ($c in $onAll) {
-            $ms = $c.menu_stuck
-            $reasons.Add(('{0}: recycler ON never left the menu (phase {1}, menu draws {2}, {3} windows, recycler active {4}) while OFF reached gameplay — R3 correctness finding, cell is invalid for timing' -f $c.label, $c.measured.phase, $ms.menu_draws_mean, $c.measured.frames, $ms.recycler_active))
-        }
-    }
-    if ($off.Count -ge 2) {
-        $a = $off[0]; $b = $off[1]
-        $result.floor = [ordered]@{
-            pair = @($a.label, $b.label)
-            draws_delta_pct = $null; mpx_delta_pct = $null
-            fps_p50_delta = $null; fps_p50_spread_pct = $null
-            worst_fps_p99_delta = $null
-        }
-        $dMean = Get-MeanOf @($a.measured.draws_mean, $b.measured.draws_mean)
-        if ($dMean -gt 0) { $result.floor.draws_delta_pct = [math]::Round([math]::Abs($a.measured.draws_mean - $b.measured.draws_mean) / $dMean * 100.0, 2) }
-        $mMean = Get-MeanOf @($a.measured.mpx_mean, $b.measured.mpx_mean)
-        if ($mMean -gt 0) { $result.floor.mpx_delta_pct = [math]::Round([math]::Abs($a.measured.mpx_mean - $b.measured.mpx_mean) / $mMean * 100.0, 2) }
+
+    # Pixel/behaviour floor: two base cells of the same build and configuration.
+    if ($base.Count -ge 2) {
+        $a = $base[0]; $b = $base[1]
+        $result.floor = [ordered]@{ pair = @($a.label, $b.label); fps_p50_delta = $null; fps_p50_spread_pct = $null; draws_delta_pct = $null; mpx_delta_pct = $null }
         $result.floor.fps_p50_delta = [math]::Round([math]::Abs([double]$a.measured.fps_p50 - [double]$b.measured.fps_p50), 2)
         if ([double]$a.measured.fps_p50 -gt 0) { $result.floor.fps_p50_spread_pct = [math]::Round(100.0 * $result.floor.fps_p50_delta / [double]$a.measured.fps_p50, 2) }
-        $result.floor.worst_fps_p99_delta = [math]::Round([math]::Max([math]::Abs([double]$a.measured.fps_p99 - [double]$b.measured.fps_p99), 0.0), 2)
+        $dM = Get-MeanOf @($a.measured.draws_mean, $b.measured.draws_mean)
+        if ($dM -gt 0) { $result.floor.draws_delta_pct = [math]::Round([math]::Abs($a.measured.draws_mean - $b.measured.draws_mean) / $dM * 100.0, 2) }
+        $mM = Get-MeanOf @($a.measured.mpx_mean, $b.measured.mpx_mean)
+        if ($mM -gt 0) { $result.floor.mpx_delta_pct = [math]::Round([math]::Abs($a.measured.mpx_mean - $b.measured.mpx_mean) / $mM * 100.0, 2) }
     }
-    if ($on.Count -ge 1 -and $off.Count -ge 1) {
-        $onCell = $on[0]
-        $offMeanP50 = Get-MeanOf @($off | ForEach-Object { $_.measured.fps_p50 })
-        $delta = [double]$onCell.measured.fps_p50 - [double]$offMeanP50
+
+    # Configuration comparison: legacy (both switches =0) against the base mean.
+    if ($legacy.Count -ge 1 -and $base.Count -ge 1) {
+        $l = $legacy[0]
+        $baseP50 = Get-MeanOf @($base | ForEach-Object { $_.measured.fps_p50 })
+        $delta = [double]$l.measured.fps_p50 - [double]$baseP50
         $spread = if ($null -ne $result.floor -and $null -ne $result.floor.fps_p50_delta) { [double]$result.floor.fps_p50_delta } else { 0 }
-        $gpuBound = ($null -ne $onCell.measured.gpu_busy_mean -and [double]$onCell.measured.gpu_busy_mean -ge 95)
+        $gpuBound = ($null -ne $l.measured.gpu_busy_mean -and [double]$l.measured.gpu_busy_mean -ge 95)
         $result.fps = [ordered]@{
-            off_mean_p50 = Round3 $offMeanP50
-            on_p50 = $onCell.measured.fps_p50
+            base_mean_p50 = Round3 $baseP50; legacy_p50 = $l.measured.fps_p50
             delta_p50 = Round3 $delta
-            delta_pct = $(if ([double]$offMeanP50 -gt 0) { [math]::Round(100.0 * $delta / [double]$offMeanP50, 2) } else { $null })
+            delta_pct = $(if ([double]$baseP50 -gt 0) { [math]::Round(100.0 * $delta / [double]$baseP50, 2) } else { $null })
             floor_spread_p50 = Round3 $spread
             beyond_floor = ([math]::Abs($delta) -gt $spread)
             gpu_bound = $gpuBound
-            note = $(if ($gpuBound) { 'GPU busy >= 95 %: a CPU-side saving is not expected to show as fps' } else { '' })
+            note = $(if ($gpuBound) { 'GPU busy >= 95 %: a CPU-side difference is not expected to show as fps' } else { '' })
         }
         $result.alloc = [ordered]@{
-            off_images_created_per_frame = Round3 (Get-MeanOf @($off | ForEach-Object { $_.measured.images_created_per_frame }))
-            on_images_created_per_frame = Round3 $onCell.measured.images_created_per_frame
-            off_create_ms_per_frame = Round3 (Get-MeanOf @($off | ForEach-Object { $_.measured.create_ms_per_frame }))
-            on_create_ms_per_frame = Round3 $onCell.measured.create_ms_per_frame
-            off_destroy_ms_per_frame = Round3 (Get-MeanOf @($off | ForEach-Object { $_.measured.destroy_ms_per_frame }))
-            on_destroy_ms_per_frame = Round3 $onCell.measured.destroy_ms_per_frame
-            off_hits = Round3 (Get-MeanOf @($off | ForEach-Object { $_.measured.recycler_hits_per_frame }))
-            on_hits = Round3 $onCell.measured.recycler_hits_per_frame
-            off_misses = Round3 (Get-MeanOf @($off | ForEach-Object { $_.measured.recycler_misses_per_frame }))
-            on_misses = Round3 $onCell.measured.recycler_misses_per_frame
-            off_vram_mb = Round3 (Get-MeanOf @($off | ForEach-Object { $_.measured.vram_mb_mean }))
-            on_vram_mb = Round3 $onCell.measured.vram_mb_mean
-            off_pool_mb = Round3 (Get-MeanOf @($off | ForEach-Object { $_.measured.pool_mb_mean }))
-            on_pool_mb = Round3 $onCell.measured.pool_mb_mean
+            base_images_created_per_frame = Round3 (Get-MeanOf @($base | ForEach-Object { $_.measured.images_created_per_frame }))
+            legacy_images_created_per_frame = Round3 $l.measured.images_created_per_frame
+            base_create_ms_per_frame = Round3 (Get-MeanOf @($base | ForEach-Object { $_.measured.create_ms_per_frame }))
+            legacy_create_ms_per_frame = Round3 $l.measured.create_ms_per_frame
+            base_destroy_ms_per_frame = Round3 (Get-MeanOf @($base | ForEach-Object { $_.measured.destroy_ms_per_frame }))
+            legacy_destroy_ms_per_frame = Round3 $l.measured.destroy_ms_per_frame
+            base_passes_mean = Round3 (Get-MeanOf @($base | ForEach-Object { $_.measured.passes_mean }))
+            legacy_passes_mean = Round3 $l.measured.passes_mean
+            base_mpx_mean = Round3 (Get-MeanOf @($base | ForEach-Object { $_.measured.mpx_mean }))
+            legacy_mpx_mean = Round3 $l.measured.mpx_mean
+            base_refresh_uploads = Round3 (Get-MeanOf @($base | ForEach-Object { $_.measured.refresh_uploads }))
+            legacy_refresh_uploads = Round3 $l.measured.refresh_uploads
+            base_vram_mb = Round3 (Get-MeanOf @($base | ForEach-Object { $_.measured.vram_mb_mean }))
+            legacy_vram_mb = Round3 $l.measured.vram_mb_mean
         }
     }
-    if (-not $result.arm_agreement.ok) { $reasons.Add('arms do not agree on draws/Mpx within 5 %: ' + $result.arm_agreement.reason) }
+
+    if (-not $result.arm_agreement.ok) { $reasons.Add('base cells do not agree on draws/Mpx within 5 %: ' + $result.arm_agreement.reason) }
+    # Scene identity across configurations: the draws must match even though the legacy config
+    # changes Mpx/passes by design (that change is the effect being measured, not a mismatch).
+    $result.scene_identity = $null
+    if ($base.Count -ge 1 -and $legacy.Count -ge 1) {
+        $bDraws = Get-MeanOf @($base | ForEach-Object { $_.measured.draws_mean })
+        $lDraws = Get-MeanOf @($legacy | ForEach-Object { $_.measured.draws_mean })
+        $dPct = if ($bDraws -gt 0) { [math]::Round(100.0 * [math]::Abs($lDraws - $bDraws) / $bDraws, 2) } else { $null }
+        $result.scene_identity = [ordered]@{
+            ok = ($null -ne $dPct -and $dPct -le 5.0)
+            base_draws = Round1 $bDraws; legacy_draws = Round1 $lDraws; draws_delta_pct = $dPct
+            note = 'draws are the scene identity; Mpx/passes differ by configuration by design'
+        }
+        if (-not $result.scene_identity.ok) { $reasons.Add(('legacy and base draws differ by {0} % (>5 %): not the same scene' -f $dPct)) }
+    }
     $gateBad = @($valid | Where-Object { $null -eq $_.gameplay_gate -or -not $_.gameplay_gate.ok })
     foreach ($c in $gateBad) {
         $g = $c.gameplay_gate
@@ -1095,18 +1165,16 @@ function Get-Acceptance($Cells) {
         gameplay_min_draws = $GameplayMinDraws
         cells = @($valid | ForEach-Object { [ordered]@{ label = $_.label; draws = $_.gameplay_gate.draws; mpx = $_.gameplay_gate.mpx; passes = $_.gameplay_gate.passes; ok = $_.gameplay_gate.ok } })
     }
+    # Every A cell is recycler OFF; a non-zero recycler counter means the wrong arm ran.
     $badArms = @($valid | Where-Object { -not $_.arm_evidence.ok })
     foreach ($c in $badArms) { $reasons.Add(('{0}: arm evidence wrong ({1})' -f $c.label, $c.arm_evidence.note)) }
-    if ($Gate -eq 'gameplay') {
-        $nonGameplay = @($valid | Where-Object { $_.measured.phase -ne 'gameplay' })
-        foreach ($c in $nonGameplay) { $reasons.Add(('{0}: phase is {1}, not gameplay' -f $c.label, $c.measured.phase)) }
-    }
+    $nonGameplay = @($valid | Where-Object { $_.measured.phase -ne 'gameplay' })
+    foreach ($c in $nonGameplay) { $reasons.Add(('{0}: phase is {1}, not gameplay' -f $c.label, $_.measured.phase)) }
     if ($result.discarded.Count -gt 0) { $reasons.Add('discarded cells: ' + ($result.discarded -join ', ')) }
+    if ($base.Count -lt 2) { $reasons.Add('fewer than two base cells: no pixel/fps floor') }
+    if ($legacy.Count -lt 1) { $reasons.Add('no legacy (depth/barrier = 0) cell') }
     $result.reasons = @($reasons)
-    if ($r3Suspected) { $result.status = 'FAIL-R3-SUSPECTED'; return $result }
-    if ($reasons.Count -eq 0) { $result.status = 'PASS' }
-    elseif ($off.Count -ge 1 -and $on.Count -ge 1 -and $result.arm_agreement.ok -and $badArms.Count -eq 0 -and $gateBad.Count -eq 0 -and ($Gate -ne 'gameplay' -or $nonGameplay.Count -eq 0)) { $result.status = 'PASS' }
-    else { $result.status = 'FAIL/INVALID' }
+    if ($reasons.Count -eq 0) { $result.status = 'PASS' } else { $result.status = 'FAIL/INVALID' }
     return $result
 }
 
@@ -1147,11 +1215,18 @@ function Test-BContent($Off1, $Off2, $On) {
         return [ordered]@{ ok = $true; mode = $mode; cap = $caps[-1] }
     }
     function Get-CaptureImageEntries($Sel) {
+        # Key by the image's identity (guest address, size, format, samples, alpha), not by the
+        # dump order: the same target is index 010 in one run and 011 in another when a pass
+        # creates one more image first. Pairing by file name would silently drop the HMD target.
         $m = @{}
         if (-not $Sel.ok) { return $m }
         foreach ($img in @($Sel.cap.images)) {
             $base = Split-Path -Leaf ([string]$img.name)
-            $m[$base] = [ordered]@{ dump = [string]$Sel.cap.name; full = [string]$img.name }
+            $entry = Get-HmdImageEntry $base
+            $key = if ($null -ne $entry) {
+                '{0}|{1}x{2}|{3}|s{4}|a{5}' -f $entry.addr, $entry.width, $entry.height, $entry.format, $entry.samples, [int]$entry.alpha
+            } else { $base }
+            $m[$key] = [ordered]@{ dump = [string]$Sel.cap.name; full = [string]$img.name; entry = $entry }
         }
         return $m
     }
@@ -1178,15 +1253,17 @@ function Test-BContent($Off1, $Off2, $On) {
     $e2 = Get-CaptureImageEntries $s2
     $e3 = Get-CaptureImageEntries $s3
     $map = @{}
-    foreach ($base in $e1.Keys) {
-        if (-not ($e2.ContainsKey($base) -and $e3.ContainsKey($base))) { continue }
-        $entry = Get-HmdImageEntry $base
+    foreach ($key in $e1.Keys) {
+        if (-not ($e2.ContainsKey($key) -and $e3.ContainsKey($key))) { continue }
+        $entry = $e1[$key].entry
         if ($null -eq $entry -or -not $entry.hmd -or $entry.alpha) { continue }
-        $f = Get-PairImageMetrics $cmpOff.data $e1[$base].dump $e1[$base].full
-        $t1 = Get-PairImageMetrics $cmpOn1.data $e1[$base].dump $e1[$base].full
-        $t2 = Get-PairImageMetrics $cmpOn2.data $e2[$base].dump $e2[$base].full
+        # The dump order can shift between configurations (an extra pass image), so pair by the
+        # image identity and measure the two files directly; capture-compare is used for inventory.
+        $f = Get-ImagePairMetrics $b1.dir $e1[$key].full $b2.dir $e2[$key].full
+        $t1 = Get-ImagePairMetrics $b1.dir $e1[$key].full $b3.dir $e3[$key].full
+        $t2 = Get-ImagePairMetrics $b2.dir $e2[$key].full $b3.dir $e3[$key].full
         if (-not ($f.present -and $t1.present -and $t2.present)) { continue }
-        $map[$base] = [pscustomobject]@{ dump = $e1[$base].dump; image = $e1[$base].full; floor = $f; t1 = $t1; t2 = $t2 }
+        $map[$key] = [pscustomobject]@{ dump = $e1[$key].dump; image = $e1[$key].full; floor = $f; t1 = $t1; t2 = $t2 }
     }
     if ($map.Count -eq 0) {
         $reasons.Add('no HMD eye image (5760x3240 or 2880x3240 R8G8B8A8Unorm) is common to the off/off/on bundles: the dumps did not land in the same scene/frame')
@@ -1229,10 +1306,12 @@ function Test-BContent($Off1, $Off2, $On) {
             $result.eye_image = $eyeRel
             # A black dump is the trap this whole comparison exists to avoid: identical black
             # images would read as a trivially perfect off/off floor and a perfect off/on match.
-            $baseSel = Split-Path -Leaf $eyeRel
+            # e3 is keyed by image identity, so find the common key whose side-a name is this image.
+            $matchKey = $null
+            foreach ($k in $mapKeys) { if ($e1[$k].full -eq $eyeRel) { $matchKey = $k; break } }
             $onBlack = $null
-            if ($e3.ContainsKey($baseSel)) {
-                $statsOn = Get-EyeStats @((Join-BundlePath $b3.dir $e3[$baseSel].full))
+            if ($null -ne $matchKey -and $e3.ContainsKey($matchKey)) {
+                $statsOn = Get-EyeStats @((Join-BundlePath $b3.dir $e3[$matchKey].full))
                 if ($statsOn.Count -gt 0) { $result.eye_stats_on = $statsOn[0]; $onBlack = ($statsOn[0].black_frac -ge 0.99) }
             } else { $onBlack = $true }
             $offBlack = ($stats.Count -gt 0 -and $stats[0].black_frac -ge 0.99)
@@ -1252,10 +1331,11 @@ function Test-BContent($Off1, $Off2, $On) {
         $pn3 = Join-BundlePath $b3.dir $row.image
         if (-not ((Test-Path $pn1) -and (Test-Path $pn3))) { continue }
         $diffOut = Join-Path (Join-Path $script:CellsDir $On.label) ('capture-diff-' + (($row.image -replace '[\\/]', '_') -replace '\.png$', '') + '.json')
-        $res = Invoke-Python @($script:CaptureDiff, $pn1, $pn3, '--grid', '3', '--out', $diffOut)
+        $res = Invoke-Python @($script:CaptureDiff, $pn1, $pn3, '--grid', '3')
         if ($res.code -eq 0) {
-            $parsed = Read-JsonFile $diffOut
+            try { $parsed = ($res.text | ConvertFrom-Json) } catch { $parsed = $null }
             if ($null -ne $parsed) {
+                Write-JsonFile $diffOut $parsed
                 $regions.Add([ordered]@{ image = $row.image; data = $parsed })
             }
         }
@@ -1290,6 +1370,7 @@ function Test-CShutdown($Cell) {
         no_validation_errors = ($Cell.validation.Count -eq 0)
         no_crash_markers = ($Cell.crashes.Count -eq 0)
         r6_blocked = ($null -ne $Cell.r6_blocked -and @($Cell.r6_blocked | Where-Object { $_ }).Count -gt 0)
+        assertion_failed = (@($Cell.validation | Where-Object { $_ -match 'Assertion Failed|assert_fail' }).Count -gt 0)
         teardown_documented = 'ImageRecycler::Shutdown() logs nothing; teardown is evidenced by the presenter- destruction markers (the destructor chain that calls it and vmaDestroyAllocator)'
         wall_seconds = $Cell.wall_seconds
     }
@@ -1316,51 +1397,107 @@ function Test-CShutdown($Cell) {
 function Test-DCapture($Cell, $GameplayAnchor) {
     $result = [ordered]@{ status = 'PENDING'; reasons = @(); capture = $null; checks = [ordered]@{} }
     $reasons = New-Object System.Collections.Generic.List[string]
-    $cap = $null
-    if ($null -ne $Cell -and $null -ne $Cell.result -and $null -ne $Cell.result.captures) {
-        $cap = @($Cell.result.captures | Where-Object { $_.kind -eq 'renderdoc' }) | Select-Object -First 1
-    }
-    if ($null -eq $cap) {
-        $result.status = 'FAIL'; $result.reasons = @('no .rdc capture recorded by the harness')
+    if ($null -eq $Cell -or $null -eq $Cell.measured) {
+        $result.status = 'BLOCKED'; $result.reasons = @('D cell missing')
         return $result
     }
-    $path = Join-Path $Cell.run_dir ($cap.file -replace '/', '\')
+    # The harness copies the .rdc while RenderDoc may still be writing it; the run's rdoc/ copy
+    # is the complete one. Prefer the largest .rdc under the run directory.
+    $rdcDir = Join-Path $Cell.run_dir 'rdoc'
+    $rdc = $null
+    if (Test-Path -LiteralPath $rdcDir) {
+        $rdc = @(Get-ChildItem -LiteralPath $rdcDir -File -Filter '*.rdc' -ErrorAction SilentlyContinue | Sort-Object Length -Descending) | Select-Object -First 1
+    }
     $checks = [ordered]@{
-        path = $path
-        exists = (Test-Path -LiteralPath $path)
-        bytes = $(if (Test-Path -LiteralPath $path) { (Get-Item -LiteralPath $path).Length } else { 0 })
-        sha256 = $(if (Test-Path -LiteralPath $path) { (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash } else { $null })
-        nontrivial_size = $false
+        rdc_dir = $rdcDir
+        path = $(if ($rdc) { $rdc.FullName } else { $null })
+        exists = ($null -ne $rdc)
+        bytes = $(if ($rdc) { $rdc.Length } else { 0 })
+        sha256 = $(if ($rdc) { (Get-FileHash -LiteralPath $rdc.FullName -Algorithm SHA256).Hash } else { $null })
+        nontrivial_size = ($null -ne $rdc -and $rdc.Length -ge 10MB)
         renderdoc_thumb = $null
         rdoc_scene_gate = $Cell.rdoc_gate
         rdoc_trigger_s = $Cell.rdoc_trigger_s
         gameplay_anchor_s = $GameplayAnchor
         captured_after_gameplay_anchor = $null
+        unreachable_code_in_log = (@($Cell.crashes | Where-Object { $_ -match 'Unreachable code|Protect' }).Count -gt 0)
     }
-    $checks.nontrivial_size = ($checks.bytes -ge 10MB)
-    if (-not $checks.exists) { $result.status = 'FAIL'; $result.reasons = @('the .rdc file does not exist at ' + $path); return $result }
-    if (-not $checks.nontrivial_size) { $reasons.Add(('capture is only {0} bytes (< 10 MiB): not a plausible scene capture' -f $checks.bytes)) }
-    # renderdoccmd thumb proves RenderDoc can open the capture (no GUI, no replay).
-    $thumb = Join-Path (Join-Path $script:CellsDir $Cell.label) 'rdoc-thumbnail.png'
+    if (-not $checks.exists) { $result.status = 'FAIL'; $result.reasons = @('no .rdc in the run''s rdoc/ directory'); return $result }
+    if (-not $checks.nontrivial_size) { $reasons.Add(('capture is only {0} bytes (< 10 MiB)' -f $checks.bytes)) }
+    $thumbDir = Join-Path (Join-Path $script:Out 'cells') $Cell.label
+    [void][IO.Directory]::CreateDirectory($thumbDir)
+    $thumb = Join-Path $thumbDir 'rdoc-thumbnail.png'
+    if (-not (Test-Path -LiteralPath $thumbDir)) { $thumb = Join-Path $Cell.run_dir 'rdoc-thumbnail.png' }
     if (Test-Path 'C:\Program Files\RenderDoc\renderdoccmd.exe') {
-        $thumbRes = & 'C:\Program Files\RenderDoc\renderdoccmd.exe' thumb ("--out=" + $thumb) $path 2>&1
+        $thumbRes = & 'C:\Program Files\RenderDoc\renderdoccmd.exe' thumb ("--out=" + $thumb) $checks.path 2>&1
         $checks.renderdoc_thumb = [ordered]@{
             ok = ((Test-Path -LiteralPath $thumb) -and (Get-Item -LiteralPath $thumb).Length -gt 0)
             file = $thumb; bytes = $(if (Test-Path -LiteralPath $thumb) { (Get-Item -LiteralPath $thumb).Length } else { 0 })
             output = (($thumbRes | Out-String).Substring(0, [Math]::Min(400, ($thumbRes | Out-String).Length)))
         }
-        if (-not $checks.renderdoc_thumb.ok) { $reasons.Add('renderdoccmd could not extract a thumbnail: RenderDoc cannot open the capture') }
+        if (-not $checks.renderdoc_thumb.ok) { $reasons.Add('renderdoccmd could not extract a thumbnail') }
     } else { $reasons.Add('renderdoccmd.exe not found at C:\Program Files\RenderDoc') }
+    # Scene identity: the in-emulator gate must be above the menu (485 draws) — the instruction is
+    # gate 1500,550, gameplay only — and the trigger must be at gameplay time.
+    $gateOk = ($null -ne $checks.rdoc_scene_gate -and [double]$checks.rdoc_scene_gate.draws -ge 1500 -and [double]$checks.rdoc_scene_gate.mpx -ge 550)
+    $checks.gate_above_menu = $gateOk
+    if (-not $gateOk) { $reasons.Add(('RDOC scene gate {0}/{1} is below 1500/550 (or missing)' -f $checks.rdoc_scene_gate.draws, $checks.rdoc_scene_gate.mpx)) }
     if ($null -ne $checks.rdoc_trigger_s -and $null -ne $GameplayAnchor) {
         $checks.captured_after_gameplay_anchor = ([double]$checks.rdoc_trigger_s -ge [double]$GameplayAnchor)
-        if (-not $checks.captured_after_gameplay_anchor) { $reasons.Add(('the capture fired at {0:0.0} s, before the gameplay anchor at {1:0.0} s: it captured the menu/front end, not gameplay' -f $checks.rdoc_trigger_s, $GameplayAnchor)) }
-    } elseif ($null -eq $checks.rdoc_trigger_s) {
-        $reasons.Add('the RDOC trigger line is missing from the log; the capture scene cannot be established')
-    }
-    $result.capture = $cap
+        if (-not $checks.captured_after_gameplay_anchor) { $reasons.Add(('capture fired at {0:0.0} s, before the gameplay anchor {1:0.0} s' -f $checks.rdoc_trigger_s, $GameplayAnchor)) }
+    } elseif ($null -eq $checks.rdoc_trigger_s) { $reasons.Add('the RDOC trigger line is missing from the log') }
+    if ($checks.unreachable_code_in_log) { $checks['note'] = 'the log also contains an AddressSpace::Protect "Unreachable code" critical; it did not prevent the capture but is recorded' }
+    $result.capture = $checks
     $result.checks = $checks
     $result.reasons = @($reasons)
-    $result.status = if ($reasons.Count -eq 0) { 'PASS' } elseif ($checks.nontrivial_size -and $checks.renderdoc_thumb.ok) { 'INVALID-SCENE' } else { 'FAIL' }
+    $result.status = if ($reasons.Count -eq 0) { 'PASS' } elseif ($gateOk -and $checks.nontrivial_size -and $checks.renderdoc_thumb.ok) { 'INVALID-SCENE' } else { 'FAIL' }
+    return $result
+}
+
+function Test-CShutdown($Cell) {
+    $result = [ordered]@{ status = 'PENDING'; reasons = @(); checks = [ordered]@{} }
+    $reasons = New-Object System.Collections.Generic.List[string]
+    if ($null -eq $Cell -or $null -eq $Cell.measured) {
+        $result.status = 'BLOCKED'; $result.reasons = @('C cell missing')
+        return $result
+    }
+    $m = $Cell.measured
+    $shutdown = $m.shutdown
+    $markers = $Cell.clean_markers
+    $allMarkers = $true
+    $missing = New-Object System.Collections.Generic.List[string]
+    foreach ($marker in $script:CleanMarkers) { if (-not $markers[$marker]) { $allMarkers = $false; $missing.Add($marker) } }
+    $checks = [ordered]@{
+        exit_code_zero = ($null -ne $shutdown.exit_code -and [int]$shutdown.exit_code -eq 0)
+        exited_on_own = ($null -ne $shutdown.method -and [string]$shutdown.method -like '*exited on its own*')
+        shutdown_ok = ($shutdown.ok -eq $true)
+        within_bound = ($null -ne $shutdown.seconds -and [double]$shutdown.seconds -le 60)
+        markers_present = $allMarkers
+        missing_markers = @($missing)
+        no_validation_errors = ($Cell.validation.Count -eq 0)
+        no_crash_markers = ($Cell.crashes.Count -eq 0)
+        r6_blocked = ($null -ne $Cell.r6_blocked -and @($Cell.r6_blocked | Where-Object { $_ }).Count -gt 0)
+        assertion_failed = (@($Cell.validation | Where-Object { $_ -match 'Assertion Failed|assert_fail' }).Count -gt 0)
+        teardown_documented = 'ImageRecycler::Shutdown() logs nothing; teardown is evidenced by the presenter- destruction markers (the destructor chain that calls it and vmaDestroyAllocator)'
+        wall_seconds = $Cell.wall_seconds
+    }
+    $result.checks = $checks
+    if ($checks.r6_blocked) {
+        $reasons.Add('the build refused the clean teardown (guest threads did not pause / "R6 blocked"): the presenter was left alone, so ImageRecycler::Shutdown + vmaDestroyAllocator did not run and R6 remains unexercised')
+        $result.status = 'BLOCKED'
+    } elseif (-not $allMarkers -and $checks.exit_code_zero -and $checks.shutdown_ok) {
+        $reasons.Add('the build ignored SHADPS4_CLEAN_EXIT / SHADPS4_EXIT_AFTER: no clean-exit markers in the log, so R6 (teardown ordering) cannot be assessed on this binary; this is a build-capability gap, not a crash')
+        $result.status = 'BLOCKED'
+    } elseif (-not ($checks.exit_code_zero -and $checks.shutdown_ok -and $checks.exited_on_own -and $checks.within_bound)) {
+        $reasons.Add('shutdown did not complete cleanly: exit_code/shutdown_ok/exited_on_own/bound check failed')
+        $result.status = 'FAIL'
+    } elseif ($Cell.validation.Count -gt 0 -or $Cell.crashes.Count -gt 0) {
+        $reasons.Add('validation errors or crash markers in the log: ' + (@($Cell.validation + $Cell.crashes) -join ' | '))
+        $result.status = 'FAIL'
+    } else {
+        $result.status = 'PASS'
+    }
+    $result.reasons = @($reasons)
     return $result
 }
 
@@ -1418,7 +1555,7 @@ function Write-ResultsMarkdown($State) {
     $lines.Add('')
     if ($null -ne $State.smoke) {
         $sm = $State.smoke
-        $lines.Add('## Smoke pair — OFF must load, ON suspected stuck on the menu')
+        $lines.Add('## Recycler pair — OFF must reach gameplay, ON checked for a regression')
         $lines.Add('')
         $lines.Add(('Status: **{0}**. {1}' -f $sm.status, $sm.finding))
         $lines.Add('')
@@ -1429,7 +1566,7 @@ function Write-ResultsMarkdown($State) {
                         $(if ($r.label -like '*-on-*') { 'on' } else { 'off' }), $r.label, $r.phase, $r.valid, (Format-Num $r.draws '0'), (Format-Num $r.mpx '0'), (Format-Num $r.passes '0'), (Format-Num $r.fps_p50), $r.frames, (Format-Num $r.recycler_hits '0.000'), (Format-Num $r.recycler_misses '0.000'), $(if ($r.menu_stuck) { $r.menu_stuck.stayed_on_menu } else { $null })))
         }
         $lines.Add('')
-        $lines.Add('A stuck-menu ON cell is a correctness finding, not a timing result; its menu fps is never compared with gameplay. Full log/evidence paths are in `results/SMOKE-PAIR.json` and each cell''s `cell.json`.')
+        $lines.Add('A menu-stuck ON cell is reported only with verified input execution; its menu fps is never compared with gameplay. Full log/evidence paths are in `results/RECYCLER-PAIR.json` and each cell''s `cell.json`.')
         $lines.Add('')
     }
     if ($null -ne $State.save) {
@@ -1464,7 +1601,7 @@ function Write-ResultsMarkdown($State) {
         $lines.Add('')
     }
     if ($null -ne $State.cells -and @($State.cells).Count -gt 0) {
-        $lines.Add('## A — recycler on/off cells (300 %, ' + $Hz + ' Hz)')
+        $lines.Add('## A — depth/barrier configuration cells (recycler off, 300 %, ' + $Hz + ' Hz)')
         $lines.Add('')
         $lines.Add('| label | arm | valid | phase | fps p50 | p90 | p99 | frames | draws | Mpx | passes | GPU % | img/f | create ms/f | destroy ms/f | hits/f | misses/f | pool MB | VRAM MB |')
         $lines.Add('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
@@ -1532,26 +1669,20 @@ function Write-ResultsMarkdown($State) {
             $lines.Add(('| A/A floor: fps p50 spread | {0} fps ({1} %); p99 spread {2} fps |' -f $a.floor.fps_p50_delta, $a.floor.fps_p50_spread_pct, $a.floor.worst_fps_p99_delta))
         }
         if ($null -ne $a.fps) {
-            $lines.Add(('| ON vs OFF fps p50 | {0} fps ({1} %), floor spread {2} fps, beyond floor: {3}{4} |' -f $a.fps.delta_p50, $a.fps.delta_pct, $a.fps.floor_spread_p50, $a.fps.beyond_floor, $(if ($a.fps.note) { ' — ' + $a.fps.note } else { '' })))
+            $lines.Add(('| legacy vs base fps p50 | {0} fps ({1} %), base/base spread {2} fps, beyond floor: {3}{4} |' -f $a.fps.delta_p50, $a.fps.delta_pct, $a.fps.floor_spread_p50, $a.fps.beyond_floor, $(if ($a.fps.note) { ' — ' + $a.fps.note } else { '' })))
         }
         if ($null -ne $a.alloc) {
-            $lines.Add(('| allocation effect (independent of fps) | images/frame {0} -> {1}; create ms/frame {2} -> {3}; destroy ms/frame {4} -> {5} |' -f $a.alloc.off_images_created_per_frame, $a.alloc.on_images_created_per_frame, $a.alloc.off_create_ms_per_frame, $a.alloc.on_create_ms_per_frame, $a.alloc.off_destroy_ms_per_frame, $a.alloc.on_destroy_ms_per_frame))
-            $lines.Add(('| hits / misses per frame | OFF {0} / {1}; ON {2} / {3} |' -f $a.alloc.off_hits, $a.alloc.off_misses, $a.alloc.on_hits, $a.alloc.on_misses))
-            $lines.Add(('| device memory | VRAM {0} -> {1} MB; pool {2} -> {3} MB |' -f $a.alloc.off_vram_mb, $a.alloc.on_vram_mb, $a.alloc.off_pool_mb, $a.alloc.on_pool_mb))
+            $lines.Add(('| depth/barrier effect | images/frame {0} -> {1}; create ms/frame {2} -> {3}; destroy ms/frame {4} -> {5}; passes {6} -> {7}; Mpx {8} -> {9} |' -f $a.alloc.base_images_created_per_frame, $a.alloc.legacy_images_created_per_frame, $a.alloc.base_create_ms_per_frame, $a.alloc.legacy_create_ms_per_frame, $a.alloc.base_destroy_ms_per_frame, $a.alloc.legacy_destroy_ms_per_frame, $a.alloc.base_passes_mean, $a.alloc.legacy_passes_mean, $a.alloc.base_mpx_mean, $a.alloc.legacy_mpx_mean))
+            
+            $lines.Add(('| device memory | VRAM {0} -> {1} MB; refresh uploads/frame {2} -> {3} |' -f $a.alloc.base_vram_mb, $a.alloc.legacy_vram_mb, $a.alloc.base_refresh_uploads, $a.alloc.legacy_refresh_uploads))
         }
         $lines.Add(('| cells discarded | {0} |' -f $(if ($a.discarded.Count) { ($a.discarded -join ', ') } else { 'none' })))
-        if ($null -ne $a.r3_finding -and $a.r3_finding.suspected) {
-            $lines.Add(('| **R3 finding** | **{0}** |' -f $a.r3_finding.note))
-            foreach ($oc in @($a.r3_finding.on_cells)) {
-                $lines.Add(('| ON cell evidence | `{0}`: phase {1}, menu draws {2}, {3} windows, recycler active {4}, log `{5}` |' -f $oc.label, $oc.phase, $oc.menu_draws, $oc.frames, $oc.recycler_active, $oc.log))
-            }
-        }
         $lines.Add(('| verdict | **{0}** {1} |' -f $a.status, $(if ($a.reasons.Count) { '— ' + ($a.reasons -join '; ') } else { '' })))
         $lines.Add('')
     }
     if ($null -ne $State.b) {
         $b = $State.b
-        $lines.Add('## B — R3 image content (off/off floor, then off vs on)')
+        $lines.Add('## B — pixel content between the A arms (base/base floor, then base vs legacy)')
         $lines.Add('')
         $lines.Add(('Dump mode: **{0}**{1}.' -f $b.dump_mode, $(if ($b.dump_frames) { ', frame ids ' + $b.dump_frames } else { '' })))
         $lines.Add('')
@@ -1619,7 +1750,7 @@ function Write-ResultsMarkdown($State) {
     $lines.Add('* No physical headset: no latency, comfort, tracking-quality or display-power claim can be made from these cells.')
     $lines.Add('* `depth_copies` needs `SHADPS4_TRACE_ADDR` (the ALIASSTAT line); otherwise it is null in `result.json`.')
     $lines.Add('* The candidate (1a53ceb/1dd4eb4) has no clean-exit path; R6 needs the wt-headless build with `SHADPS4_EXIT_AFTER` + `SHADPS4_CLEAN_EXIT`.')
-    $lines.Add('* Frame-identity across arms is not proven: off/off floor bounds animation/pose noise, so an on-vs-off difference is only read against that floor, never against zero.')
+    $lines.Add('* Frame identity across arms is not proven: the base/base floor bounds animation/pose noise, so a base-vs-legacy difference is only read against that floor, never against zero.')
     $lines.Add('* RenderDoc extraction of individual HMD textures would need the GUI; `renderdoccmd` validates the capture and its thumbnail only.')
     $lines.Add('')
     Write-TextFile (Join-Path $script:Out 'RESULTS.md') (($lines -join "`r`n") + "`r`n")
@@ -1904,19 +2035,13 @@ function Get-Commands {
         $hargs = Get-HarnessArgs $item
         $envPairs = New-Object System.Collections.Generic.List[string]
         if ($null -ne $item.env) { foreach ($k in $item.env.Keys) { $envPairs.Add(("`$env:{0}='{1}'" -f $k, $item.env[$k])) } }
-        if ($item.mode -eq 'B') {
-            if ($BDumpMode -eq 'harness') { $cmds.Add('# B dump point: the harness''s own gameplay-gated menu-baseline + gameplay-candidate dumps (no env, no frame pinning)') }
-            elseif ($BDumpMode -eq 'scene') { $hargs += @('-HmdDumpAtScene', ("{0},{1}" -f $GameplayMinDraws, $BandMinMpx)) }
-            elseif ($BDumpFrames -ne '') { $hargs += @('-DumpFrames', $BDumpFrames) }
-            else { $cmds.Add('# B dump point: derived from the A probe cell at run time (BDumpFrames empty). Pass -BDumpFrames "<id1>,<id2>" to pin it.') }
-        }
         if ($envPairs.Count -gt 0) {
             $cmds.Add(('# env must be set inside the harness process (a var set before wsl.exe does not survive to the emulator); the runner writes results\cells\<label>\invoke.ps1 with: ' + ($envPairs -join '; ')))
         }
-        $inner = (($hargs | ForEach-Object { if ($_ -match '\s') { "'$_'" } else { $_ } }) -join ' ')
+        $inner = (($hargs | ForEach-Object { if ($_ -match '[\s;]') { "'$_'" } else { $_ } }) -join ' ')
         $cmds.Add(('bash /mnt/m/Development/Deracine-work/_build/team/gpu-lock.sh run --owner validate-eng --kind headless --reason "validation ' + $item.mode + '" --ttl 1800 --require-quiet -- pwsh.exe ' + $inner))
     }
-    if (-not $SmokePair) {
+    if (-not $script:UsePair) {
         $cmds.Add('# SMOKE PAIR FIRST (Lead gate): OFF must reach gameplay, then the ON arm is checked for the')
         $cmds.Add('# suspected menu stall. Do not start the matrix until the OFF cell is confirmed.')
         Add-CellCommand ([ordered]@{ mode = 'P'; label = ($script:Prefix + '-P-off-1'); arm = 'off'; cell_mode = 'cell'; gate = 'gameplay'; extra = @(); attempts = $Attempts })
@@ -1927,16 +2052,10 @@ function Get-Commands {
         $hargs = Get-HarnessArgs $item
         $envPairs = New-Object System.Collections.Generic.List[string]
         if ($null -ne $item.env) { foreach ($k in $item.env.Keys) { $envPairs.Add(("`$env:{0}='{1}'" -f $k, $item.env[$k])) } }
-        if ($item.mode -eq 'B') {
-            if ($BDumpMode -eq 'harness') { $cmds.Add('# B dump point: the harness''s own gameplay-gated menu-baseline + gameplay-candidate dumps (no env, no frame pinning)') }
-            elseif ($BDumpMode -eq 'scene') { $hargs += @('-HmdDumpAtScene', ("{0},{1}" -f $GameplayMinDraws, $BandMinMpx)) }
-            elseif ($BDumpFrames -ne '') { $hargs += @('-DumpFrames', $BDumpFrames) }
-            else { $cmds.Add('# B dump point: derived from the A probe cell at run time (BDumpFrames empty). Pass -BDumpFrames "<id1>,<id2>" to pin it.') }
-        }
         if ($envPairs.Count -gt 0) {
             $cmds.Add(('# env must be set inside the harness process (a var set before wsl.exe does not survive to the emulator); the runner writes results\cells\<label>\invoke.ps1 with: ' + ($envPairs -join '; ')))
         }
-        $inner = (($hargs | ForEach-Object { if ($_ -match '\s') { "'$_'" } else { $_ } }) -join ' ')
+        $inner = (($hargs | ForEach-Object { if ($_ -match '[\s;]') { "'$_'" } else { $_ } }) -join ' ')
         $cmds.Add(('bash /mnt/m/Development/Deracine-work/_build/team/gpu-lock.sh run --owner validate-eng --kind headless --reason "validation ' + $item.mode + '" --ttl 1800 --require-quiet -- pwsh.exe ' + $inner))
     }
     $cmds.Add('# B comparisons (per pair, after the capture cells)')
@@ -1984,6 +2103,100 @@ if ($PrintPlan) {
     exit 0
 }
 
+if ($PairFromRuns -ne '') {
+    $labels = @($PairFromRuns -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+    if ($labels.Count -ne 2) { Write-Host '-PairFromRuns needs "<off-label>,<on-label>"'; exit 2 }
+    $offCell = Measure-Cell $labels[0]
+    $onCell = Measure-Cell $labels[1]
+    $pair = Get-RecyclerPairVerdict $offCell $onCell
+    $pair['generated'] = (Get-Date).ToString('o')
+    $pair['labels'] = $labels
+    Write-PairReport $pair
+    $state = [ordered]@{
+        status = @([ordered]@{ item = ('recycler pair from runs: ' + ($labels -join ' / ')); status = $pair.status; evidence = 'results\RECYCLER-PAIR.json / .md' })
+        commands = @(); plan = @(); save = $script:SaveSourceInfo
+        cells = @(); acceptance = $null; b = $null; c = $null; d = $null; e = $null; smoke = $pair
+    }
+    Write-ResultsMarkdown $state
+    Write-Host ('recycler pair: {0} (off {1}: {2}, on {3}: {4})' -f $pair.status, $offCell.label, $offCell.measured.phase, $onCell.label, $onCell.measured.phase)
+    $exit = if ($pair.status -eq 'RECYCLER-REGRESSION-SUSPECTED') { 1 } else { 0 }
+    exit $exit
+}
+
+if ($CFromRun -ne '') {
+    $cCell = Measure-Cell $CFromRun
+    $cres = Test-CShutdown $cCell
+    $cres['label'] = $CFromRun
+    Write-JsonFile (Join-Path $script:Out 'C-shutdown.json') $cres
+    $state = [ordered]@{
+        status = @([ordered]@{ item = 'C — clean exit (recycler on)'; status = $cres.status; evidence = ('results\C-shutdown.json; runs\' + $CFromRun) })
+        commands = @(); plan = @(); save = $script:SaveSourceInfo
+        cells = @($cCell); acceptance = $null; b = $null; c = $cres; d = $null; e = $null; smoke = $null
+    }
+    Write-ResultsMarkdown $state
+    Write-Host ('C: {0}' -f $cres.status)
+    foreach ($reason in @($cres.reasons)) { Write-Host ('  reason: {0}' -f $reason) }
+    exit $(if ($cres.status -eq 'PASS') { 0 } else { 1 })
+}
+
+if ($DFromRuns -ne '') {
+    $labels = @($DFromRuns -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+    $resultsD = @()
+    $best = $null
+    foreach ($lbl in $labels) {
+        $c = Measure-Cell $lbl
+        $r = Test-DCapture $c 60.0
+        $r['label'] = $lbl
+        $resultsD += $r
+        if ($null -eq $best -or ($r.status -eq 'PASS' -and $best.status -ne 'PASS')) { $best = $r }
+    }
+    Write-JsonFile (Join-Path $script:Out 'D-renderdoc.json') ([ordered]@{ chosen = $best; runs = [object[]]$resultsD })
+    $state = [ordered]@{
+        status = @([ordered]@{ item = 'D — RenderDoc scene-gated capture'; status = $best.status; evidence = 'results\D-renderdoc.json' })
+        commands = @(); plan = @(); save = $script:SaveSourceInfo
+        cells = @(); acceptance = $null; b = $null; c = $null; d = $best; e = $null; smoke = $null
+    }
+    Write-ResultsMarkdown $state
+    Write-Host ('D: {0} ({1})' -f $best.status, $best.label)
+    foreach ($reason in @($best.reasons)) { Write-Host ('  reason: {0}' -f $reason) }
+    exit $(if ($best.status -eq 'PASS') { 0 } else { 1 })
+}
+
+if ($AFromRuns -ne '') {
+    $labels = @($AFromRuns -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+    if ($labels.Count -ne 3) { Write-Host '-AFromRuns needs "<base1>,<base2>,<legacy>"'; exit 2 }
+    $cells3 = @($labels | ForEach-Object { Measure-Cell $_ })
+    $acc = Get-Acceptance $cells3
+    Write-JsonFile (Join-Path $script:Out 'A-acceptance.json') $acc
+    $state = [ordered]@{
+        status = @([ordered]@{ item = 'A — depth/barrier configuration arms'; status = $acc.status; evidence = 'results\A-acceptance.json' })
+        commands = @(); plan = @(); save = $script:SaveSourceInfo
+        cells = $cells3; acceptance = $acc; b = $null; c = $null; d = $null; e = $null; smoke = $null
+    }
+    Write-ResultsMarkdown $state
+    Write-Host ('A acceptance: {0}' -f $acc.status)
+    foreach ($reason in @($acc.reasons)) { Write-Host ('  reason: {0}' -f $reason) }
+    exit $(if ($acc.status -eq 'PASS') { 0 } else { 1 })
+}
+
+if ($BCaptureFromRuns -ne '') {
+    $labels = @($BCaptureFromRuns -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+    if ($labels.Count -ne 3) { Write-Host '-BCaptureFromRuns needs "<off1>,<off2>,<on>"'; exit 2 }
+    $cells3 = @($labels | ForEach-Object { Measure-Cell $_ })
+    $b = Test-BContent $cells3[0] $cells3[1] $cells3[2]
+    $b['labels'] = $labels
+    Write-JsonFile (Join-Path $script:Out 'B-content.json') $b
+    $state = [ordered]@{
+        status = @([ordered]@{ item = 'B — pixel content (OFF/OFF floor, OFF vs ON)'; status = $b.status; evidence = 'results\B-content.json; results\cells\*\compare-*.json' })
+        commands = @(); plan = @(); save = $script:SaveSourceInfo
+        cells = @(); acceptance = $null; b = $b; c = $null; d = $null; e = $null; smoke = $null
+    }
+    Write-ResultsMarkdown $state
+    Write-Host ('B from captures: {0} (images compared {1})' -f $b.status, @($b.images | Where-Object { $_ }).Count)
+    foreach ($reason in @($b.reasons)) { Write-Host ('  reason: {0}' -f $reason) }
+    exit $(if ($b.status -eq 'PASS') { 0 } else { 1 })
+}
+
 if (-not $Authorized) {
     Write-Host 'refusing to start emulator cells without -Authorized (the Lead gates the GPU). Use -DryRun or -Plan.'
     exit 2
@@ -2010,15 +2223,15 @@ if (-not $script:SaveSourceInfo.slot1_present -and -not $SkipSaveCheck) {
     exit 3
 }
 
-if ($SmokePair) {
-    $smoke = Invoke-SmokePair
+if ($script:UsePair) {
+    $smoke = Invoke-RecyclerPair
     $state = [ordered]@{
-        status = @([ordered]@{ item = 'smoke pair (OFF then ON)'; status = $smoke.status; evidence = 'results\SMOKE-PAIR.json / .md' })
+        status = @([ordered]@{ item = 'recycler pair (off then on)'; status = $smoke.status; evidence = 'results\RECYCLER-PAIR.json / .md' })
         commands = @(Get-Commands); plan = [object[]]$plan; save = $script:SaveSourceInfo
         cells = @(); acceptance = $null; b = $null; c = $null; d = $null; e = $null; smoke = $smoke
     }
     Write-ResultsMarkdown $state
-    $exit = if ($smoke.status -in @('FINDING-R3-SUSPECTED', 'OFF-DID-NOT-REACH')) { 1 } else { 0 }
+    $exit = if ($smoke.status -in @('RECYCLER-REGRESSION-SUSPECTED', 'OFF-DID-NOT-REACH')) { 1 } else { 0 }
     exit $exit
 }
 
@@ -2046,27 +2259,18 @@ if ($Modes -contains 'A') {
     $state.status += [ordered]@{ item = 'A — recycler off/off/on/off'; status = $state.acceptance.status; evidence = 'results\cells\<label>\cell.json' }
 }
 
-# B cells + content check
+# B: pixel compare between the A arms (base/base floor, then base vs legacy)
 if ($Modes -contains 'B') {
-    $bPlan = @($plan | Where-Object { $_.mode -eq 'B' })
-    foreach ($item in $bPlan) {
-        if (-not $cells.ContainsKey($item.label)) {
-            $run = Invoke-Cell $item
-            $cell = Measure-Cell $item.label
-            $cellRecords.Add($cell)
-            $cells[$item.label] = $cell
-            Write-JsonFile (Join-Path (Join-Path $script:CellsDir $item.label) 'cell.json') ([ordered]@{ run = $run; cell = $cell })
-        }
-    }
-    $bCells = @($bPlan | ForEach-Object { $cells[$_.label] })
-    $validB = @($bCells | Where-Object { $null -ne $_ -and $null -ne $_.measured -and $_.measured.valid })
-    if ($validB.Count -lt 3) {
-        $state.b = [ordered]@{ status = 'INVALID'; dump_mode = $BDumpMode; dump_frames = $BDumpFrames; reasons = @('fewer than three valid B cells: ' + (($bCells | ForEach-Object { $_.label + '=' + $(if ($_.measured) { $_.measured.reason } else { 'missing' }) }) -join '; ')); images = @() }
+    $aCellsAll = @($state.cells | Where-Object { $null -ne $_ })
+    $baseCells = @($aCellsAll | Where-Object { $_.label -like '*-A-base-*' -and $null -ne $_.measured -and $_.measured.valid })
+    $legacyCells = @($aCellsAll | Where-Object { $_.label -like '*-A-legacy-*' -and $null -ne $_.measured -and $_.measured.valid })
+    if ($baseCells.Count -lt 2 -or $legacyCells.Count -lt 1) {
+        $state.b = [ordered]@{ status = 'INVALID'; reasons = @(('B needs two valid base cells and one valid legacy cell; have base={0} legacy={1}. Run A first (same invocation).' -f $baseCells.Count, $legacyCells.Count)); images = @(); dump_mode = 'harness -Capture' }
     } else {
-        $state.b = Test-BContent $validB[0] $validB[1] $validB[2]
+        $state.b = Test-BContent $baseCells[0] $baseCells[1] $legacyCells[0]
     }
     Write-JsonFile (Join-Path $script:Out 'B-content.json') $state.b
-    $state.status += [ordered]@{ item = 'B — R3 image content'; status = $state.b.status; evidence = 'results\B-content.json; results\cells\*\compare-*.json' }
+    $state.status += [ordered]@{ item = 'B — depth/barrier pixel content'; status = $state.b.status; evidence = 'results\B-content.json; results\cells\*\compare-*.json' }
 }
 
 # C

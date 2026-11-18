@@ -58,6 +58,10 @@ param(
     [ValidateSet('cell', 'aba', 'rdoc', 'lowres')][string]$Mode = 'cell',
     # What the measured window is gated on: gameplay, menu (calibration/smoke) or heavy.
     [ValidateSet('gameplay', 'menu', 'heavy')][string]$Gate = 'gameplay',
+    # Resolution-specific gameplay profile: auto derives it from -RenderPercent. 100 has its own
+    # eye/image size, scene anchor and workload band; the menu/gameplay classification stays
+    # separate (draws are resolution-independent, so 800 excludes the ~465-draw menu).
+    [ValidateSet('auto', '300', '100')][string]$Profile = 'auto',
     # The guest's own render size, in percent of a PSVR's 960x1080 an eye (300 = 2880x3240).
     [int]$RenderPercent = 300,
     # The emulated display's refresh rate; the title paces itself to it.
@@ -171,7 +175,12 @@ param(
     [double]$StatsEvery = 0.5,
     # The game: the shadow app with the 300 % render configuration.
     [string]$Eboot = 'D:\Temp\Deracine\CUSA11919-qual\eboot.bin',
-    [string]$Root = 'M:\Development\Deracine-work',
+    # Empty = derive from the script location; pass it when the layout differs.
+    # Fixture locations; empty = the conventional place under -Root.
+    [string]$SourceLab = '',
+    [string]$SavedataSource = '',
+    [string]$Shadow = '',
+    [string]$Root = '',
     # The lock script (Windows path); converted to its WSL path for bash.
     [string]$LockScript = ''
 )
@@ -180,19 +189,31 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Off
 
 # --- paths and constants ----------------------------------------------------------------------
+$script:ScriptDir = Split-Path -Parent $PSCommandPath
+if ($Root -eq '') {
+    # <root>/_build/headless/... or <repo>/tools/headless-vr/...
+    if ((Split-Path -Leaf $script:ScriptDir) -in @('headless', 'headless-vr')) {
+        $Root = Split-Path -Parent (Split-Path -Parent $script:ScriptDir)
+    } else {
+        $Root = (Get-Location).Path
+    }
+}
+if ($Shadow -eq '') { $Shadow = Split-Path -Parent $Eboot }
+if ($SourceLab -eq '') { $SourceLab = Join-Path $Root 'lab\pc-vr-quality' }
+if ($SavedataSource -eq '') { $SavedataSource = Join-Path $Root '_run\pc-vr-recycler-try\user\home\1000\savedata\CUSA11919' }
 $script:HeadlessDir = Join-Path $Root '_build\headless'
 $script:RunsRoot = Join-Path $script:HeadlessDir 'runs'
 $script:LabsRoot = Join-Path $script:HeadlessDir 'labs'
 $script:TemplateDir = Join-Path $script:HeadlessDir 'template'
-$script:InputsDir = Join-Path $script:HeadlessDir 'inputs'
-$script:ReferencesDir = Join-Path $script:HeadlessDir 'references'
+$script:InputsDir = if (Test-Path (Join-Path $script:ScriptDir 'inputs')) { Join-Path $script:ScriptDir 'inputs' } else { Join-Path $script:HeadlessDir 'inputs' }
+$script:ReferencesDir = if (Test-Path (Join-Path $script:ScriptDir 'references')) { Join-Path $script:ScriptDir 'references' } else { Join-Path $script:HeadlessDir 'references' }
 $script:SelfTestDir = Join-Path $script:HeadlessDir 'selftest'
 if ($MenuReference -eq '') { $MenuReference = Join-Path $script:ReferencesDir 'menu-eye.png' }
 if ($GameplayReference -eq '') { $GameplayReference = Join-Path $script:ReferencesDir 'gameplay-eye.png' }
-$script:Shadow = 'D:\Temp\Deracine\CUSA11919-qual'
+$script:Shadow = $Shadow
 $script:IniPath = Join-Path $script:Shadow 'gameproject\saved\config\ps4\engine.ini'
-$script:SavedataSource = Join-Path $Root '_run\pc-vr-recycler-try\user\home\1000\savedata\CUSA11919'
-$script:SourceLab = Join-Path $Root 'lab\pc-vr-quality'
+$script:SavedataSource = $SavedataSource
+$script:SourceLab = $SourceLab
 $script:RenderDocCmd = 'C:\Program Files\RenderDoc\renderdoccmd.exe'
 $script:CaptureDiff = Join-Path $Root '_build\bench\capture-diff.py'
 if ($LockScript -eq '') { $LockScript = Join-Path $Root '_build\team\gpu-lock.sh' }
@@ -2108,6 +2129,10 @@ Set-Options
 if ($Mode -eq 'lowres') {
     $RenderPercent = 100
     $Hz = 120
+    # 100 % of a PSVR panel is 960x1080 an eye, 1920x1080 side by side; the 300 % eye/image
+    # expectation must not reject a correct lowres cell.
+    if (-not $PSBoundParameters.ContainsKey('ExpectEye')) { $ExpectEye = '960x1080' }
+    if (-not $PSBoundParameters.ContainsKey('ExpectImage')) { $ExpectImage = '1920x1080' }
 }
 if ($Mode -eq 'rdoc' -and -not $PSBoundParameters.ContainsKey('Gate')) {
     # A RenderDoc capture is of the front-end/classroom phase the scene gate matches; requiring
@@ -2139,6 +2164,28 @@ if ($RenderPercent -ne 300) {
     if (-not $PSBoundParameters.ContainsKey('SceneMinMpx')) { $SceneMinMpx = [math]::Round($SceneMinMpx * $areaScale, 1) }
     if (-not $PSBoundParameters.ContainsKey('BandMinMpx')) { $BandMinMpx = [math]::Round($BandMinMpx * $areaScale, 1) }
     if (-not $PSBoundParameters.ContainsKey('BandMaxMpx')) { $BandMaxMpx = [math]::Round($BandMaxMpx * $areaScale, 1) }
+    Set-Options
+}
+
+# --- resolution-specific gameplay profile -------------------------------------------------
+# A 100 % cell draws 960x1080 an eye (1920x1080 side by side), so its target writes are roughly
+# a ninth of the 300 % cell's; a shared absolute Mpx threshold cannot classify both. Draws are
+# geometry and do not scale, so the 800-draw anchor separates gameplay (~1860) from the menu
+# (~465) and the loading screen (42-55) at every resolution. The Mpx/pass band below was
+# calibrated from a valid 100 % capture (classroom image verified), not from the menu.
+$profileSize = if ($Profile -ne 'auto') { [int]$Profile } else { $RenderPercent }
+if ($profileSize -eq 100) {
+    if (-not $PSBoundParameters.ContainsKey('ExpectEye')) { $ExpectEye = '960x1080' }
+    if (-not $PSBoundParameters.ContainsKey('ExpectImage')) { $ExpectImage = '1920x1080' }
+    if (-not $PSBoundParameters.ContainsKey('SceneMinDraws')) { $SceneMinDraws = 800 }
+    if (-not $PSBoundParameters.ContainsKey('SceneMinMpx')) { $SceneMinMpx = 50 }
+    if (-not $PSBoundParameters.ContainsKey('BandMinDraws')) { $BandMinDraws = 1500 }
+    if (-not $PSBoundParameters.ContainsKey('BandMaxDraws')) { $BandMaxDraws = 2300 }
+    if (-not $PSBoundParameters.ContainsKey('BandMinMpx')) { $BandMinMpx = 55 }
+    if (-not $PSBoundParameters.ContainsKey('BandMaxMpx')) { $BandMaxMpx = 90 }
+    if (-not $PSBoundParameters.ContainsKey('BandMinPasses')) { $BandMinPasses = 30 }
+    if (-not $PSBoundParameters.ContainsKey('BandMaxPasses')) { $BandMaxPasses = 55 }
+    if (-not $PSBoundParameters.ContainsKey('SettleTolerancePct')) { $SettleTolerancePct = 15 }
     Set-Options
 }
 
