@@ -204,7 +204,7 @@ inflates the CPU side by ~4–5×; use this run for VUID/SYNC status, never for 
 | MEM-01 | Image recycler | `blocked` | P0-linked, high risk | historic 4.15 → 0.29 ms create+destroy, scene-mismatched arms | Independent correctness/cohesion review; never partially |
 | MEM-02 | High-scale memory commitment and stalls | `queued` | P2 | ~3.37 GB steady VRAM; historic multi-GB commitment and protection failures | Test causal link to current M2 stalls |
 | VR-01 | OpenXR presentation and pacing | `blocked` | P2 | instrumentation in `main`; no headset session | Worn-headset latency decomposition |
-| LUT-01 | 3D LUT array/volume conversion and sampling | `queued` | P2 correctness | ~2 `ExpandImage`/frame; `ExpandImage` ~0.08 ms/frame | One `SHADPS4_DBG_SAMPLER=0x2008f80000` run; conversions already proven 1:1 and ordered |
+| LUT-01 | 3D LUT array/volume conversion and sampling | `closed` | P2 correctness | ~2 `ExpandImage`/frame; `ExpandImage` ~0.08 ms/frame | Done 2026-11-19: contents (32/32), conversion (1:1 ordered) and sampler (`clamp_z` = `ClampLastTexel` → `ClampToEdge`, no wrap) all measured clean |
 
 ---
 
@@ -714,7 +714,7 @@ inflates the CPU side by ~4–5×; use this run for VUID/SYNC status, never for 
 
 ### LUT-01 — 3D LUT array/volume conversion and sampling
 
-- **Status:** `queued` · **Priority:** P2 correctness · **Last update:** 2026-11-19
+- **Status:** `closed` (both halves positive; the measurement run was read-only) · **Priority:** P2 correctness · **Last update:** 2026-11-19
 - **Measured:** guest **32³ LUT at `0x2008f80000`**, 128 KiB (`0x20000`), tile 19,
   `A2B10G10R10UnormPack32`. Producer: a colour-target pass `32×32×1`, **32 layers (2D array)**,
   `vtx=0x4496c84956245785`. Consumer: fragment shader `0x29090b93e88b0b98`, sampling a 3D image
@@ -730,10 +730,19 @@ inflates the CPU side by ~4–5×; use this run for VUID/SYNC status, never for 
   `SanitizeCopyLayers` fires **no** coercion for this resource (the classroom run's 11
   `Coercing copy` warnings are all same-type array/cube cases, none 2D↔3D at depth), and
   `ExpandImage` refreshes before copying so GPU contents win. Conclusion recorded upstream: the
-  conversions "are 1:1 and ordered … not leaving stale or reordered slices". The **sampler state is
-  the remaining open half** and is instrumented but **unmeasured**: `SHADPS4_DBG_SAMPLER` reports
-  the guest S# and the resulting Vulkan address modes, and for a volume the deciding field is
-  `clamp_z` → `addressModeW`.
+  conversions "are 1:1 and ordered … not leaving stale or reordered slices".
+- **Sampler half measured, and it is also positive (2026-11-19 04:52–04:54).** One headless
+  classroom front-end run of `SHADPS4_DBG_SAMPLER=0x2008f80000` on `main` @ `314a2cb` produced
+  exactly one line, for this binding: `shader=0x29090b93e88b0b98 stage=Fragment binding=10
+  origin=sgpr:48 aniso_off=0 raw0=0xfff00000000092 raw1=0x6500000 clamp_x=2 clamp_y=2 clamp_z=2
+  names=ClampLastTexel/ClampLastTexel/ClampLastTexel
+  vulkan=ClampToEdge/ClampToEdge/ClampToEdge tex=addr=0x2008f80000 type=Color3D 32x32x32 layers=1
+  levels=1 volume=1`. `addressModeW` is therefore **`ClampToEdge`, not `Wrap`** — an out-of-range Z
+  lookup clamps to the last slice and never wraps. All three axes are the same
+  exactly-representable mode (0 `Unimplemented clamp mode` lines in the run), `origin=sgpr:48`
+  matches the consumer's `fs_sampsgpr_48`, and the pairing is the volume itself: the 3D view where
+  the third coordinate is the one `addressModeW` transforms. **The wrap/clamp modes are applied
+  correctly for this 3D texture**, so the red patches are not explained by them.
 - **Measurement semantics:** `ExpandImage` is **not a cost centre** in this title — the cross-fork
   report measured 4.5–5.9 ms total for 116–118 expands in one profile, i.e. ~0.08 ms/frame.
   Do not assign it significant FPS potential without evidence.
@@ -768,19 +777,23 @@ inflates the CPU side by ~4–5×; use this run for VUID/SYNC status, never for 
     the golden → `acda49e` window** and is a **hypothesis**, not a confirmed cause.
 - **Safety concerns:** a corrupted frame is never a valid performance result; do not optimise the
   LUT by changing its contents; the patches may be the game's intended grade.
-- **Open question:** *What does the LUT's own sampler state say — specifically the guest `clamp_z`
-  field and the Vulkan `addressModeW` it becomes — and does that explain the red patches, or are
-  they the game's intended warm grade?* Slice ordering and copy fidelity are **no longer** part of
-  this question.
-- **Next action:** **one measurement run, no code change**: `SHADPS4_DBG_SAMPLER=0x2008f80000`
-  (add `SHADPS4_DBG_TRACE_IMAGES=1` to see the conversion sequence beside it), then
-  `Select-String -Path <log> -Pattern 'SAMPLER_STATE'`, and read `clamp_z`, `names` and
-  `vulkan=<U>/<V>/<W>` for the `type=Color3D` / `tex=addr=0x2008f80000` binding. The LUT coordinate
-  `31/32 · c + 0.5/32` leaves `[0,1]` as soon as `c > 1`, and one of the two branches feeding `c`
-  in the consumer shader is unclamped, so `clamp_z` decides wrap-versus-clamp. This is a read-only
-  diagnostic on the existing build — **not** an optimization — and the run must not change renderer
-  behaviour. Do **not** re-run the closed probes (`SHADPS4_DBG_LUT_AXIS=flip`, the
-  `543f255`/`9bdf2bf` bisect) unchanged.
+- **Open question (answered 2026-11-19):** *"What does the LUT's own sampler state say — the guest
+  `clamp_z` and the `addressModeW` it becomes — and does that explain the red patches?"* The answer
+  is **no**: `clamp_z` is `ClampLastTexel`, i.e. `ClampToEdge`, on every axis, so there is no wrap
+  to get wrong. With 32/32 slices intact and a 1:1 ordered conversion, this resource's contents,
+  transport and sampling are all measured clean. If the classroom patches are a defect rather than
+  the title's intended warm grade, the cause is **not** here and has to be looked for elsewhere.
+- **Next action:** none — the measurement is done and was read-only. **Do not re-run** the closed
+  probes unchanged (`SHADPS4_DBG_SAMPLER` for this resource, `SHADPS4_DBG_LUT_AXIS=flip`, the
+  `543f255`/`9bdf2bf` bisect).
+- **Measurement provenance:** private lab `_run/sampler-diag/lab` (a portable copy of
+  `lab/pc-vr-quality` on its own shadow game; `pc-vr/` and the shared game dump untouched), runner
+  `_run/sampler-diag/run.ps1`, log `_run/sampler-diag/lab/user/log/shad_log.txt` (12 MB), exe
+  SHA-256 `8991510F…`, `PrepareHmdFrame` at 5760x3240 (2880x3240 an eye, `render_percent=300`),
+  0 validation errors. Recorded caveat: the run **overlapped the GPU-01 depth-pass campaign**
+  (`_out/gpu01-depthpass-2026-11-19`, arms 04:47–05:06), so its timing must not be used as a
+  measurement — the state read is unaffected, and the one arm it overlapped (`arm0-s1`) is
+  `valid:false` for scene reasons, so no accepted GPU-01 cell is contaminated.
 - **Related item recorded on `main`, not a seeded target ID.** `docs/assignment01/3D-VIEW-MIP-LEVELS.md`
   (`314a2cb`) records a **separate, latent** issue: a `Color2D`/`Color2DArray` view over a
   *mipmapped* `Color3D` image asks for more than one level, which
@@ -790,6 +803,13 @@ inflates the CPU side by ~4–5×; use this run for VUID/SYNC status, never for 
   (single-mip). It is listed here rather than as a new target ID because it is a correctness item,
   not a performance target, and the seeded queue must stay stable; the fix direction is a clamp to
   one level plus a GPU-free unit test on `ImageViewInfo`.
+- **Another related observation, outside this target's scope.** Both the historical classroom log
+  and the 2026-11-19 run record **12 `Coercing copy` warnings**, every one the *same-type*
+  "source layers 1 and destination layers 2 … to minimum" through "6 … 8" variant
+  (`image.cpp:771`) — small array/cube resources, never this 32↔32 resource. A copy coerced **down**
+  to the smaller layer count leaves the destination's remaining layers to the refresh, which is a
+  plausible stale-layer mechanism for those resources. Recorded here only so it is not lost with
+  this thread; it needs its own bounded look and is not part of LUT-01.
 - **History:**
   - 2026-11-17 — LUT identified as the UE4 32³ grading LUT; recycler trial produced the red
     overlay that opened the correctness question.
