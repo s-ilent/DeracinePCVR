@@ -183,10 +183,14 @@ inflates the CPU side by ~4–5×; use this run for VUID/SYNC status, never for 
 
 ### 4.5 The game configuration a cell runs, and the Morpheus 120 Hz tweak (kept separate)
 
-**Provenance of the Morpheus 120 Hz tweak — recorded separately from every target.** As the user
-corrected on 2026-11-19, `PSVRFrameSequence=Render120Scanout120` is **not part of the game**. It is a
-tweak **added by agents during the earlier frametime investigation**, living in the game-config path
-`gameproject\saved\config\ps4\engine.ini` of `D:\Temp\Deracine\1.0\Image0`, together with
+**Provenance of the Morpheus 120 Hz tweak — recorded separately from every target.** The
+authoritative configuration record for the game's Morpheus/Unreal settings, the frame modes and what
+has been measured is **`docs/psvr-morpheus-ue4-settings.md`** (added by another session, with
+`tools/tests/morpheus-config-test.ps1` covering the configuration controls). This ledger does **not**
+duplicate it; the note below is only the origin of the tweak that the M2 shadow was missing. As the
+user corrected on 2026-11-19, `PSVRFrameSequence=Render120Scanout120` is **not part of the game**. It
+is a tweak **added by agents during the earlier frametime investigation**, living in the game-config
+path `gameproject\saved\config\ps4\engine.ini` of `D:\Temp\Deracine\1.0\Image0`, together with
 `bSmoothFrameRate=False`, a smoothed range to 250 and `t.MaxFPS=0`. An earlier draft of this ledger
 described it as game-shipped; that was wrong and is withdrawn. It has **no** target ID and belongs to
 no target — it is a configuration artifact of the benchmark campaign, recorded here only so its
@@ -258,10 +262,10 @@ cells, never projection.
 | CPU-07 | Driver queue submission | `queued` | P1 | `vkQueueSubmit` 1.77 ms/frame, 3 calls | Determine driver work vs back-pressure vs dependency |
 | CPU-08 | Unclassified translation | `queued` | P1 | ~9.0 ms/frame command-thread gap (selected window) | Find the largest missing exclusive cost with existing timers |
 | GPU-01 | Depth/scene preservation copies | `completed` | P0 | 2 × 71.19 MiB + 2 × 0.125 MiB copies/frame; pass removes one (GPU exec −4.07 ms) | Closed — no FPS benefit on a CPU-bound frame; a second ~71 MiB copy is unidentified |
-| GPU-02 | Guest compute `799062d096fa2314` | `queued` | P1 | 8 dispatches/frame; **4.86–5.45 ms/frame — attribution suspect, includes copy time (see record)** | Identify shader, geometry, I/O; wait for GPU-05 before trusting the interval |
-| GPU-03 | Render passes and load/store | `queued` | P1 | pass attribution 8.44–8.70 ms/frame; heaviest pass 5.85–6.53 ms | Attribute pass cost vs load/store/barrier transitions |
+| GPU-02 | Guest compute `799062d096fa2314` | `queued` | P1 | **0.21 ms/frame** dispatch — corrected 2026-11-19; the earlier ~5 ms was copy time | Identify shader, geometry, I/O; it is now a *cheap* operation, so re-rank it before investing |
+| GPU-03 | Render passes and load/store | `queued` | P1 | ~4.35 ms/frame pass total with copies marked (top pass 1.9 ms); the older 8.44 / 5.9 ms figures were **inflated** by copy time | Re-measure on a copy-marked build, then attribute load/store vs barriers |
 | GPU-04 | Depth-pass and barrier-in-pass switches | `queued` | P1 | opt-in, both off by default; matched-workload benefit unproven | Re-test the *safe* options only, in matched M2 |
-| GPU-05 | Copy attribution coverage | `queued` | P1 diagnostic | direct `Runtime::CopyImage` unmarked (source-confirmed) | Add correctly located direct-copy markers |
+| GPU-05 | Copy attribution coverage | `completed` | P1 diagnostic | copies now named: 4.0/frame, 142.3 MiB/frame, **6.98 ms/frame** attributed | Closed (`2b665fd`); follow-up is the reverse `D32 → R32` transition, as a new target |
 | MEM-01 | Image recycler | `blocked` | P0-linked, high risk | historic 4.15 → 0.29 ms create+destroy, scene-mismatched arms | Independent correctness/cohesion review; never partially |
 | MEM-02 | High-scale memory commitment and stalls | `queued` | P2 | ~3.37 GB steady VRAM; historic multi-GB commitment and protection failures | Test causal link to current M2 stalls |
 | VR-01 | OpenXR presentation and pacing | `blocked` | P2 | instrumentation in `main`; no headset session | Worn-headset latency decomposition |
@@ -645,7 +649,14 @@ cells, never projection.
 ### GPU-02 — Guest compute shader `799062d096fa2314`
 
 - **Status:** `queued` · **Priority:** P1 · **Last update:** 2026-11-19
-- **⚠ Attribution now suspect — do not quote the ~5 ms as exclusive shader execution cost.**
+- **✔ Attribution resolved (2026-11-19) — the ~5 ms was copy time, not shader cost.** With the
+  copies given their own GPU interval by `2b665fd`, the same shader reports
+  **`0.21 ms/frame` (`0.21 ms x152 [dispatch] dispatch shader 799062d096fa2314`)** in a matched M2
+  cell (`arm0-g1`, 36.37 unique FPS), against the ~5 ms previously charged to its interval. The
+  earlier suspicion (recorded below, from the user, after GPU-01's A/B) is confirmed by measurement.
+  **Use 0.21 ms/frame; do not carry the ~5 ms figure forward.** All figures below are retained only
+  as the record of the mis-attribution.
+- **⚠ (Superseded) Attribution was suspect — do not quote the ~5 ms as exclusive shader execution cost.**
   Recorded 2026-11-19 by the user after GPU-01's A/B. The aggregate dispatch time attributed to
   this shader fell from **5.43 ms/frame to 0.69 ms/frame** when the depth-write pass replaced an
   **unmarked** preservation copy (`arm0-s5` → `arm1-s5`), with the intervening copy itself measured
@@ -688,11 +699,17 @@ cells, never projection.
 ### GPU-03 — Render passes and load/store behaviour
 
 - **Status:** `queued` · **Priority:** P1 · **Last update:** 2026-11-19
-- **Measured:** historical profiler pass total **~8.24 ms/frame**; heaviest individual pass
-  **~5.9 ms/frame**. Confirmed in the M2 window as pass attribution **8.44 ms/frame**
-  (`x1856`) with heaviest pass **5.85 ms ×32** — `5760×3240`, `1 colour + depth`, vs
-  `72abf67b5ff30cc3`, ps `49d2380cb717a18e`. The full M2 pass mix is ~58 passes/frame, **57 of
-  which load their targets** and ~909 Mpx of target writes.
+- **⚠ Pass figures measured without copy marks — likely inflated. Re-measure before planning.**
+  Recorded 2026-11-19 from GPU-05's cell: with `Image::CopyImage` given its own interval, the same
+  scene reports a pass total of **~4.35 ms/frame** with the top pass at **1.9 ms**, against the
+  "~8.24 ms pass total / ~5.9 ms heaviest pass" below, which were measured while the unmarked
+  ~7 ms/frame of representation copies were being charged to the intervals around them. The figures
+  below are an **upper bound of mixed composition** until re-measured on a copy-marked build.
+- **Measured (composition unproven, see the warning above):** historical profiler pass total
+  **~8.24 ms/frame**; heaviest individual pass **~5.9 ms/frame**. Confirmed in the M2 window as pass
+  attribution **8.44 ms/frame** (`x1856`) with heaviest pass **5.85 ms ×32** — `5760×3240`,
+  `1 colour + depth`, vs `72abf67b5ff30cc3`, ps `49d2380cb717a18e`. The full M2 pass mix is
+  ~58 passes/frame, **57 of which load their targets** and ~909 Mpx of target writes.
 - **Measurement semantics:** the pass total and the heaviest pass are per frame, but the `xN`
   counts are per window. "Marked intervals run to the next mark", so a barrier or copy between
   two marks is inside the earlier one.
@@ -762,27 +779,58 @@ cells, never projection.
 
 ### GPU-05 — Copy attribution coverage
 
-- **Status:** `queued` — **the preferred next investigation** (promoted 2026-11-19 by the user,
-  immediately after GPU-01 closed) · **Priority:** P1 diagnostic · **Last update:** 2026-11-19
-- **New evidence that promotes this target (2026-11-19, from GPU-01's A/B).** `gpu operations`
-  changed as the depth-write pass replaced an **unmarked** copy:
-  `arm0-s5` = `pass 8.97 ms x869, dispatch 5.43 ms x213`; `arm1-s5` =
-  `pass 9.46 ms x976, dispatch 0.69 ms x238, copy 0.18 ms x17`. So the ~4 ms copy in the copy arm
-  was being charged to the **preceding dispatch interval**. Two consequences:
-  1. The unmarked copy is now the ledger's largest single unattributed GPU cost —
-     **exactly one ~71.19 MiB/frame copy remains unidentified** (the copy arm performs two; the
-     pass covers one). Naming it is this target's job.
-  2. It demonstrates the mis-attribution directly, which is the reason this target exists.
-  Also corrected: "the M2 costliest lists show no `[copy]` entries" was a property of the
-  **costliest** list — cheap copies never reach it. A blit pass *does* appear as `[copy]` when its
-  cost qualifies (`copy 0.18 ms x17` in `arm1-s5`). Do not read "no `[copy]` row" as "no copy".
-- **Scope / direction (user's instruction, 2026-11-19):** review `Image::CopyImage`,
-  `Runtime::CopyImage` and the depth/storage alias transition. **The reverse `D32 → R32` transition
-  is a plausible source of the remaining copy, but its identity must be established from the actual
-  copy parameters and execution site — not assumed.**
-- **Constraints (user's instruction, 2026-11-19):** **do not build a new profiler.** Extend the
-  existing copy attribution where necessary, **preserving command order and valid GPU timing**.
-  No speculative image-recycler changes; do not repeat the completed depth-pass A/B.
+- **Status:** `completed` · **Priority:** P1 diagnostic · **Last update:** 2026-11-19
+- **Experiment:** `gpu05-copy-attribution-2026-11-19`, cell `arm0-g1`, on attribution commit
+  `2b665fd` (binary `597C260970C79A33B5A02C9DF34906DE8C2C7AB183C4416FE48ADFDADA192154`, same scene
+  as GPU-01, `SHADPS4_DBG_DEPTH_PASS=0`). **Verdict: the remaining ~71.19 MiB/frame copy is the
+  reverse `D32SfloatS8Uint → R32Sfloat` representation transition on guest `0x2068000000`, issued at
+  `texture_cache.cpp:407` once per frame.** The forward direction is the one the depth pass replaces,
+  because that pass is gated colour-into-depth; the reverse is not covered by that gate.
+- **Method (no new profiler).** The existing attribution was extended:
+  `Scheduler::MarkCopy(width, height, bytes)` mirrors `MarkDispatch` and marks `GpuTiming::Op::Copy`
+  with the extent and byte count the `OpLabel` already documents for a copy; it is called at the copy
+  command itself, so no command is reordered and no pass is split for a timestamp. `Image::CopyImage`
+  takes an optional `std::source_location` defaulting to the caller and, with
+  `SHADPS4_DBG_COPY_LOG=1`, logs one CPU-side line per copy naming both images, the byte count and
+  the execution site. The `SHADPS4_DBG_XFER` timestamp pair is untouched.
+- **Result — every copy in the gameplay span (3,323 frames, 179 windows), per frame:**
+
+  | per frame | bytes | site | src → dst |
+  |---|---|---|---|
+  | 0.999 | 71.191 MiB | `texture_cache.cpp:407` | `0x2068000000` Color2D `R32Sfloat` 5760×3240×1 → `D32SfloatS8Uint` 5760×3240×1 |
+  | **0.999** | **71.191 MiB** | **`texture_cache.cpp:407`** | **`0x2068000000` Color2D `D32SfloatS8Uint` 5760×3240×1 → `R32Sfloat` 5760×3240×1** |
+  | 0.999 | 128 KiB | `texture_cache.cpp:807` | `0x2008f80000` Color2D ↔ Color3D (`A2B10G10R10UnormPack32`, 32×32×1 ↔ 32×32×32) |
+  | 0.999 | 128 KiB | `texture_cache.cpp:807` | the reverse of the LUT pair above |
+
+  Totals: **4.0 copies and 142.3 MiB of full-surface traffic per frame**, matching the `RENDERSTAT`
+  counters to ~0.1 % (`copies` 3.89 median, `copy_mb` 138.88 MiB/frame median). Cell: valid gameplay,
+  unique FPS 36.37, 1,866 draws, 932 Mpx, 59.8 passes, GPU busy 46.3 %, 179 windows 99.4 % in band.
+- **What the copy actually costs, now attributed.** With the copies marked, `gpu operations` reports
+  **`copy 6.98 ms/frame` as the single largest attributed item** (costliest row
+  `6.98 ms x38 [copy] copy 5760x3240`), i.e. ~3.3–3.5 ms per full-surface copy — the same order as
+  the 3.6–4.9 ms measured independently in `_build/ALIASING-REPORT.md`. Attributing them removed
+  7 ms/frame from the intervals that were previously charged for them.
+- **Two attributions this corrects (cross-references).**
+  - **GPU-02:** the guest compute shader `799062d096fa2314` now reports **0.21 ms/frame**
+    (`0.21 ms x152 [dispatch]`), not ~5 ms. The suspicion recorded earlier is confirmed: that figure
+    was copy time.
+  - **GPU-03:** the pass total in this cell is ~4.35 ms/frame with the top pass at 1.9 ms — far below
+    the "~8.24 ms pass total / ~5.9 ms heaviest pass" measured without copy marks. GPU-03's numbers
+    are therefore **inflated by the same mis-attribution** and must be re-measured before any work is
+    planned against them.
+- **Open follow-up (new, no owner):** the reverse transition is *required for correctness* (it
+  preserves the contents the next colour consumer reads), so the question is not whether to skip it
+  but whether it can be made cheaper — e.g. the mirror of the depth-write pass (depth→colour instead
+  of colour→depth). That is a new investigation, not part of GPU-05, and it needs its own
+  falsifiable question and matched A/B before anything is proposed.
+- **History:**
+  - 2026-11-19 — `PassKind::Blit` labelling landed (`6037acb`); no `[copy]` row in the costliest list
+    of the tested scene; direct `Runtime::CopyImage` confirmed unmarked in source.
+  - 2026-11-19 — promoted to the preferred next investigation after GPU-01 closed, on the strength of
+    the dispatch interval collapsing (5.43 → 0.69 ms) when one unmarked copy was replaced.
+  - 2026-11-19 — **extension implemented and merged as `2b665fd`**, and one valid cell named every
+    copy in the gameplay span. The remaining copy is identified; the target is closed. The same run
+    corrected GPU-02 to 0.21 ms/frame and showed GPU-03's pass figures to be inflated.
 - **Deterministic answer sought:** for the remaining ~71.19 MiB/frame copy — src and dst guest
   addresses, formats, extent, aspect, mip/layer, and the execution site (which caller, and whether
   it is the forward or the reverse representation transition).
@@ -792,25 +840,17 @@ cells, never projection.
   commit `6037acb`; `translation-cost-2026-11-19` (`gpu operations` has no `[copy]` row).
 - **Dependencies:** informs GPU-01 and GPU-03; its absence is why GPU-01's exact copy split is
   currently unavailable.
-- **Prior experiments / negative results:** one attempt at labelling blits in `main` produced zero
-  marks in the tested scene; the direct-copy path was never marked.
-- **Safety concerns:** none; this is measurement only. Do not split render passes merely to get
-  timestamps.
-- **Open question:** *Which exact code path issues the remaining ~71.19 MiB/frame copy, with what
-  parameters, and is it the reverse `D32 → R32` representation transition?*
-- **Next action:** add a correctly located marker **and parameter record** to the direct
-  `Runtime::CopyImage` path (and `CopyImageWithBuffer` if it carries the copy), placed at the copy
-  command so command order and interval boundaries are preserved; log src/dst guest address,
-  formats, extent, aspect, mip/layer and the caller, default-off; then run one M2 gameplay cell and
-  name the remaining copy. Extend the existing attribution — do not add a new timing framework.
-- **History:**
-  - 2026-11-19 — `PassKind::Blit` labelling landed (`6037acb`); zero marks in the tested scene's
-    costliest list; direct `Runtime::CopyImage` confirmed unmarked in source.
-  - 2026-11-19 — **promoted to the preferred next investigation** after GPU-01 closed. The
-    unmarked copy was demonstrated to steal ~4 ms into the preceding dispatch interval, and one
-    ~71.19 MiB/frame copy remains unidentified. Direction and constraints recorded above; the
-    investigation had **not** started at the time of writing (the configuration re-baseline had to
-    be recorded first, per the same instruction).
+- **Prior experiments / negative results:** one earlier attempt at labelling blits in `main` produced
+  zero `[copy]` rows in the tested scene's costliest list — which read as "no copies" but only meant
+  the copies were too cheap to reach that list. That misreading is why this target existed.
+- **Safety concerns:** none; measurement only. Do not split render passes merely to get timestamps,
+  and do not reorder a copy to place a marker.
+- **Open question:** answered — see the result above. The follow-up it produced (making the reverse
+  transition cheaper) is a **new** investigation with its own question, not a reopening of this one.
+- **Next action:** **none — this target is closed.** Its follow-ups: (a) a new target for the reverse
+  `D32SfloatS8Uint → R32Sfloat` transition, if the project wants it; (b) re-measure **GPU-03** with
+  copies marked; (c) keep `SHADPS4_DBG_COPY_LOG` and `Scheduler::MarkCopy` in the tree — they are the
+  attribution that makes this class of error visible. Do not repeat this investigation unchanged.
 
 ### MEM-01 — Image recycler
 
@@ -1168,6 +1208,12 @@ and set GPU-01's status accordingly before selecting the next target.
   tree, runner hash, eboot hash, exact command) and `lab/user/log/shad_log.txt`. The private
   executable used by every arm is `_out/gpu01-depthpass-2026-11-19/bin/shadPS4.exe`,
   `8991510F22CB8D4EC376DB4CA3458C713E4B5E90780FD994A780812B144E635A`.
+- **GPU-05 copy attribution (2026-11-19):** `_out/gpu01-depthpass-2026-11-19/copy-sites.py`
+  (groups the `SHADPS4_DBG_COPY_LOG` lines by identity and per-frame rate), `gpu05-cell.sh`, and the
+  cell `arm0-g1/` (`run.json`, `arm-manifest.json`, `arm0-g1.copies.json`,
+  `lab/user/log/shad_log.txt`). Private binary `bin/shadPS4-gpu05.exe`,
+  `597C260970C79A33B5A02C9DF34906DE8C2C7AB183C4416FE48ADFDADA192154`, built in `wt-gpu05` on branch
+  `investigation/gpu05-copy-attribution`, merged as `2b665fd`.
 - Run artifacts with `run.json` provenance under
   `wt-frame-time-2026-11-18/_out/`: `translation-cost-2026-11-19`,
   `findimage-profile-2026-11-19-0128`, `image-cache-4096-clean-b1`,
@@ -1203,6 +1249,7 @@ and set GPU-01's status accordingly before selecting the next target.
 
 | Commit | Subject |
 |---|---|
+| `2b665fd` | perf(video_core): attribute the emulator's own image copies to a copy interval |
 | `314a2cb` | diag(video_core): report the guest sampler state a shader is bound with |
 | `9029c0d` | perf(video_core): say where the command thread's translation time goes |
 | `f2e2831` | fix(video_core): reset a submission's queries before writing them |
@@ -1368,3 +1415,39 @@ before any further optimization is chosen:
 
 **Sequencing honoured:** GPU-05 was **not** started before the re-baseline was recorded. It begins
 now, alone.
+
+### 2026-11-19 — GPU-05 investigated and closed (`gpu05-copy-attribution-2026-11-19`)
+
+Executed GPU-05 alone, after the re-baseline above was recorded. No new profiler was built, no
+recycler change was made, and the completed depth-pass A/B was not repeated.
+
+**The attribution was extended, not replaced.** `Scheduler::MarkCopy` mirrors `MarkDispatch` and
+marks `GpuTiming::Op::Copy` with the extent and bytes the `OpLabel` already documents for a copy,
+called at the copy command itself so no command is reordered and no pass is split for a timestamp.
+`Image::CopyImage` takes a `std::source_location` defaulting to the caller and, with
+`SHADPS4_DBG_COPY_LOG=1`, logs one CPU-side line per copy with both images' parameters and its
+execution site. `SHADPS4_DBG_XFER` is untouched. Landed as **`2b665fd`** after a valid M2 cell.
+
+**The question is answered.** Over the gameplay span (3,323 frames), the four copies per frame are:
+two 71.191 MiB copies that are the *same* representation pair on guest `0x2068000000`, 5760×3240,
+1 sample — `R32Sfloat → D32SfloatS8Uint` and its reverse, each 0.999/frame, both at
+`texture_cache.cpp:407` — and two 128 KiB LUT conversions at `texture_cache.cpp:807`. Totals,
+4.0 copies and 142.3 MiB/frame, match `RENDERSTAT` to ~0.1 %.
+
+**The remaining ~71.19 MiB/frame copy is the reverse `D32SfloatS8Uint → R32Sfloat` transition.** The
+depth pass covers the forward direction only, because its gate is colour-into-depth. The user's
+hypothesis was right, and it is now established from the copy parameters and execution site rather
+than assumed.
+
+**Two attributions corrected, both cross-referenced:**
+
+- **GPU-02** — shader `799062d096fa2314` measures **0.21 ms/frame**, not ~5 ms. The earlier figure
+  was the preservation copy.
+- **GPU-03** — pass figures drop to ~4.35 ms/frame with a 1.9 ms top pass once copies are marked, so
+  the recorded 8.44 / 5.9 ms were inflated by the same mis-attribution and must be re-measured.
+
+The copy interval is now the largest single attributed GPU item at **6.98 ms/frame** — roughly
+3.3–3.5 ms per full-surface copy, the same order as the 3.6–4.9 ms measured independently in
+`_build/ALIASING-REPORT.md`. **No optimization was attempted:** the reverse transition is required
+for correctness, and making it cheaper is a new investigation with its own question, not part of
+GPU-05. No next target has been selected.
