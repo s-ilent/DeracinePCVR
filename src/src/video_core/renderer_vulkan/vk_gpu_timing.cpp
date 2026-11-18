@@ -102,9 +102,10 @@ GpuTiming::GpuTiming(const Instance& instance_, MasterSemaphore& semaphore_)
     const u32 bits = family < families.size() ? families[family].timestampValidBits : 0;
     valid_mask = bits == 0 ? 0 : (bits >= 64 ? ~u64{0} : (u64{1} << bits) - 1);
 
-    // Nothing records a timestamp into a command buffer here, so no host query reset is asked
-    // for: every query a submission reads is one that same submission wrote, so nothing has to be
-    // cleared between them.
+    // No host query reset is asked for: each submission resets its own slot from inside the command
+    // buffer that then writes it, so the reset stays ordered on the GPU's timeline. Resetting from
+    // the host would need the slot proven idle first, which is what the in-command-buffer reset
+    // avoids.
     if (bits == 0 || tick_ns <= 0.0) {
         if (!g_unsupported_logged.exchange(true, std::memory_order_relaxed)) {
             LOG_WARNING(Render_Vulkan,
@@ -150,10 +151,15 @@ void GpuTiming::OpenSubmission(vk::CommandBuffer cmdbuf) {
     if (open) {
         return;
     }
-    // The slot's queries were used by a submission at least TimerPairs submissions ago and the
-    // scheduler never has more than MAX_IN_FLIGHT_SUBMISSIONS in flight, so the GPU is long since
-    // through with them. Every one of them is rewritten before it is read again.
     const u32 base = slot * (MarksPerSubmission + 2);
+    // Every query of this slot is reset before the submission writes any of them. Vulkan requires a
+    // query to be reset before it is used again, and this slot's were written by an earlier
+    // submission - overwriting them is not a reset. The reset is recorded into the submission's own
+    // command buffer rather than done from the host, so it runs on the GPU's timeline after the
+    // submission that last used the slot; that is what makes the reuse safe without a host wait.
+    // The margin is large: the scheduler keeps at most MAX_IN_FLIGHT_SUBMISSIONS (8) submissions in
+    // flight, and a slot only comes round again after TimerPairs (128) of them.
+    cmdbuf.resetQueryPool(pool, base, MarksPerSubmission + 2);
     cmdbuf.writeTimestamp(vk::PipelineStageFlagBits::eTopOfPipe, pool, base);
     marks.clear();
     open = true;
