@@ -1,0 +1,2 @@
+# Shell scripts are executed by bash inside WSL; keep their checked-out line endings LF on every host.
+*.sh text eol=lf
