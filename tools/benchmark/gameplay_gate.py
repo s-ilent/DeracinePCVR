@@ -87,14 +87,21 @@ def in_band(sample: dict, band: dict) -> bool:
     )
 
 
-def select_anchor(samples: list[dict], gate: dict) -> int:
-    """First index of `consecutive_samples` consecutive samples that pass the gate."""
+def select_anchor(samples: list[dict], gate: dict, band: dict) -> int:
+    """First index of `consecutive_samples` consecutive samples inside the gameplay band.
+
+    The band, not just the coarse gate, selects the anchor: a loading-to-gameplay transition can
+    pass the 800-draw gate with a huge target area and pass count (a live unified run measured
+    2208 draws / 5676 Mpx / 308 passes at 64 s) and must not become the anchor of an otherwise
+    valid gameplay window. The gate still has to pass as well.
+    """
     run = 0
     for index, sample in enumerate(samples):
         if (
             sample["draws"] >= gate["min_draws"]
             and sample["mpx"] >= gate["min_mpx"]
             and sample["fps"] > 1.0
+            and in_band(sample, band)
         ):
             run += 1
             if run >= gate["consecutive_samples"]:
@@ -113,7 +120,7 @@ def evaluate(samples: list[dict], profile: dict) -> dict:
     if not samples:
         return {"valid": False, "phase": "unknown", "reasons": ["no frame-stats samples"]}
 
-    anchor = select_anchor(samples, gate)
+    anchor = select_anchor(samples, gate, band)
     if anchor < 0:
         # Distinguish "the menu was reached" from "nothing heavy was reached": both invalid,
         # but different follow-ups. The menu's own upper bound is in the profile.
@@ -131,8 +138,10 @@ def evaluate(samples: list[dict], profile: dict) -> dict:
             "valid": False,
             "phase": "none",
             "reasons": [
-                f"no {gate['consecutive_samples']} consecutive windows reached "
-                f"{gate['min_draws']} draws / {gate['min_mpx']} Mpx"
+                f"no {gate['consecutive_samples']} consecutive windows were inside the gameplay "
+                f"band (draws {band['min_draws']}-{band['max_draws']}, "
+                f"Mpx {band['min_mpx']}-{band['max_mpx']}, "
+                f"passes {band['min_passes']}-{band['max_passes']})"
             ],
         }
 

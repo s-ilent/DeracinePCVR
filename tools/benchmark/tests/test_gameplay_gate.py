@@ -115,12 +115,23 @@ class VerdictTests(unittest.TestCase):
         self.assertGreaterEqual(verdict["anchor_index"], 3)
 
     def test_gate_passed_but_out_of_band_is_rejected(self) -> None:
-        # 1000 draws passes the 800 gate but is neither gameplay nor menu: not a valid cell.
+        # 1000 draws passes the 800 gate but is outside the gameplay band: not a valid cell, and
+        # not the menu either.
         series = [make(i * 0.5, 1000.0, 600.0, 50.0, fps=40.0, frames=20) for i in range(8)]
         verdict = gate.evaluate(series, PROFILE)
         self.assertFalse(verdict["valid"])
-        self.assertEqual(verdict["phase"], "gameplay")
+        self.assertEqual(verdict["phase"], "none")
         self.assertTrue(any("band" in reason for reason in verdict["reasons"]))
+
+    def test_entry_transition_is_skipped_not_used_as_anchor(self) -> None:
+        # A live unified run measured 2208 draws / 5676 Mpx / 308 passes in the window in which
+        # gameplay loaded, then genuine gameplay. The transition must not become the anchor.
+        transition = [make(63.5, 2208.0, 5676.5, 308.5, fps=20.0, frames=10),
+                      make(64.0, 2208.0, 5676.5, 308.5, fps=20.0, frames=10)]
+        series = transition + gameplay_series(8, start=64.5)
+        verdict = gate.evaluate(series, PROFILE)
+        self.assertTrue(verdict["valid"], verdict["reasons"])
+        self.assertGreaterEqual(verdict["anchor_index"], 2)
 
     def test_short_window_is_rejected(self) -> None:
         verdict = gate.evaluate(gameplay_series(3), PROFILE)
