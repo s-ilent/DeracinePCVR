@@ -5,12 +5,55 @@
 # Left out: looks inside the games\ folder or prompts at first launch.
 #game=C:\path\to\CUSA11919\eboot.bin
 
-# Target FPS: 120, 90, 80, 72, 60, 45, 30.
-# 60 is the PS4 console's native VR rate. Set your headset refresh rate to 120 Hz
-# for a smooth 60 or 120 fps presentation.
-fps=60
+# --- the game's own settings -------------------------------------------------------------------
+# These three are Déraciné's Unreal settings, not the emulator's: they are written into the game's
+# own saved configuration (<game>\gameproject\saved\config\ps4\engine.ini) by render-config.ps1,
+# which keeps the file's earlier contents as engine.ini.deracine-original and changes no other key.
+# They take effect when the game next starts, never while it runs. render_restore=1 puts the kept
+# copy back and reapplies nothing. See docs/psvr-morpheus-ue4-settings.md.
+
+# frame_mode: how many unique frames the game renders. 60: the console's own sequence (the game's
+# own setting is left alone). 120: Render120Scanout120, the native mode that was measured to make
+# the game submit 120 unique frames a second with no executable change (1932 frames in 16.1 s,
+# 2026-11-17), together with the smoothing-off, t.MaxFPS=0 and r.FinishCurrentFrame=0 that were
+# measured with it. 120 costs the same per frame as 60 at the same scene size, so it only pays off
+# where the scene fits the time: see render_percent below.
+frame_mode=60
+
+# render_percent: the size the game draws its scene at, in percent of a PlayStation VR's 960x1080
+# an eye: 100 is 960x1080, 130 what the game asks for itself (1248x1404), 200 is 1920x2160 and 300
+# is 2880x3240. Left out: the game's own setting is kept. The engine clamps at 300 (one instruction
+# in its Morpheus size path); more than that needs the optional clamp patch and is refused here.
+# This is the game's picture. What the headset is shown is `present`/`resolution` below, and the two
+# are independent: at render_percent=300 with present=auto the 2880x3240 scene is shown at the
+# runtime's own size (~3036x3036), which is the sharpest setting that needs no patch.
+render_percent=300
+
+# guest_msaa: the samples the game's own scene targets are made with (1, 2, 4). The game asks for 2.
+# Measured at 1, 2 and 4 with the emulator's quality diagnostics: the guest's scene colour and depth
+# buffers and the bound pipeline all carry that many samples. Left out: the game's own.
+#guest_msaa=2
+
+# 1: put the game's own saved configuration back (the copy kept before DeracinePCVR changed it).
+#render_restore=0
+
+# --- the emulated display, and what the headset is shown ----------------------------------------
+
+# refresh: the rate the emulated PlayStation VR display is said to refresh at, 90 or 120 (120 the
+# default), which is the display the game keeps time by. It is not the game's frame rate (that is
+# frame_mode above: 60 frames a second are shown at 120 Hz with every other picture repeated, which
+# is what the console did) and not the headset's own refresh, which its runtime chooses.
+#refresh=120
+
+# resolution: the width of an eye shown to the headset, as before (1440 the console's; larger ones
+# are that shape grown). The size the game itself draws is render_percent, above. Left out: 2880.
 resolution=2880
 dynamic=0
+
+# present: the size the headset is shown the game's picture. "guest" (default) is the size the game
+# draws its scene at; "auto" is the size the runtime asks for (3036x3036 an eye on a Steam Frame);
+# or a size to the letter, "3036x3036".
+#present=guest
 
 # How much of the headset's field of view the game draws, in percent, 70 to 100.
 fov=100
@@ -23,7 +66,11 @@ menu=1
 sharpen=0.35
 aniso=16
 
-# Multi-Sample Anti-Aliasing (MSAA: 1, 2, 4, 8)
+# Multi-Sample Anti-Aliasing (MSAA: 1, 2, 4, 8). This is the emulator's cap on the samples the host
+# pictures may be made with, NOT the game's own MSAA (that is guest_msaa above). Lowering it below
+# what the game asks for throws the game's samples away silently: Déraciné never asks for a
+# colour-buffer resolve, so a cap of 1 leaves a single-sampled picture with nothing said.
+# Left out: no cap.
 msaa=4
 antialias=0
 

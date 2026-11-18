@@ -77,7 +77,19 @@ function EyeHeight([int]$width) {
     if ($consoleHeights.ContainsKey($width)) { return $consoleHeights[$width] }
     return [int]([math]::Round(1536.0 * $width / 1440 / 8) * 8)
 }
-$caps = @(120, 90, 80, 72, 60, 45, 40, 36, 30)
+# The game's own frame rate (a Morpheus frame sequence the game asks its headset path for), and the
+# sizes it can be asked to draw its scene at per eye: 100 is a PlayStation VR's 960x1080, 130 what
+# the game asks for itself, 200 and 300 what the engine's own clamp allows. "" is "leave the game's
+# own setting alone", which is what a settings file without render_percent means.
+$frameModeValues = @("60", "120")
+$renderPercentValues = @("", "100", "130", "200", "300")
+$renderPercentChoices = @(
+    @{ Text = "the game's own (as the game has it)" },
+    @{ Text = "100% - 960x1080" },
+    @{ Text = "130% - 1248x1404 (the game's own)" },
+    @{ Text = "200% - 1920x2160" },
+    @{ Text = "300% - 2880x3240" }
+)
 # The languages the game has, as Windows names them.
 $gameLanguages = @("en-US", "en-GB", "fr-FR", "fr-CA", "es-ES", "es-419", "de-DE", "it-IT", "nl-NL",
                    "pt-PT", "pt-BR", "ru-RU", "pl-PL", "tr-TR", "sv-SE", "nb-NO", "da-DK", "fi-FI",
@@ -676,7 +688,7 @@ function Show-Menu {
 
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "Deracine PC VR"
-    $form.ClientSize = New-Object System.Drawing.Size(560, 404)
+    $form.ClientSize = New-Object System.Drawing.Size(560, 456)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
     $form.MaximizeBox = $false
@@ -692,16 +704,51 @@ function Show-Menu {
     $form.Controls.Add($title)
     $y += 40
 
-    # Frame rate.
+    # The game's own frame rate, and the size it draws its scene at. Both are Unreal settings: they
+    # go into the game's own Engine.ini through render-config.ps1 and take effect when it starts.
     $label = New-Object System.Windows.Forms.Label
-    $label.Text = "Frames a second, at most"
+    $label.Text = "The game's own frame rate"
     $label.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
     $label.SetBounds(16, $y, 250, 20)
     $form.Controls.Add($label)
     $label = New-Object System.Windows.Forms.Label
-    $label.Text = "Language of the game"
+    $label.Text = "Scene size, each eye"
     $label.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
     $label.SetBounds(284, $y, 260, 20)
+    $form.Controls.Add($label)
+    $y += 24
+    $frameMode = New-Object System.Windows.Forms.ComboBox
+    $frameMode.Name = "frameMode"
+    $frameMode.DropDownStyle = "DropDownList"
+    $frameMode.Items.AddRange(@("60 - the console's own", "120 - native, one frame a refresh"))
+    $frameIndex = [array]::IndexOf($frameModeValues, (Setting "frame_mode" "60"))
+    if ($frameIndex -lt 0) { $frameIndex = 0 }
+    $frameMode.SelectedIndex = $frameIndex
+    $frameMode.SetBounds(16, $y, 250, 26)
+    $form.Controls.Add($frameMode)
+    $renderPercent = New-Object System.Windows.Forms.ComboBox
+    $renderPercent.Name = "renderPercent"
+    $renderPercent.DropDownStyle = "DropDownList"
+    foreach ($choice in $renderPercentChoices) {
+        [void]$renderPercent.Items.Add($choice.Text)
+    }
+    $percentIndex = [array]::IndexOf($renderPercentValues, (Setting "render_percent" ""))
+    if ($percentIndex -lt 0) { $percentIndex = 0 }
+    $renderPercent.SelectedIndex = $percentIndex
+    $renderPercent.SetBounds(284, $y, 260, 26)
+    $form.Controls.Add($renderPercent)
+    $y += 32
+    $renderText = New-Object System.Windows.Forms.Label
+    $renderText.Text = "Applied when the game starts. 100 is a PlayStation VR's 960x1080 an eye, 130 what the game asks for itself, 300 the most it takes (2880x3240); more needs the optional clamp patch. The headset's own refresh is set in SteamVR Video settings for an Index, or Virtual Desktop Streaming settings for a Quest; refresh= in settings.txt is the display the game keeps time by."
+    $renderText.SetBounds(16, $y, 530, 62)
+    $form.Controls.Add($renderText)
+    $y += 66
+
+    # Language.
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = "Language of the game"
+    $label.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
+    $label.SetBounds(16, $y, 250, 20)
     $form.Controls.Add($label)
     $y += 24
     $language = New-Object System.Windows.Forms.ComboBox
@@ -713,29 +760,9 @@ function Show-Menu {
     # another is chosen here.)
     $languageBefore = [array]::IndexOf($gameLanguages, (Setting "language" "windows")) + 1
     $language.SelectedIndex = $languageBefore
-    $language.SetBounds(284, $y, 260, 26)
+    $language.SetBounds(16, $y, 250, 26)
     $form.Controls.Add($language)
-    $fps = New-Object System.Windows.Forms.ComboBox
-    $fps.Name = "fps"
-    $fps.DropDownStyle = "DropDownList"
-    foreach ($cap in $caps) {
-        $text = "$cap"
-        if ($cap -eq 60) { $text = "60 (the console's own)" }
-        [void]$fps.Items.Add($text)
-    }
-    $fps.SetBounds(16, $y, 200, 26)
-    $current = 0
-    [void][int]::TryParse((Setting "fps" "60"), [ref]$current)
-    $index = [array]::IndexOf($caps, $current)
-    if ($index -lt 0) { $index = [array]::IndexOf($caps, 60) }
-    $fps.SelectedIndex = $index
-    $form.Controls.Add($fps)
     $y += 32
-    $fpsText = New-Object System.Windows.Forms.Label
-    $fpsText.Text = "A frame lasts a whole number of the headset's refreshes: at 120 Hz, 120, 60, 40 or 30 frames a second; at 90 Hz, 90, 45 or 30; at 80 Hz, 80 or 40. Choose 120 Hz for 60 frames a second. Set it in SteamVR Video settings for an Index, or Virtual Desktop Streaming settings for a Quest."
-    $fpsText.SetBounds(16, $y, 530, 84)
-    $form.Controls.Add($fpsText)
-    $y += 88
 
     # Field of view.
     $label = New-Object System.Windows.Forms.Label
@@ -813,7 +840,8 @@ function Show-Menu {
 
     $result = Show-Form $form
     if ($result -ne [System.Windows.Forms.DialogResult]::OK) { return $false }
-    Save-Setting "fps" ($caps[$fps.SelectedIndex])
+    Save-Setting "frame_mode" ($frameModeValues[$frameMode.SelectedIndex])
+    Save-Setting "render_percent" ($renderPercentValues[$renderPercent.SelectedIndex])
     if ($language.SelectedIndex -ne $languageBefore) {
         Save-Setting "language" ($(if ($language.SelectedIndex -le 0) { "windows" } else { $gameLanguages[$language.SelectedIndex - 1] }))
     }
@@ -927,13 +955,30 @@ if ($fovSetting -ne "100") { $env:SHADPS4_VR_FOV = $fovSetting }
 # fov_of: what fov is a percent of. headset: what the headset being worn shows, all of it at 100
 # (the emulator asks the headset as it starts). psvr: a PlayStation VR's, as the game was made.
 if ((Setting "fov_of" "headset") -ne "psvr") { $env:SHADPS4_VR_FOV_OF = "headset" }
-# fps: the most frames a second. (pace, the older way to say it: refreshes of the headset a
-# frame is given, 1 or more.)
-$fpsSetting = Setting "fps" "60"
-$env:SHADPS4_VR_FPS_CAP = "60"
-$env:SHADPS4_VR_REFRESH_RATE = "120"
-$pace = Setting "pace" ""
-if ($pace -eq "1") { $env:SHADPS4_VR_FASTEST_PACE = "1"; $env:SHADPS4_VR_FPS_CAP = "" } elseif ($pace -ne "" -and $pace -ne "2") { $env:SHADPS4_VR_PACE = $pace }
+# refresh: the rate the emulated PlayStation VR display is said to refresh at, which is the display
+# the game keeps time by (90 or 120; 120 the default). This is the emulated display, not the game's
+# own frame rate (frame_mode, through the game's Engine.ini, below) and not the headset's own
+# refresh, which its runtime chooses: 60 frames a second are shown at 120 Hz with every other
+# picture repeated, which is what the console did.
+$refresh = Setting "refresh" "120"
+if ($refresh -ne "90" -and $refresh -ne "120") {
+    Say ("refresh=" + $refresh + " is neither 90 nor 120: 120 is used.") "Yellow"
+    $refresh = "120"
+}
+$env:SHADPS4_VR_REFRESH_RATE = $refresh
+# (SHADPS4_VR_FPS_CAP, SHADPS4_VR_PACE, SHADPS4_VR_FASTEST_PACE and SHADPS4_VR_STEADY_FPS are parsed
+# only by the Astro Bot known-title governor. Déraciné is not that title, so its known-build table
+# never engages and those variables cannot cap, pace or smooth this game's frames. Nothing here sets
+# a frame-rate cap or a pace, and nothing should pretend to: what the game renders is frame_mode and
+# render_percent, which are the game's own settings, and what limits it is the scene's cost.)
+$obsolete = @()
+if ((Setting "fps") -ne "") { $obsolete += "fps=$(Setting "fps")" }
+if ((Setting "pace") -ne "") { $obsolete += "pace=$(Setting "pace")" }
+if ($obsolete.Count -gt 0) {
+    Say (($obsolete -join ", ") + ": no longer used. Those keys only ever drove the emulator's Astro " +
+         "Bot frame governor, which cannot touch Deracine. Use refresh= for the emulated display's " +
+         "rate and frame_mode= for the game's own frame rate.") "Yellow"
+}
 if ((Setting "headset" "1") -eq "0") { $env:SHADPS4_OPENXR = "0" }
 if ((Setting "pause" "1") -eq "0") { $env:SHADPS4_XR_PAUSE = "0" }
 if ((Setting "controllers" "1") -eq "0") { $env:SHADPS4_XR_CONTROLLERS = "0" }
@@ -976,12 +1021,11 @@ if (Test-Path $cfgPath) {
             $cfgJson.GPU.readback_linear_images_enabled = $rbLinear
             $changed = $true
         }
-        if ($null -ne $cfgJson.GPU.vblank_frequency) {
-            if ($cfgJson.GPU.vblank_frequency -ne 60) {
-                $cfgJson.GPU.vblank_frequency = 60
-                $changed = $true
-            }
-        }
+        # GPU.vblank_frequency is left exactly as the player's own configuration has it. It is the
+        # emulated display's rate only when no headset is connected: VideoOutDriver::PresentThread
+        # uses the VR refresh rate (SHADPS4_VR_REFRESH_RATE, refresh= above) whenever one is, so
+        # forcing it to 60 here never held the game to 60 and only contradicted refresh=. The
+        # emulator's own settings window still owns this value for the desktop path.
         if ($null -ne $cfgJson.Vulkan.pipeline_cache_enabled -and $cfgJson.Vulkan.pipeline_cache_enabled) {
             $cfgJson.Vulkan.pipeline_cache_enabled = $false
             $changed = $true
@@ -1004,10 +1048,72 @@ if (Test-Path $cfgPath) {
     } catch {}
 }
 
+# --- the game's own settings, through its Engine.ini ---------------------------------------------
+# render_percent, frame_mode and guest_msaa are the game's settings, not the emulator's, and they
+# live where the game reads them: <game>\gameproject\saved\config\ps4\engine.ini. render-config.ps1
+# writes only those keys, from the file as it was before this launcher ever changed it (kept beside
+# it as engine.ini.deracine-original), and render_restore=1 puts that copy back.
+#
+# frame_mode is the one that decides how many unique frames the game renders: the shipped game's
+# configuration says nothing about a frame sequence at all, and left at that it rendered about 60
+# unique frames a second (two vblank waits a frame). Render120Scanout120 was measured to change that
+# to 120 unique frames a second with no executable change (2026-11-17: 1932 frames in 16.1 s, vblank
+# waits a frame 1.19 against 2.03). All three are applied on the next start of the game, never while
+# it runs. See docs/psvr-morpheus-ue4-settings.md.
+$renderPercent = Setting "render_percent" ""
+$frameMode = Setting "frame_mode" "60"
+$guestMsaa = Setting "guest_msaa" ""
+$restoreRender = (Setting "render_restore" "0") -eq "1"
+# The effective game settings, read back out of the file the game will read: the launcher's own
+# keys are a request, and this is what it comes to. "" where the key is not in the file at all.
+$renderState = ""
+$renderConfig = Join-Path $here "render-config.ps1"
+if ($game -ne "" -and [System.IO.File]::Exists($renderConfig)) {
+    # (A hash splat, not an array one: an array splat is expanded positionally and would pass
+    # "-Percent" as an argument rather than as the parameter's name.)
+    $renderArgs = @{ Eboot = $game; Quiet = $true }
+    if ($restoreRender) {
+        $renderArgs.Restore = $true
+    } else {
+        if ($renderPercent -ne "") { $renderArgs.Percent = $renderPercent }
+        if ($frameMode -ne "") { $renderArgs.FrameMode = $frameMode }
+        if ($guestMsaa -ne "") { $renderArgs.GuestMsaa = $guestMsaa }
+    }
+    foreach ($line in @(& $renderConfig @renderArgs)) {
+        if ($line -match '^render-config: (\S+) (.*)$') {
+            $state = $matches[1]
+            $detail = $matches[2]
+            switch ($state) {
+                "read-only"     { Say ("The game's own settings could not be changed: " + $detail) "Yellow" }
+                "error"         { Say ("The game's settings were not changed: " + $detail) "Yellow" }
+                "out-of-range"  { Say ("The game's render scale was not changed: " + $detail) "Yellow" }
+                "own-frame-sequence" { Say ("Careful: " + $detail) "Yellow" }
+                "applied"       { Say ("The game's own settings written: " + $detail) }
+                "restored"      { Say ("The game's own render and frame settings are back: " + $detail) }
+                "nothing-to-restore" { Say "There was no copy of the game's own settings to put back." "Yellow" }
+            }
+        }
+    }
+    foreach ($line in @(& $renderConfig -Eboot $game -List -Quiet)) {
+        if ($line -match '^render-config: list \S+ backup=(\S+) original: render=(\S*) frame=(\S*) msaa=(\S*) effective: render=(\S*) frame=(\S*) msaa=(\S*)') {
+            $render = if ($matches[5]) { $matches[5] + "%" } else { "not set" }
+            $msaa = if ($matches[7]) { $matches[7] + "x" } else { "the game's own" }
+            $sequence = if ($matches[6]) { $matches[6] } else { "the game's own" }
+            $kept = if ($matches[1] -eq "True") { ", a copy of the game's own file kept" } else { "" }
+            $renderState = "render $render, msaa $msaa, frame sequence $sequence$kept"
+        }
+    }
+} elseif ($renderPercent -ne "" -or $frameMode -ne "" -or $guestMsaa -ne "" -or $restoreRender) {
+    Say "render-config.ps1 is missing from this folder: render_percent, frame_mode and guest_msaa are not applied." "Yellow"
+}
+
 # --- what is there ----------------------------------------------------------------------------
 Say "Déraciné - PC VR" "Cyan"
 if ($env:SHADPS4_TITLE_EYE_WIDTH) {
-    Say ("Each eye up to " + $env:SHADPS4_TITLE_EYE_WIDTH + " x " + (EyeHeight ([int]$env:SHADPS4_TITLE_EYE_WIDTH)) + ", at most " + $env:SHADPS4_VR_FPS_CAP + " frames a second.")
+    Say ("Each eye up to " + $env:SHADPS4_TITLE_EYE_WIDTH + " x " + (EyeHeight ([int]$env:SHADPS4_TITLE_EYE_WIDTH)) + " shown to the headset, over an emulated display that refreshes " + $refresh + " times a second.")
+}
+if ($renderState -ne "") {
+    Say ("The game's own settings: " + $renderState + ".")
 }
 $runtime = ""
 if ($env:XR_RUNTIME_JSON) {
