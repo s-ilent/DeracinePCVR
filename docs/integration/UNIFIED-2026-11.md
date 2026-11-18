@@ -6,7 +6,7 @@
 |---|---|
 | Branch | `integration/deracine-unified-2026-11` |
 | Tip | source content `4c03616`; later commits are documentation only |
-| Source commit of the shipped binary | `4c03616` (build validated at `D8FA1D34…`) |
+| C++ source of the shipped binary | `eaf3c1a` (built as `D8FA1D34…`); later commits are benchmark tooling/docs only |
 | Base | `acda49e` (`recovery/baseline`), replayed onto the source-only published history `cf10f9a5` |
 | Worktree | `M:\Development\Deracine-work\wt-unified-pub` (migration/fix worktree; `wt-unified` keeps the pre-rewrite tree) |
 | Commits since base | 197 (28 since the published base `cf10f9a5`) |
