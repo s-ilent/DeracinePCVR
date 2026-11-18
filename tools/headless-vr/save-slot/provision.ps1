@@ -11,12 +11,12 @@
 param(
     [Parameter(Mandatory)][string]$From,
     [Parameter(Mandatory)][string]$To,
-    [string]$Manifest = (Join-Path $PSScriptRoot 'MANIFEST.json')
+    [string]$ManifestPath = (Join-Path $PSScriptRoot 'MANIFEST.json')
 )
 
 $ErrorActionPreference = 'Stop'
-if (-not (Test-Path -LiteralPath $Manifest -PathType Leaf)) { throw "manifest not found: $Manifest" }
-$manifest = Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json
+if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) { throw "manifest not found: $ManifestPath" }
+$manifestDoc = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
 
 $source = $From
 if (-not (Test-Path -LiteralPath (Join-Path $source 'MGS_GameData_1') -PathType Leaf)) {
@@ -28,27 +28,27 @@ if (-not (Test-Path -LiteralPath (Join-Path $source 'MGS_GameData_1') -PathType 
     }
 }
 
-foreach ($name in $manifest.files.PSObject.Properties.Name) {
+foreach ($name in $manifestDoc.files.PSObject.Properties.Name) {
     $path = Join-Path $source $name
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "missing save file: $path" }
     $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToUpperInvariant()
-    $expected = $manifest.files.$name.ToUpperInvariant()
+    $expected = $manifestDoc.files.$name.ToUpperInvariant()
     if ($actual -ne $expected) {
         throw "save file $name has sha256 $actual, the manifest requires $expected"
     }
-    if ($manifest.sizes.PSObject.Properties.Name -contains $name) {
+    if ($manifestDoc.sizes.PSObject.Properties.Name -contains $name) {
         $size = (Get-Item -LiteralPath $path).Length
-        if ($size -ne [int]$manifest.sizes.$name) {
-            throw "save file $name is $size bytes, the manifest requires $($manifest.sizes.$name)"
+        if ($size -ne [int]$manifestDoc.sizes.$name) {
+            throw "save file $name is $size bytes, the manifest requires $($manifestDoc.sizes.$name)"
         }
     }
 }
 
 New-Item -ItemType Directory -Force -Path $To | Out-Null
-foreach ($name in $manifest.files.PSObject.Properties.Name) {
+foreach ($name in $manifestDoc.files.PSObject.Properties.Name) {
     Copy-Item -LiteralPath (Join-Path $source $name) -Destination (Join-Path $To $name) -Force
 }
-Write-Output "provisioned slot $($manifest.slot) (stage $($manifest.stage)) into $To"
-foreach ($name in $manifest.files.PSObject.Properties.Name) {
-    Write-Output ("  {0}  {1}" -f $name, $manifest.files.$name)
+Write-Output "provisioned slot $($manifestDoc.slot) (stage $($manifestDoc.stage)) into $To"
+foreach ($name in $manifestDoc.files.PSObject.Properties.Name) {
+    Write-Output ("  {0}  {1}" -f $name, $manifestDoc.files.$name)
 }
