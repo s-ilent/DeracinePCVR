@@ -181,33 +181,59 @@ inflates the CPU side by ~4–5×; use this run for VUID/SYNC status, never for 
   which band a cell was judged against before comparing two cells.
 - VRAM in the M2 cells is steady at ~3,367–3,372 MB (`RENDERSTAT vram_mb`).
 
-### 4.5 The game configuration the cell actually runs (open validity question)
+### 4.5 The game configuration a cell runs, and the Morpheus 120 Hz tweak (kept separate)
 
-The emulator log shows every run opening `/app0/gameproject/saved/config/ps4/engine.ini` — i.e. the
-**shadow's** copy, not a game-shipped file. Readings from 2026-11-19:
+**Provenance of the Morpheus 120 Hz tweak — recorded separately from every target.** As the user
+corrected on 2026-11-19, `PSVRFrameSequence=Render120Scanout120` is **not part of the game**. It is a
+tweak **added by agents during the earlier frametime investigation**, living in the game-config path
+`gameproject\saved\config\ps4\engine.ini` of `D:\Temp\Deracine\1.0\Image0`, together with
+`bSmoothFrameRate=False`, a smoothed range to 250 and `t.MaxFPS=0`. An earlier draft of this ledger
+described it as game-shipped; that was wrong and is withdrawn. It has **no** target ID and belongs to
+no target — it is a configuration artifact of the benchmark campaign, recorded here only so its
+origin cannot be confused with a game setting or a renderer change. Its properties:
 
-- `_build/frame-time-profile-full-2026-11-18` (the shadow every M2 cell in this ledger uses) and
-  `D:\Temp\Deracine\CUSA11919-qual` both carry only
-  `[SystemSettings] r.ScreenPercentage=300` / `r.MSAACount=2`.
-- `D:\Temp\Deracine\1.0\Image0\...\ps4\engine.ini` additionally carries
-  `[/Script/MorpheusEditor.MorpheusRuntimeSettings] PSVRFrameSequence=Render120Scanout120`,
-  `bSmoothFrameRate=False`, a smoothed range to 250 and `t.MaxFPS=0`.
+| item | value |
+|---|---|
+| file | `gameproject\saved\config\ps4\engine.ini` under the game config path |
+| origin | added by agents, frametime investigation — **not shipped by the game** |
+| key | `[/Script/MorpheusEditor.MorpheusRuntimeSettings] PSVRFrameSequence=Render120Scanout120` |
+| also in the file | `bSmoothFrameRate=False`, `SmoothedFrameRateRange` to 250, `t.MaxFPS=0`, `r.ScreenPercentage=300`, `r.FinishCurrentFrame=0` |
+| in the M2 shadow used by every earlier cell | **absent** (that shadow's file carries only `r.ScreenPercentage=300` / `r.MSAACount=2`) |
+| private reproduction prepared 2026-11-19 | `_out/gpu01-depthpass-2026-11-19/shadow-morpheus120/` — 53 assets hard-linked, `engine.ini` written fresh (`26C43971…`), source shadow untouched (`78C0D8AC…`) |
 
-**Correction (2026-11-19, from the user):** that larger file is **not part of the game** — it is an
-artifact the earlier frametime investigation added. Do not describe it as "what the game ships".
-What follows from it is still worth testing: it is a **120 Hz PSVR frame-sequence tweak**, the M2
-shadow does not carry it, and the persistent ~60 FPS front-end ceiling that
-`PASSES-AND-PACING.md` §3/§19 attributes to "the title pacing itself" is a plausible consequence of
-running without it.
+The emulator log shows every run opening `/app0/gameproject/saved/config/ps4/engine.ini`, i.e. the
+**shadow's** copy, so this key reaches the game only if the shadow carries it. Every new arm manifest
+now records the engine.ini path and hash (`game_config` in `arm-manifest.json`).
 
-**Status:** a private shadow reproducing that tweak has been built
-(`_out/gpu01-depthpass-2026-11-19/shadow-morpheus120/`: 53 assets hard-linked, `engine.ini` written
-fresh, source shadow untouched). **Re-baselining M2 on it is a separate, deliberate change** — the
-band was derived without it and must be re-derived from a live cell (per
-`tools/benchmark/reference/scene-gameplay.json`), and §3 forbids comparing cells that differ in
-configuration. Do not mix it into an A/B whose other arm ran on the old shadow.
+### 4.6 M2 re-baseline on the Morpheus 120 configuration (2026-11-19)
 
-### 4.6 Standing constraints
+Two cells, same binary as GPU-01 (`8991510F…`), same scene, `SHADPS4_DBG_DEPTH_PASS=0`,
+`SHADPS4_DBG_OVERLAP=1` + `SHADPS4_GPU_TIMING=1`, on the private shadow above:
+
+| cell | unique FPS | draws | Mpx | passes | GPU busy | samples |
+|---|---|---|---|---|---|---|
+| `arm0-b1` | 32.80 | 1,868.3 | 876.8 | 56.7 | 48.9 % | 226 (100 % in band) |
+| `arm0-b2` | 34.45 | 1,868.5 | 875.8 | 56.8 | 51.0 % | 211 (100 % in band) |
+
+**Do not read this as a matched A/B against GPU-01's arms.** It differs in configuration (the
+Morpheus key) and it is **not** a controlled comparison; the paired arms for GPU-01 ran on the other
+shadow, and §3 forbids mixing configurations across compared cells. It records the new configuration's
+own cells and its run-to-run spread (**1.65 fps, 4.8 %**), which is wide — wider than the copy arm's
+2.3 % spread on the old shadow.
+
+Standalone observations, labelled as such: the same ~71.19 MiB/frame copy is present here
+(`copy_mb` 138.03 / 138.56 MiB/frame, `copies` 3.87 / 3.88 — the GPU-05 target exists in this
+configuration too), and the Morpheus key **did not raise front-end pacing** in this headless,
+headset-off session (menu-band max 55.3 / 57.3 fps here, against 60.6 / 61.7 fps on the old shadow),
+which is consistent with `PASSES-AND-PACING.md` §11 — with nobody wearing the headset the XR present
+path stalls, so a 120 Hz clock paces the unattended loop *worse*, not better. A worn-headset session
+is the only place this key can be judged.
+
+The band in `tools/benchmark/reference/scene-gameplay.json` was derived without this key; both cells
+above still satisfied it, so no re-derivation is forced — but a re-derivation must come from live
+cells, never projection.
+
+### 4.7 Standing constraints
 
 - `docs/AUTONOMOUS_ENGINEERING.md` is mandatory for benchmark, capture and protected-path work;
   its enforcement lives in `tools/benchmark/` (validity validator, preflight/postflight hashes,
@@ -232,7 +258,7 @@ configuration. Do not mix it into an A/B whose other arm ran on the old shadow.
 | CPU-07 | Driver queue submission | `queued` | P1 | `vkQueueSubmit` 1.77 ms/frame, 3 calls | Determine driver work vs back-pressure vs dependency |
 | CPU-08 | Unclassified translation | `queued` | P1 | ~9.0 ms/frame command-thread gap (selected window) | Find the largest missing exclusive cost with existing timers |
 | GPU-01 | Depth/scene preservation copies | `completed` | P0 | 2 × 71.19 MiB + 2 × 0.125 MiB copies/frame; pass removes one (GPU exec −4.07 ms) | Closed — no FPS benefit on a CPU-bound frame; a second ~71 MiB copy is unidentified |
-| GPU-02 | Guest compute `799062d096fa2314` | `queued` | P1 | 8 dispatches/frame, 4.86–5.45 ms/frame aggregate | Identify shader, geometry, I/O and critical path |
+| GPU-02 | Guest compute `799062d096fa2314` | `queued` | P1 | 8 dispatches/frame; **4.86–5.45 ms/frame — attribution suspect, includes copy time (see record)** | Identify shader, geometry, I/O; wait for GPU-05 before trusting the interval |
 | GPU-03 | Render passes and load/store | `queued` | P1 | pass attribution 8.44–8.70 ms/frame; heaviest pass 5.85–6.53 ms | Attribute pass cost vs load/store/barrier transitions |
 | GPU-04 | Depth-pass and barrier-in-pass switches | `queued` | P1 | opt-in, both off by default; matched-workload benefit unproven | Re-test the *safe* options only, in matched M2 |
 | GPU-05 | Copy attribution coverage | `queued` | P1 diagnostic | direct `Runtime::CopyImage` unmarked (source-confirmed) | Add correctly located direct-copy markers |
@@ -619,25 +645,45 @@ configuration. Do not mix it into an A/B whose other arm ran on the old shadow.
 ### GPU-02 — Guest compute shader `799062d096fa2314`
 
 - **Status:** `queued` · **Priority:** P1 · **Last update:** 2026-11-19
-- **Measured:** **8 dispatches/frame** (`x176`–`x256` over 22–30 frame windows), aggregate
-  **4.86–5.45 ms/frame** in the M2 heavy-diagnostic run; the seed records **~5.0–5.75 ms/frame**
-  across other windows. It is the single most expensive dispatch in the run and the second most
-  expensive GPU interval after the main scene pass. Dramatically scene-dependent; SPIR-V is
-  cached. UV scaling/offset identifiers suggest a resampling/warp pass but do **not** prove it.
+- **⚠ Attribution now suspect — do not quote the ~5 ms as exclusive shader execution cost.**
+  Recorded 2026-11-19 by the user after GPU-01's A/B. The aggregate dispatch time attributed to
+  this shader fell from **5.43 ms/frame to 0.69 ms/frame** when the depth-write pass replaced an
+  **unmarked** preservation copy (`arm0-s5` → `arm1-s5`), with the intervening copy itself measured
+  at only `0.18 ms`. The shader did not get cheaper; the interval it was charged for changed.
+  Because a copy is recorded between two marks and therefore falls **inside the interval before it**,
+  the earlier "~5 ms of shader `799062d096fa2314`" plausibly **includes preservation-copy time**.
+  The number is not an exclusive shader execution cost until it is independently measured (which is
+  GPU-05's parameter work plus a clean interval). Treat the figures below as an **upper bound of
+  unknown composition**, not as shader cost.
+- **Measured (composition unproven, see the warning above):** **8 dispatches/frame**
+  (`x176`–`x256` over 22–30 frame windows), aggregate **4.86–5.45 ms/frame** in the M2
+  heavy-diagnostic run; the seed records **~5.0–5.75 ms/frame** across other windows. It is the
+  most expensive dispatch in the copy-path run and the second most expensive GPU interval after the
+  main scene pass. Dramatically scene-dependent; SPIR-V is cached. UV scaling/offset identifiers
+  suggest a resampling/warp pass but do **not** prove it.
 - **Provenance:** `translation-cost-2026-11-19` (`gpu operations` costliest list);
   `query-reset-verify-2026-11-19/gameplay` (`dispatch 6.18 ms x80` and `5.32 ms x72` for the
-  same shader — scene-dependent).
-- **Dependencies:** a guest workload; separate from the depth/resource chain. Informs GPU-03.
+  same shader — scene-dependent); **`arm0-s5` vs `arm1-s5` (2026-11-19) for the attribution change
+  that invalidates the exclusive reading**.
+- **Dependencies:** a guest workload; separate from the depth/resource chain. Informs GPU-03, and
+  now **depends on GPU-05** for a trustworthy interval attribution.
 - **Prior experiments / negative results:** none. No removal has been attempted or proposed.
 - **Safety concerns:** this is guest code. Removing or altering it changes the picture; there is
   no evidence yet that it is off the critical path or redundant.
 - **Open question:** *What is this shader, what is its dispatch geometry, what are its inputs and
-  outputs, and does it lie on the frame critical path?*
+  outputs, and does it lie on the frame critical path?* **Answer only after GPU-05 gives this
+  interval an exclusive attribution.**
 - **Next action:** identify the shader (disassembly, resource bindings, dispatch geometry from a
-  capture) **without** speculative removal.
+  capture) **without** speculative removal. Do **not** plan work against the ~5 ms figure until its
+  composition is settled — and do not re-attribute it by guessing; wait for GPU-05's measured
+  parameters.
 - **History:**
   - 2026-11-19 — cost measured in the M2 window (4.86–5.45 ms/frame at 8 dispatches/frame);
     purpose still unknown.
+  - 2026-11-19 — **attribution invalidated as an exclusive shader cost**: the same interval fell to
+    0.69 ms when the depth-write pass replaced an unmarked preservation copy (5.43 → 0.69 ms,
+    copy 0.18 ms), so the figure includes copy time. Recorded at the user's instruction before any
+    further optimization is chosen. Cross-reference: GPU-05 (parameter work), GPU-01 (the evidence).
 
 ### GPU-03 — Render passes and load/store behaviour
 
@@ -716,14 +762,30 @@ configuration. Do not mix it into an A/B whose other arm ran on the old shadow.
 
 ### GPU-05 — Copy attribution coverage
 
-- **Status:** `queued` (diagnostic) · **Priority:** P1 · **Last update:** 2026-11-19
-- **Measured / current state:** the `PassKind::Blit` labelling exists in `main` and the blit
-  helper's passes are marked as copies rather than passes (commit `6037acb`;
-  `vk_scheduler.cpp:998`), but the M2 costliest lists show **no `[copy]` entries at all** —
-  consistent with the tested scene producing zero such marks. **`Runtime::CopyImage`
-  (`vk_runtime.cpp:227`) issues `vkCommandBuffer::copyImage` with no interval mark**
-  (source-verified), and `Runtime::CopyImageWithBuffer` likewise. `XFER_GPU` may absorb waits
-  and is not pure transfer time.
+- **Status:** `queued` — **the preferred next investigation** (promoted 2026-11-19 by the user,
+  immediately after GPU-01 closed) · **Priority:** P1 diagnostic · **Last update:** 2026-11-19
+- **New evidence that promotes this target (2026-11-19, from GPU-01's A/B).** `gpu operations`
+  changed as the depth-write pass replaced an **unmarked** copy:
+  `arm0-s5` = `pass 8.97 ms x869, dispatch 5.43 ms x213`; `arm1-s5` =
+  `pass 9.46 ms x976, dispatch 0.69 ms x238, copy 0.18 ms x17`. So the ~4 ms copy in the copy arm
+  was being charged to the **preceding dispatch interval**. Two consequences:
+  1. The unmarked copy is now the ledger's largest single unattributed GPU cost —
+     **exactly one ~71.19 MiB/frame copy remains unidentified** (the copy arm performs two; the
+     pass covers one). Naming it is this target's job.
+  2. It demonstrates the mis-attribution directly, which is the reason this target exists.
+  Also corrected: "the M2 costliest lists show no `[copy]` entries" was a property of the
+  **costliest** list — cheap copies never reach it. A blit pass *does* appear as `[copy]` when its
+  cost qualifies (`copy 0.18 ms x17` in `arm1-s5`). Do not read "no `[copy]` row" as "no copy".
+- **Scope / direction (user's instruction, 2026-11-19):** review `Image::CopyImage`,
+  `Runtime::CopyImage` and the depth/storage alias transition. **The reverse `D32 → R32` transition
+  is a plausible source of the remaining copy, but its identity must be established from the actual
+  copy parameters and execution site — not assumed.**
+- **Constraints (user's instruction, 2026-11-19):** **do not build a new profiler.** Extend the
+  existing copy attribution where necessary, **preserving command order and valid GPU timing**.
+  No speculative image-recycler changes; do not repeat the completed depth-pass A/B.
+- **Deterministic answer sought:** for the remaining ~71.19 MiB/frame copy — src and dst guest
+  addresses, formats, extent, aspect, mip/layer, and the execution site (which caller, and whether
+  it is the forward or the reverse representation transition).
 - **Provenance:** `src/src/video_core/renderer_vulkan/vk_runtime.cpp:227`,
   `src/src/video_core/texture_cache/blit_helper.cpp:100,211,324,463`,
   `src/src/video_core/renderer_vulkan/vk_scheduler.cpp:998`, `vk_scheduler.h` (`PassKind`);
@@ -734,13 +796,21 @@ configuration. Do not mix it into an A/B whose other arm ran on the old shadow.
   marks in the tested scene; the direct-copy path was never marked.
 - **Safety concerns:** none; this is measurement only. Do not split render passes merely to get
   timestamps.
-- **Open question:** *What do the direct copies cost, and where are they?*
-- **Next action:** add correctly located markers to the **direct** `Runtime::CopyImage` path,
-  exercise the actual blit path, and separate copies from barriers and passes — without
-  splitting render passes merely for timestamps.
+- **Open question:** *Which exact code path issues the remaining ~71.19 MiB/frame copy, with what
+  parameters, and is it the reverse `D32 → R32` representation transition?*
+- **Next action:** add a correctly located marker **and parameter record** to the direct
+  `Runtime::CopyImage` path (and `CopyImageWithBuffer` if it carries the copy), placed at the copy
+  command so command order and interval boundaries are preserved; log src/dst guest address,
+  formats, extent, aspect, mip/layer and the caller, default-off; then run one M2 gameplay cell and
+  name the remaining copy. Extend the existing attribution — do not add a new timing framework.
 - **History:**
-  - 2026-11-19 — `PassKind::Blit` labelling landed (`6037acb`); zero marks in the tested scene;
-    direct `Runtime::CopyImage` confirmed unmarked in source.
+  - 2026-11-19 — `PassKind::Blit` labelling landed (`6037acb`); zero marks in the tested scene's
+    costliest list; direct `Runtime::CopyImage` confirmed unmarked in source.
+  - 2026-11-19 — **promoted to the preferred next investigation** after GPU-01 closed. The
+    unmarked copy was demonstrated to steal ~4 ms into the preceding dispatch interval, and one
+    ~71.19 MiB/frame copy remains unidentified. Direction and constraints recorded above; the
+    investigation had **not** started at the time of writing (the configuration re-baseline had to
+    be recorded first, per the same instruction).
 
 ### MEM-01 — Image recycler
 
@@ -1266,3 +1336,35 @@ this ledger described it as game-shipped. The M2 shadow in use does not carry it
 in this ledger ran without the 120 Hz PSVR frame sequence. A private shadow reproducing the tweak is
 prepared (§4.5) and **re-baselining M2 on it is a separate, deliberate change**, per the user's
 decision — not folded into GPU-01's result and not comparable with the cells above.
+
+### 2026-11-19 — GPU-01 accepted; GPU-02 attribution invalidated; GPU-05 promoted
+
+GPU-01's measured verdict was accepted **for the tested configuration**, and its evidence and
+negative FPS result stay in this ledger. Two consequences were recorded at the user's instruction
+before any further optimization is chosen:
+
+1. **GPU-02's attribution is suspect.** The dispatch interval attributed to shader
+   `799062d096fa2314` fell from 5.43 to 0.69 ms/frame when the depth-write pass replaced an
+   **unmarked** preservation copy, while the copy itself measured 0.18 ms. The earlier ~5 ms figure
+   therefore plausibly includes preservation-copy time and **must not be treated as exclusive shader
+   execution cost** until independently measured. GPU-02's record now carries that warning, and its
+   next action waits on GPU-05.
+2. **GPU-05 is the preferred next investigation.** One ~71.19 MiB/frame copy remains unidentified.
+   Direction: review `Image::CopyImage`, `Runtime::CopyImage` and the depth/storage alias transition;
+   the reverse `D32 → R32` transition is a plausible source but its identity must be established from
+   the **actual copy parameters and execution site**, not assumed. Constraints: **no new profiler** —
+   extend the existing copy attribution, preserving command order and valid GPU timing; no
+   speculative image-recycler changes; do not repeat the completed depth-pass A/B.
+
+**Configuration work recorded separately** (see §4.5, §4.6):
+
+- The Morpheus 120 Hz `Engine.ini` tweak's **provenance is now its own record** and is explicitly
+  *not* a game setting, *not* a renderer change, and *not* owned by any target.
+- The M2 re-baseline on that configuration produced two valid cells (**32.80 / 34.45 FPS**, spread
+  4.8 %) and is recorded as **its own configuration** — it is **not** a matched A/B against GPU-01's
+  arms and must never be pooled with them. The ~71.19 MiB/frame copy is present in it as well.
+- Every new arm manifest records the game `engine.ini` path and hash, closing the gap that let a
+  cell's configuration go unrecorded.
+
+**Sequencing honoured:** GPU-05 was **not** started before the re-baseline was recorded. It begins
+now, alone.
