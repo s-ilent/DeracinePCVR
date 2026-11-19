@@ -255,7 +255,7 @@ cells, never projection.
 |---|---|---|---|---|---|
 | CPU-01 | `BindResources` parent | `queued` | P0 | 11.41 ms/frame over 1,867 calls | Decompose without adding child costs |
 | CPU-02 | Depth-overlap resolution | `queued` | P0 | ~3.7 ms/frame `depth_ms` (M2 window) | Split matching vs conversion vs recreation vs sync |
-| CPU-03 | Vulkan image create/destroy | `queued` | P0 | ~0.72 ms create + ~2.14 ms destroy per frame, ~4 creations/frame | Find avoidable churn without reuse hazards |
+| CPU-03 | Vulkan image create/destroy | `investigating` | P0 | **3.149 ms/frame** (0.852 create + 2.297 destroy), 3.89/frame — all of it the two 74.75 MiB `0x2068000000` shapes | Classification done; implement the scoped two-entry reuse only after the lifetime model is reviewed |
 | CPU-04 | `FindImage` slow path / generation | `queued` | P1 | 13,639 lookups/frame, 1,651 slow, 83.9 % generation mismatches | Quantify wasted-but-exclusive work |
 | CPU-05 | Vertex/index binding | `queued` | P1 | 3.23 ms/frame over 1,867 calls | Split cache search vs binds vs barriers |
 | CPU-06 | Render-state preparation | `queued` | P1 | 2.21 ms/frame over 2,060 calls; ~193 draws skipped after it | Test safe reordering after the empty-draw decision |
@@ -338,11 +338,18 @@ cells, never projection.
 
 ### CPU-03 — Vulkan image creation/destruction
 
-- **Status:** `queued` · **Priority:** P0 · **Last update:** 2026-11-19
-- **Measured:** M2 **~0.72 ms create + ~2.14 ms destroy per frame**, **~3.9 image
-  creations/frame** (`create_ms=25.9`, `destroy_ms=77.1`, `images_created=140`,
-  `images_destroyed=140` over 36 frames). Earlier front-end measurement: **~0.78 + 2.5 ms**.
-  The seed's figures (0.68 / 1.91 / ~4) are the same counters in a neighbouring window.
+- **Status:** `investigating` · **Priority:** P0 · **Last update:** 2026-11-19
+- **Experiment:** `cpu03-alloc-classes-2026-11-19`, cell `arm0-a1` (valid gameplay: 32.66 unique FPS,
+  1,867 draws, 933 Mpx, 59.8 passes, GPU busy 48.9 %, 173 windows 99.4 % in band), on the existing
+  instrumentation only (`SHADPS4_DBG_TRACE_IMAGES=1` + `SHADPS4_DBG_OVERLAP=1` +
+  `SHADPS4_GPU_TIMING=1`), binary `597C2609…` whose renderer tree is identical to `main`'s.
+  **The classification and the double-counting question are answered; implementation is gated on the
+  user's review of the lifetime model.**
+- **Measured:** M2 **`create_ms` 0.852 + `destroy_ms` 2.297 = 3.149 ms/frame** (medians over the last
+  30 RENDERSTAT windows; windows total 86,041 ns of create and 73.2 ms of destroy per report
+  interval), at **`images_created` 3.886 and `images_destroyed` 3.882 per frame**. This is the
+  "~3 ms" the question names, and it reproduces the historical pair to 0.01 ms (0.851 / 2.292).
+  Earlier windows: ~0.72 + ~2.14 ms; earlier front-end: ~0.78 + 2.5 ms.
 - **Measurement semantics:** **potentially nested** within CPU-01/02. `images_created` counts
   raw creations, not distinct images.
 - **Provenance:** `findimage-profile-2026-11-19-0128` and
@@ -356,10 +363,102 @@ cells, never projection.
 - **Safety concerns:** removing allocation churn by reusing images risks premature reuse,
   VRAM pressure and corrupt prior contents. The 2026-11-17 headset trial's soft red overlay is
   the observed failure class for stale image contents.
-- **Open question:** *Can avoidable allocation churn be removed without premature reuse, VRAM
-  pressure or corrupt prior contents?*
-- **Next action:** classify the ~3.9 creations/frame by reason (alias re-creation, expand,
-  refresh, depth target) and report which class is avoidable, before proposing any pooling.
+- **Classification (measured, 2,923 gameplay frames).** Of **12,305 creations** in the gameplay
+  span (**4.21/frame**), **95.0 % are four configurations that recur exactly once per frame**; the
+  other **620 configurations are one-off or long-lived** scene textures (BC3 blocks, a 1024² R8Unorm,
+  980×5 UI strips, icons) at ≤0.001/frame. The four recurring configurations, each **0.999 new AND
+  0.999 gone per frame**:
+
+  | guest address | extent | Vulkan format | levels | layers | guest size | initiating operation |
+  |---|---|---|---|---|---|---|
+  | `0x2068000000`+`0x4ac0000` | 5760×3240 | **`R32Sfloat`** | 1 | 1 | 74.75 MiB | `ResolveDepthOverlap` re-creation (`texture_cache.cpp:360-410`) |
+  | `0x2068000000`+`0x4ac0000` | 5760×3240 | **`D32SfloatS8Uint`** (depth) | 1 | 1 | 74.75 MiB | the same re-creation, depth direction |
+  | `0x2008f80000`+`0x20000` | 32×32 | `A2B10G10R10UnormPack32` | 1 | **32** (2D array) | 0.125 MiB | `ExpandImage` 2D↔3D conversion (`texture_cache.cpp:796-810`) |
+  | `0x2008f80000`+`0x20000` | 32×32 | `A2B10G10R10UnormPack32` | 1 | **1** (3D volume) | 0.125 MiB | the same conversion, the other direction |
+
+  **These are four shapes but only two logical resources**, and they are **the same two resources
+  GPU-05's copy log identified** — the create/copy/destroy cycle is one resource alternating between
+  two representations. **Lifetime is a median of 0 frames for all four** (max 18 near transitions):
+  each is created and destroyed inside the same frame, every frame. Allocation churn is
+  **~2 × 74.75 + 2 × 0.125 ≈ 149.8 MiB/frame** by guest size; `RENDERSTAT image_mb` uses the VMA
+  allocation size (alignment included) and is larger — do not conflate the two.
+- **Which resources carry the 3.149 ms — the `0x2068000000` pair.** Two independent bounds, both
+  from existing instrumentation:
+  1. **`expand_ms` = 0.099 ms/frame** contains the LUT pair's two creates and two destroys, so that
+     pair costs **≤0.1 ms/frame** (~3 % of the churn cost) despite being half the calls.
+  2. The historical recycler measured create/destroy going **0.851/2.292 → 0.019/0.008 ms/frame with
+     only 2.0 hits/frame** — the two reused shapes carried ~99 % of the cost, which a 128 KiB shape
+     cannot plausibly do.
+  So the ~3.15 ms is the **2 × 74.75 MiB `0x2068000000` pair**, and it sits inside `depth_ms`
+  4.316 / `overlap_ms` 4.453 ms (71–73 % of that window). **Stated uncertainty:** the per-shape split
+  is *not* directly instrumented; the two bounds above constrain it but neither names the recycled
+  shapes. Splitting it needs either the recycler's own hit accounting or a per-shape timing
+  experiment — not a new framework.
+- **Double-counting (task 3) — CPU-03 is a sub-cost of CPU-02/CPU-01, never additional.**
+  `create_ms`/`destroy_ms` time **only `vmaCreateImage`/`vmaDestroyImage`** (`image.cpp:139-146`; the
+  destructors at `:94-100` and `:104-110`). Those calls happen while `ResolveDepthOverlap`,
+  `ResolveOverlap` or `ExpandImage` is on the stack, so they fall **inside `depth_ms`/`overlap_ms`/
+  `expand_ms`**, which in turn fall inside CPU-01's `bind resources`. The measured relationship
+  agrees: 3.149 ms inside 4.316/4.453 ms. **Do not add 3.149 ms to CPU-02 or CPU-01** — removing it
+  *reduces* their totals.
+- **Recurring or genuinely different (task 4):** recurring-identical, not different resources. Four
+  immutable create shapes, re-created once each per frame, median lifetime 0 frames, keyed to a fixed
+  guest address and a fixed extent. Nothing about the configuration varies frame to frame.
+- **Recycler review (task 5) — reviewed, not ported and not enabled.** `docs/assignment01/RECYCLER-REVIEW.md`
+  (source `6170df6`; standalone candidate `4d244d1` cut from `acda49e`, build never run on this
+  machine). Invariants mostly sound: key = the whole create shape; the format-list `pNext` is
+  excluded from the key and any release with a non-null `pNext` is destroyed rather than pooled;
+  nothing *about the contents* is pooled (a recycled image starts at layout `eUndefined`, which
+  Vulkan defines as discard); pool bounded at 16 images / 768 MB, measured ~250–293 MB VRAM.
+  **Recorded failures and gaps:** the advertised **4.15 → 0.29 ms must not be quoted** — its "off"
+  arm was the calibration screen, not the classroom; **no unit test** for the key, eviction or the
+  `pNext` guard; **GPU-completion safety is structural, not asserted** (sound only because the sole
+  `slot_images.erase` lives inside `DeferOperation`); allocator identity unchecked; `SameShape`
+  reads `pQueueFamilyIndices`; `static_vector<Format,4>` capacity; `Acquire` never checks `shutdown`;
+  and a stale descriptor would read **recycled pixels instead of faulting**, which makes the
+  completion invariant more important rather than less. A later local port
+  (`fix/image-recycler-startup-2026-11` @ `248e30b`, not on `origin`) **crashed at startup even with
+  the recycler disabled**; cause unproven. **No recycler code was ported or enabled.**
+- **Safety assessment for any reuse design.** Required invariants, each with its failure mode:
+  (a) the key must be the **entire** create shape, so a recycled image is never handed to a different
+  request — a mismatch would alter image contents, which this investigation must not do;
+  (b) release must stay on the scheduler's **deferred** path, or the GPU may still be reading the
+  image being pooled; (c) the pooled object carries **only** the allocation — validity, hashes,
+  `GpuModified`, layout and meta must be freshly initialised, exactly as a new allocation;
+  (d) the pool must be **bounded and flushed before `vmaDestroyAllocator`**; (e) destruction must
+  remain a real `vmaDestroyImage` for everything not pooled, so a bug leaks rather than corrupts.
+  **Preservation semantics are untouched by construction**: reusing an allocation changes *when* the
+  memory is obtained, not *what* is copied into it, and the `0x2068000000` preservation logic and the
+  reverse depth copy stay exactly as they are (this investigation explicitly does not optimize them).
+- **Smallest safe candidate (task 6).** Not the general recycler. The minimal scoped change is a
+  **shape-keyed reuse pool restricted to the two `0x2068000000` create shapes with a two-entry
+  bound** (one live instance of each shape, ≈149.5 MiB total), with the general eviction policy and
+  the 16-slot/768 MB budget dropped. It is the smallest change that addresses the measured 3.149 ms,
+  because that cost is those two shapes. An even smaller, lower-risk **first step** exists — pooling
+  only the two 128 KiB LUT shapes (≈0.25 MiB bound, a resource with no preservation semantics) —
+  which is worth doing only to prove the invariants cheaply before touching the alias pair.
+- **Falsifiable optimization hypothesis.** *Reuse-on-release scoped to the two `0x2068000000` shapes,
+  with a strict two-entry bound and release only on the deferred path, will reduce `create_ms` +
+  `destroy_ms` from 3.149 ms/frame toward ≤0.5 ms/frame and cut `images_created`/`images_destroyed`
+  by 2/frame, on a matched M2 cell, with render-target dumps bit-identical and 0 VUID/sync errors and
+  VRAM growth bounded by the pool.* **Falsified if** the create/destroy time does not fall materially
+  beyond the noise floor, or any render-target dump differs, or VRAM grows beyond the bound, or the
+  build fails to start (the historical port's failure mode). **Not tested here** — implementation is
+  deliberately deferred for review of the lifetime model.
+- **Provenance:** `cpu03-alloc-classes-2026-11-19`/`arm0-a1` (`run.json`, `arm-manifest.json`,
+  `lab/user/log/shad_log.txt`), analyzed by `_out/gpu01-depthpass-2026-11-19/alloc-classes.py`;
+  the existing `SHADPS4_DBG_TRACE_IMAGES` trace (`texture_cache.cpp:37-56`, `:1327`, `:1343`) and the
+  `RENDERSTAT` counters (`image_stats.h`, `create_ns`/`destroy_ns`);
+  `src/src/video_core/texture_cache/image.cpp:94-146` for the exact scope of the timers and the
+  nesting; `docs/assignment01/RECYCLER-REVIEW.md`; `docs/assignment01/REVISED-CONCLUSIONS.md`
+  (recycler verdict); `docs/research/cross-fork-renderer.md` §A2; GPU-05's record for the copy
+  identities of the same two resources.
+- **Open question:** *Answered for classification and nesting.* Remaining: the **per-shape split of
+  the 3.149 ms** (bounded but not directly measured), and whether the two-entry pool caps VRAM as
+  expected on a long run.
+- **Next action:** **stop here for review.** Present the lifetime model (four shapes / two resources,
+  one-frame lifetime, reuse only on the deferred path) and the scoped two-entry candidate; implement
+  only after approval, on its own branch, built and started before any claim.
 - **History:**
   - 2026-11-17 — front-end ~0.78 + 2.5 ms; recycler prototype measured (MEM-01).
   - 2026-11-19 — M2 window ~0.72 + 2.14 ms per frame over 36 frames; creation classes not yet
@@ -370,6 +469,15 @@ cells, never projection.
     (the pass replaces an eligible colour→depth **copy operation**, not the image recreations) and
     means CPU-03 is **not** addressed by GPU-01: its ~4 creations/frame and ~3.3 ms/frame of
     create+destroy remain, and it is now the larger of the two remaining members of the chain.
+  - 2026-11-19 — **`cpu03-alloc-classes-2026-11-19` run and analyzed; status → `investigating`.**
+    Using only the existing `SHADPS4_DBG_TRACE_IMAGES` trace plus `RENDERSTAT`, the ~3.9 creations
+    per frame are classified: **four immutable shapes, two logical resources, each re-created exactly
+    once per frame with a median lifetime of 0 frames**, and 95 % of all creations are those four.
+    The 3.149 ms/frame of create+destroy is the **`0x2068000000` 2 × 74.75 MiB pair**; the 32³ LUT
+    pair is bounded at ≤0.099 ms by `expand_ms`. The cost is nested inside CPU-02's `depth_ms`/
+    `overlap_ms` and must not be added to it. The historical recycler was reviewed but **not ported
+    or enabled**. A scoped two-entry reuse candidate and a falsifiable hypothesis are recorded;
+    **implementation is deferred** for review of the lifetime model.
 
 ### CPU-04 — `FindImage` slow path / global generation
 
@@ -1451,3 +1559,35 @@ The copy interval is now the largest single attributed GPU item at **6.98 ms/fra
 `_build/ALIASING-REPORT.md`. **No optimization was attempted:** the reverse transition is required
 for correctness, and making it cheaper is a new investigation with its own question, not part of
 GPU-05. No next target has been selected.
+
+### 2026-11-19 — CPU-03 investigated (`cpu03-alloc-classes-2026-11-19`); implementation deferred
+
+Selected by the user as the next ledger investigation and marked `investigating`. One valid M2 cell
+(`arm0-a1`, 32.66 unique FPS, 1,866 draws, 173 windows 99.4 % in band) was measured with the
+**existing** instrumentation only — `SHADPS4_DBG_TRACE_IMAGES=1` for per-image identity, `RENDERSTAT`
+for cost — and analyzed by the new read-only `alloc-classes.py`. No new profiling framework was
+added.
+
+**Answered.** The ~3.9 creations and destructions per frame are **four immutable create shapes
+belonging to two logical resources**, each re-created exactly once per frame with a **median
+lifetime of 0 frames**, and 95 % of every creation in the gameplay span is one of those four: the
+`0x2068000000` 5760×3240 `R32Sfloat`/`D32SfloatS8Uint` pair (74.75 MiB each) and the `0x2008f80000`
+32×32 LUT's 2D-array/3D-volume pair (0.125 MiB each). They are the same two resources GPU-05's copy
+log named. The **3.149 ms/frame** of `create_ms` + `destroy_ms` is the **`0x2068000000` pair**; the
+LUT pair is bounded at **≤0.099 ms** because `expand_ms` contains its two creates and two destroys.
+The cost is **nested inside CPU-02's `depth_ms`/`overlap_ms`** (measured: 3.149 ms inside
+4.316/4.453 ms) and inside CPU-01, so it must never be added to them. The per-shape split is
+constrained by two independent bounds but not directly instrumented, and that is recorded as the
+remaining uncertainty.
+
+**Reviewed, not used.** The historical recycler's invariants, its recorded failures (the
+un-citable 4.15 → 0.29 ms from a scene-mismatched pair; no unit test; structural-only
+GPU-completion proof; the startup crash of the later port) and the safety invariants any reuse must
+satisfy are recorded in CPU-03. **No recycler code was ported or enabled**, the reverse depth copy
+was not optimized, and image-preservation semantics were not altered.
+
+**Stopped for review.** The smallest safe candidate is a reuse pool scoped to the two
+`0x2068000000` shapes with a **two-entry bound** (the general 16-slot/768 MB policy dropped), with a
+smaller LUT-only step offered to prove the invariants cheaply; a falsifiable hypothesis is recorded
+with its falsifiers. **No implementation was started** — the lifetime model is presented for review
+first, as instructed.
