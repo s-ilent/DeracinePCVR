@@ -1245,6 +1245,7 @@ target_include_directories(shadps4_image_reuse_pool_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/tests
+    ${CMAKE_SOURCE_DIR}/externals/vma/include
 )
 target_compile_features(shadps4_image_reuse_pool_test PRIVATE cxx_std_23)
 target_compile_definitions(shadps4_image_reuse_pool_test PRIVATE NOMINMAX)
