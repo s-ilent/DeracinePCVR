@@ -1,7 +1,6 @@
 # Image reuse pool Phase-2 validation
 
-Status: **VALIDATED (headless M2 gameplay, system GPU)** — build, focused unit tests, one A/B gameplay
-cell pair, a render-target pixel A/B with its own same-arm control, and a clean-shutdown check with
+Status: **VALIDATED (headless M2 gameplay, system GPU)** — build, focused unit tests, three gameplay cells, a render-target pixel A/B with its own same-arm control, and a clean-shutdown check with
 images still pooled. No headset acceptance. No FPS gain is claimed; see *What this establishes*.
 
 This replaces the earlier interim record, which was blocked before any GPU gate could run.
@@ -10,9 +9,13 @@ This replaces the earlier interim record, which was blocked before any GPU gate 
 
 - Worktree: `M:\Development\Deracine-work\wt-perf-reuse`
 - Branch: `perf/aliased-image-reuse-2026-11-19`
-- Emulator build: **PASS**, exit 0 (`_build/build.ps1`). `build\shadPS4.exe` SHA-256
-  `AF1936720C44EF8C196773DB861322F96A03AD7775A300F8F1AABDFA0116FC6F`. One private copy per arm,
-  hash-pinned; both arms ran that identical binary, differing only in `SHADPS4_DBG_IMAGE_REUSE`.
+- Emulator build: **PASS**, exit 0 (`_build/build.ps1`). Cells `g1` ran
+  `build\shadPS4.exe` SHA-256 `AF1936720C44EF8C196773DB861322F96A03AD7775A300F8F1AABDFA0116FC6F`;
+  rebasing onto current `main` (docs-only) forced a full relink, and cell `g2` re-validated that
+  artifact, `E4AD38248B21AFE60F74E987DBBE3B79BD90AF86E81D096208F457D83CAD4C51`. `src/` is
+  byte-identical across the rebase (`git diff 80bfc9c2 HEAD -- src` is empty), so the two binaries
+  are the same code. One private copy per arm, hash-pinned; both arms differ only in
+  `SHADPS4_DBG_IMAGE_REUSE`.
 - `ctest --test-dir build-tests -R ImageReusePool --output-on-failure`: **7/7 passed**.
 - The full test tree still fails on the pre-existing Windows portability error
   (`src/tests/libraries/test_usbd_event_loop.cpp:6`, `<sys/time.h>`); unrelated to this change.
@@ -28,29 +31,32 @@ last 60 one-second `RENDERSTAT` windows of each run, i.e. steady gameplay.
 |---|---|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
 | `arm0-g1` reuse=0 | yes | 34.32 | 1871.6 / 909.7 / 59.2 | 58.8 % | 135.8/s | 25.05/s | 64.20/s | 0 | 0 | 3333.6 | 1675 | 0 |
 | `arm1-g1` reuse=1 | yes | 39.79 | 1866.3 / 950.9 / 60.7 | 68.2 % | 96.8/s | 6.43/s | 17.66/s | 68.2/s | ≤219.4 MiB | 3422.8 | 1672 | 0 |
+| `arm1-g2` reuse=1 | yes | 30.99 | 1866.1 / 913.2 / 58.6 | 50.0 % | 65.1/s | 1.68/s | 2.82/s | 59.6/s | ≤219.4 MiB | 3374.9 | 1531 | 0 |
 
-Both cells are `valid: true, phase: gameplay`, `save_ok: true`, `reuse` arm 190/195 samples in band.
+`arm1-g2` is the confirmation cell run on the rebuilt binary of the pushed commit (see *Identity*).
+Three cells are enough to see what the frame rate does and does not track.
 
 What the counters say:
 
-- The two 74.6 MB create shapes are served from the pool: 68.2 hits/s ≈ 1.7 of the 4.1 image
-  creations a frame, and `images_created` falls by 39/s. `reuse_misses` (96.8/s) counts every
-  poolable-shaped request that found no entry, including the sub-16 MiB shapes that can never be
-  pooled, so it tracks the small-image traffic rather than a shortfall — read it next to
+- The two recurring large create shapes are served from the pool: hits are 60–68/s ≈ 1.7–1.9 of the
+  ~4 image creations a frame, and `images_created` falls from 135.8/s to 65–97/s. `reuse_misses`
+  counts every poolable-shaped request that found no entry, including the sub-16 MiB shapes that can
+  never be pooled, so it tracks the small-image traffic rather than a shortfall — read it next to
   `images_created`, not on its own.
-- `create_ms + destroy_ms` falls from **89.25 ms/s to 24.09 ms/s**. That is the direct, within-run
-  measurement of the cost CPU-03 attributed to the recurring shapes; it is ~6.5 % of wall time and
-  bounds the achievable frame-rate gain at about +7 % in this scene.
+- `create_ms + destroy_ms` falls from **89.25 ms/s to 24.09 ms/s (`g1`) and 4.50 ms/s (`g2`)**. That
+  is the direct, within-run measurement of the cost CPU-03 attributed to the recurring shapes, and it
+  is the real result of this work.
 - Allocation ownership is bounded: `reuse_bytes` peaks at 219.4 MiB = three retained allocations
   against the source-enforced 256 MiB / 6-entry cap, and `vram_blocks` does not grow (1675 → 1672).
-- GPU busy rises 58.8 % → 68.2 %, consistent with the renderer feeding the GPU better after the
-  CPU-side allocation work is removed.
 
-**The FPS pair is not evidence of an FPS gain.** The reuse arm's 39.79 sits on top of the whole
-existing distribution of valid gameplay cells (34.0–40.8), and main at `3621ff29` — before this
-feature — already measured 39.17 in `_out/p2/baseline-main-3621ff29-300`. The 34.32 baseline is
-therefore a slow run, and the +16 % pair delta is mostly run-to-run variance above the +7 % bound
-the timers allow. What is established is the removed allocator time, not a frame-rate win.
+**No frame-rate gain is claimed, and these cells show why:** the same configuration measured 39.79
+and 30.99, and the low-FPS cell is the one where the allocator time was almost entirely gone
+(4.50 ms/s). Frame rate here does not track the allocator cost — it varies by ~9 FPS run to run,
+the reuse cells span the whole existing distribution of valid gameplay cells (30.99–40.76), and main
+at `3621ff29` — before this feature — already measured 39.17. The three-cell spread is the finding:
+89 ms/s of `vmaCreateImage`/`vmaDestroyImage` was **not** the frame limiter at this scene size and
+render percentage, which agrees with the earlier recycler result. The optimization removes real CPU
+time; it does not buy frames in this cell.
 
 ## Render-target pixel A/B
 
@@ -94,6 +100,8 @@ because the scene animates and two runs never share a frame.
 Established: the implementation builds, its focused tests pass, it is exercised in Déraciné gameplay
 on the system GPU, it removes the measured allocator time, its memory is bounded, it does not change
 the rendered image beyond run-to-run noise, and it tears down cleanly with allocations still pooled.
+It also does **not** raise frame rate in this cell: the cell with almost no allocator work left
+(`g2`) is the slowest of the three, so the 89 ms/s it removes was not the limiter.
 
 Not established: headset acceptance; any frame-rate gain (see above); behaviour when an `Instance` is
 recreated mid-process (none exists in current call sites, and `Shutdown` latches deliberately); the
@@ -114,3 +122,4 @@ bash tools/headless-vr/gpu-lock.sh run --owner <you> --kind headless --require-q
 Arms `g1` are the measurement cells; `d1`/`d2` are the pixel captures (add
 `-SceneGate '1600,700,rt_dump-gameplay' -ExitAfterSeconds 180`). Evidence, raw logs, `run.json` per
 arm and both comparison JSONs are under `_out\cpu03-reuse-2026-11-20\`.
+
