@@ -5,8 +5,9 @@
 - Implementation commit: `20063f67436e9239c08c4965909e75ba89264b6e` (`perf(video_core): reuse Vulkan images by exact create shape`).
 - Follow-up implementation commit: `dc7b73b252425eab5287acc6abe66b867310c004` (`perf(video_core): avoid reuse bookkeeping for direct image destroys`); only performs shape copying/pool access for images explicitly marked GPU-idle.
 - Branch/worktree: `perf/aliased-image-reuse-2026-11-19` / `wt-perf-reuse`.
-- Status: **UNBUILT / UNTESTED** by instruction. No build, compiler, CMake configure, emulator, test, benchmark, or Vulkan validation run was performed.
-- This report is in the worktree because the shared audit-folder destination is outside the implementation agent's write boundary.
+- Status: **BUILT AND RUNTIME VALIDATED** — see `image-reuse-pool-validation.md` for the measured
+  cells, the render-target A/B and the teardown check. The "unverified / suspected issue" lists below
+  are kept as the record of what the implementation had to prove, not as open items.
 
 ## Mechanism
 
