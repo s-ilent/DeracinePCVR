@@ -86,8 +86,9 @@ Left to itself the title rendered about 60 unique frames a second, taking two vb
 documented 90 mode of another UE4 PlayStation VR title, [StatikQuest's launcher](https://github.com/Jerware/StatikQuest/blob/main/pc-vr/launch.ps1),
 which is where the setting was found.
 
-Measured on 2026-11-17 with this block (100 % render scale, OpenXR at 120 Hz, warm — the cold state
-has shader compilation in it and is not comparable):
+Measured on 2026-11-17 **in a session with the headset** (100 % render scale, OpenXR at 120 Hz, warm —
+the cold state has shader compilation in it and is not comparable). The workload matters and is in §9:
+this was the 2D calibration/menu screen, not gameplay.
 
 | metric | value |
 |---|---|
@@ -210,12 +211,16 @@ matched A/B, and not to be pooled with the earlier arms. Note also that those ce
 limited by something else (the ledger's CPU targets), which is exactly why the budget above is scoped
 to the GPU-bound heavy scene.
 
-So the honest state is: **with nobody wearing the headset, the 120 configuration does not lift pacing
-— it is slightly worse, consistent with the XR present path stalling when the headset is asleep.** A
-worn-headset session is the only place this key can be judged, and it has not happened. Whether
-`frame_mode=120` produces 120 unique frames in a real session therefore remains open; that is the
-experiment these controls exist to make possible, and it is A/B-able from the launcher alone: same
-scene, same build, same size, `frame_mode=60` against `frame_mode=120`, comparing unique rendered fps.
+So the honest state is: **the 120 configuration has been used with the headset, and the 120.0 unique fps
+in §2 came from such a session — but in a lighter workload.** What was never verified is 120 unique
+frames **in gameplay**; there gameplay was the ~52 fps quoted in §9. The **headless** re-baseline cells
+above add that, with nobody wearing the headset, this key does not lift pacing and is slightly worse —
+consistent with the XR present path stalling when the headset is asleep — so headless arms cannot
+substitute for a session.
+
+That leaves the one measurement this configuration exists to make possible: same scene, same build,
+same size, `frame_mode=60` against `frame_mode=120`, comparing **unique rendered fps** in gameplay
+rather than the compositor's or the headset's cadence.
 
 ---
 
@@ -383,16 +388,17 @@ they live in; they are cited, not copied.
   the file up once, that switching modes is idempotent, that unrelated keys, sections and line endings
   are untouched, and that out-of-range or unknown values are refused (§10).
 
-**Measured on 2026-11-17, on the then-current tree and binary, not since reproduced on `main`:**
+**Measured on 2026-11-17 with the headset, on the then-current tree and binary, not since reproduced on
+`main`:**
 
 - 120.0 unique frames a second with `Render120Scanout120` + the §2 block, at 100 % render scale
-  (§2). **The corrected context matters:** the 16.1-second window that produced it was the **2D
-  calibration/menu screen, not the 3D scene**. The investigation says so itself ("The window I measured
-  '120.0 fps' in is the 2D calibration/menu screen, not the 3D scene"), and in the same breath records
-  gameplay at 960×1080 running at ~19.2 ms (~52 fps) at that time. A later round, on the same
-  stationary classroom viewpoint and a different build, measured **119.5 fps mean (p50 8.34 ms) at
-  100 %** and **32.3 fps at 300 %**. So "120 unique frames at 100 % in a lighter workload" is a real
-  measurement; **120 fps in gameplay has never been verified.**
+  (§2). **The workload is what limits this claim, not the session:** the 16.1-second window that
+  produced it was the **2D calibration/menu screen, not the 3D scene**. The investigation says so
+  itself ("The window I measured '120.0 fps' in is the 2D calibration/menu screen, not the 3D scene"),
+  and in the same breath records gameplay at 960×1080 running at ~19.2 ms (~52 fps) at that time. A
+  later round, on the same stationary classroom viewpoint and a different build, measured **119.5 fps
+  mean (p50 8.34 ms) at 100 %** and **32.3 fps at 300 %**. So "120 unique frames at 100 % in a lighter
+  workload" is a real headset-session measurement; **120 fps in gameplay has never been verified.**
 - The `r.ScreenPercentage` mapping, and 300 % as a standing configuration (§5).
 - The 300 % clamp instruction and the 400 % patch's effect (§5.1, §5.2).
 - The MSAA sample counts and the host-cap loss (§6).
@@ -458,20 +464,22 @@ call uses a **hash** splat, because an array splat is expanded positionally and 
 `-Percent` as an argument rather than as a parameter name.
 
 What the suites cannot check is the part that needs the game: that the guest actually consumes
-`PSVRFrameSequence` and renders more frames. Two cells on the 120 configuration already exist
-(`docs/performance/target-ledger.md` §4.6) and they were run **without a headset**, which the ledger
-itself concludes is not where this key can be judged. The procedure for the measurement that would
-settle it is:
+`PSVRFrameSequence` and renders more frames. Two headless cells on the 120 configuration already exist
+(`docs/performance/target-ledger.md` §4.6) and they were run with nobody wearing the headset, which the
+ledger itself records as the reason they cannot judge this key (§4.4). The procedure for the
+measurement that would settle it is:
 
 1. Copy the game to a **private shadow** (never the original). Set the shadow's
    `gameproject\saved\config\ps4\engine.ini` to the state under test, or point `render-config.ps1` at
    the shadow with `-Eboot`.
 2. Fix everything else between the arms: same build, same scene, same `render_percent`, same `refresh`,
    same presentation size.
-3. Run one arm with `frame_mode=60` and one with `frame_mode=120`, **with the headset worn**, and
-   compare **unique rendered frames** — the emulator's own frame-stat series and draw/Mpx counts —
-   never the compositor's or the headset's cadence. `docs/integration/HEADSET-ACCEPTANCE.md` §7 defines
-   what to record.
+3. Run one arm with `frame_mode=60` and one with `frame_mode=120` and compare **unique rendered
+   frames** — the emulator's own frame-stat series and draw/Mpx counts — never the compositor's or the
+   headset's cadence. `tools/benchmark/headless-gameplay.ps1` reaches the gameplay band (≈1,868 draws,
+   ≈876 Mpx) without a headset, which is where the two configurations can be compared directly; read
+   §4.4 before treating an unattended arm as a statement about a worn session.
+   `docs/integration/HEADSET-ACCEPTANCE.md` §7 defines what to record.
 4. Read the effective guest values back with `pwsh -File pc-vr/render-config.ps1 -Eboot <shadow> -List`,
    and confirm them against the render-target dimensions and the Vulkan sample counts the emulator
    reports (`SHADPS4_QUALITY_DIAG=1`), not against the settings file alone.
