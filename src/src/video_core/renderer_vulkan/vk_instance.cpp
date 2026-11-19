@@ -23,6 +23,7 @@
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_foveation.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_vulkan/vk_image_reuse_pool.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 
 #include <vk_mem_alloc.h>
@@ -211,6 +212,7 @@ Instance::Instance(Frontend::WindowSDL& window, s32 physical_device_index,
 
 Instance::~Instance() {
     ImGui::Core::Shutdown(GetDevice());
+    ImageReusePool::Get().Shutdown();
     vmaDestroyAllocator(allocator);
 }
 

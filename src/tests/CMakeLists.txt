@@ -1234,6 +1234,36 @@ gtest_discover_tests(shadps4_image_coverage_test
 )
 
 # ===========================================================================
+# Vulkan image reuse shape checks (pure metadata; no Vulkan device required)
+# ===========================================================================
+
+add_executable(shadps4_image_reuse_pool_test
+    video_core/test_image_reuse_pool.cpp
+)
+
+target_include_directories(shadps4_image_reuse_pool_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/tests
+)
+target_compile_features(shadps4_image_reuse_pool_test PRIVATE cxx_std_23)
+target_compile_definitions(shadps4_image_reuse_pool_test PRIVATE NOMINMAX)
+
+target_link_libraries(shadps4_image_reuse_pool_test PRIVATE
+    GTest::gtest_main
+    Vulkan::Headers
+    fmt::fmt
+    spdlog::spdlog
+)
+
+list(APPEND TEST_TARGETS shadps4_image_reuse_pool_test)
+
+gtest_discover_tests(shadps4_image_reuse_pool_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)
+
+# ===========================================================================
 # GPU submission timing: the arithmetic behind SHADPS4_GPU_TIMING's numbers
 #
 # Header-only on purpose: the busy/gap rules decide what the frame statistics report and every

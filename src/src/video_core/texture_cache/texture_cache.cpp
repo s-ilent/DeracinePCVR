@@ -1589,6 +1589,7 @@ void TextureCache::DeleteImage(ImageId image_id) {
     scheduler.DeferOperation([this, image_id] {
         Image& image = slot_images[image_id];
         for (auto& backing : image.backing_images) {
+            backing.image.MarkGpuIdleForReuse();
             for (const ImageViewId image_view_id : backing.image_view_ids) {
                 slot_image_views.erase(image_view_id);
             }

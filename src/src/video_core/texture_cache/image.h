@@ -17,6 +17,7 @@
 
 #include <deque>
 #include <optional>
+#include <vector>
 #include <boost/container/small_vector.hpp>
 #include <boost/container/static_vector.hpp>
 
@@ -54,13 +55,26 @@ struct UniqueImage {
     UniqueImage(UniqueImage&& other)
         : allocator{std::exchange(other.allocator, VK_NULL_HANDLE)},
           allocation{std::exchange(other.allocation, VK_NULL_HANDLE)},
+          allocation_bytes{std::exchange(other.allocation_bytes, 0)},
           image{std::exchange(other.image, VK_NULL_HANDLE)}, image_ci{std::move(other.image_ci)},
-          view_formats{std::move(other.view_formats)} {}
+          queue_family_indices{std::move(other.queue_family_indices)},
+          reuse_safe{std::exchange(other.reuse_safe, false)},
+          view_formats{std::move(other.view_formats)} {
+        if (!queue_family_indices.empty()) {
+            image_ci.pQueueFamilyIndices = queue_family_indices.data();
+        }
+    }
     UniqueImage& operator=(UniqueImage&& other) {
         image = std::exchange(other.image, VK_NULL_HANDLE);
         allocator = std::exchange(other.allocator, VK_NULL_HANDLE);
         allocation = std::exchange(other.allocation, VK_NULL_HANDLE);
+        allocation_bytes = std::exchange(other.allocation_bytes, 0);
         image_ci = std::move(other.image_ci);
+        reuse_safe = std::exchange(other.reuse_safe, false);
+        queue_family_indices = std::move(other.queue_family_indices);
+        if (!queue_family_indices.empty()) {
+            image_ci.pQueueFamilyIndices = queue_family_indices.data();
+        }
         view_formats = std::move(other.view_formats);
         return *this;
     }
@@ -78,6 +92,9 @@ struct UniqueImage {
     }
 
     void Destroy();
+    void MarkGpuIdleForReuse() {
+        reuse_safe = true;
+    }
 
     operator vk::Image() const {
         return image;
@@ -91,8 +108,11 @@ public:
     vk::Device device{};
     VmaAllocator allocator{};
     VmaAllocation allocation{};
+    u64 allocation_bytes{};
     vk::Image image{};
     vk::ImageCreateInfo image_ci{};
+    std::vector<u32> queue_family_indices;
+    bool reuse_safe{};
     /// Empty when views may have any compatible format.
     boost::container::static_vector<vk::Format, 4> view_formats;
 };

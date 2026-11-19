@@ -12,6 +12,7 @@
 #include "video_core/renderer_vulkan/vk_foveation.h"
 #include "video_core/renderer_vulkan/vk_gpu_profile.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_vulkan/vk_image_reuse_pool.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/texture_cache/blit_helper.h"
 #include "video_core/texture_cache/image.h"
@@ -92,28 +93,68 @@ static vk::FormatFeatureFlags2 FormatFeatureFlags(const vk::ImageUsageFlags usag
 }
 
 UniqueImage::~UniqueImage() {
-    if (image) {
-        ScopedTimer timed{ImageStats::destroy_ns};
-        ImageStats::NoteImageDestroyed();
-        vmaDestroyImage(allocator, image, allocation);
-    }
+    Destroy();
 }
 
 void UniqueImage::Destroy() {
-    if (image) {
-        ScopedTimer timed{ImageStats::destroy_ns};
-        ImageStats::NoteImageDestroyed();
-        vmaDestroyImage(allocator, image, allocation);
+    if (!image) {
+        return;
+    }
+    ImageReusePool::Entry entry{};
+    entry.shape.image_ci = image_ci;
+    entry.shape.view_formats.assign(view_formats.begin(), view_formats.end());
+    if (image_ci.queueFamilyIndexCount != 0 && image_ci.pQueueFamilyIndices != nullptr) {
+        entry.shape.queue_family_indices.assign(
+            image_ci.pQueueFamilyIndices,
+            image_ci.pQueueFamilyIndices + image_ci.queueFamilyIndexCount);
+        entry.shape.image_ci.pQueueFamilyIndices = entry.shape.queue_family_indices.data();
+    }
+    entry.image = image;
+    entry.allocation = allocation;
+    entry.allocator = allocator;
+    entry.bytes = allocation_bytes;
+    // TextureCache::DeleteImage erases the UniqueImage only from a Scheduler::DeferOperation;
+    // PopPendingOperations runs it only after the master semaphore reports that tick complete.
+    // Thus a pooled image is GPU-idle before another owner can acquire it. Direct destruction
+    // paths remain conservative: a failed release falls back to the original VMA destroy.
+    const bool reuse_was_safe = reuse_safe;
+    if (reuse_safe && ImageReusePool::Get().Release(std::move(entry))) {
         image = vk::Image{};
         allocation = {};
+        allocation_bytes = 0;
+        reuse_safe = false;
+        return;
     }
+    ScopedTimer timed{ImageStats::destroy_ns};
+    ImageStats::NoteImageDestroyed();
+    if (reuse_was_safe && ImageReusePool::Enabled()) {
+        ImageStats::NoteReuseDestroyed();
+    }
+    vmaDestroyImage(allocator, image, allocation);
+    image = vk::Image{};
+    allocation = {};
+    allocation_bytes = 0;
+    reuse_safe = false;
 }
 
 void UniqueImage::Create(const vk::ImageCreateInfo& image_ci,
                          std::span<const vk::Format> view_formats_) {
-    this->image_ci = image_ci;
-    view_formats.assign(view_formats_.begin(), view_formats_.end());
     ASSERT(!image);
+    this->image_ci = image_ci;
+    queue_family_indices.clear();
+    if (image_ci.queueFamilyIndexCount != 0 && image_ci.pQueueFamilyIndices != nullptr) {
+        queue_family_indices.assign(image_ci.pQueueFamilyIndices,
+                                    image_ci.pQueueFamilyIndices + image_ci.queueFamilyIndexCount);
+        this->image_ci.pQueueFamilyIndices = queue_family_indices.data();
+    }
+    view_formats.assign(view_formats_.begin(), view_formats_.end());
+    ImageReusePool::Entry reused{};
+    if (ImageReusePool::Get().Acquire(image_ci, view_formats_, allocator, reused)) {
+        image = reused.image;
+        allocation = reused.allocation;
+        allocation_bytes = reused.bytes;
+        return;
+    }
     const VmaAllocationCreateInfo alloc_info = {
         .flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT,
         .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
@@ -144,6 +185,7 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci,
     ASSERT_MSG(result == VK_SUCCESS, "Failed allocating image with error {}",
                vk::to_string(vk::Result{result}));
     ImageStats::NoteImageCreated(alloc_info_out.size);
+    allocation_bytes = alloc_info_out.size;
     image = vk::Image{unsafe_image};
 }
 
