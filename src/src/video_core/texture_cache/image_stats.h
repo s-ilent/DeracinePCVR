@@ -93,6 +93,33 @@ public:
         images_destroyed.fetch_add(1, std::memory_order_relaxed);
     }
 
+    /// The image recycler handed back an image instead of the driver creating one. Nothing in this
+    /// tree calls it, so the fields read 0; they exist so the line's shape does not change.
+    static void NoteRecyclerHit() {
+        if (!Enabled()) {
+            return;
+        }
+        recycler_hits.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    /// No image of that shape was in the recycler, so one has to be created.
+    static void NoteRecyclerMiss() {
+        if (!Enabled()) {
+            return;
+        }
+        recycler_misses.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    /// What the recycler is holding right now. A gauge, not a rate.
+    static void SetRecyclerPool(u32 images, u64 bytes, u64 destroys) {
+        if (!Enabled()) {
+            return;
+        }
+        recycler_pool_images.store(images, std::memory_order_relaxed);
+        recycler_pool_bytes.store(bytes, std::memory_order_relaxed);
+        recycler_destroys.store(destroys, std::memory_order_relaxed);
+    }
+
     /// One compatible allocation was reused instead of created through VMA.
     static void NoteReuseHit() {
         if (Enabled()) {
@@ -198,8 +225,9 @@ public:
         LOG_INFO(Render_Vulkan,
                  "RENDERSTAT expands={} covered_expands={} refreshes={} upload_mips={} "
                  "upload_mb={:.1f} skipped_mips={} skipped_mb={:.1f} images_created={} "
-                 "images_destroyed={} image_mb={:.1f} reuse_hits={} reuse_misses={} "
-                 "reuse_bytes={:.1f} reuse_destroyed={} copies={} copy_mb={:.1f} "
+                 "images_destroyed={} image_mb={:.1f} recycler_hits={} recycler_misses={} "
+                 "pool_images={} pool_mb={:.1f} recycler_destroys={} reuse_hits={} "
+                 "reuse_misses={} reuse_bytes={:.1f} reuse_destroyed={} copies={} copy_mb={:.1f} "
                  "buffered_copies={} create_ms={:.3f} destroy_ms={:.3f} overlap_ms={:.3f} "
                  "depth_ms={:.3f} expand_ms={:.3f} refresh_ms={:.3f} vram_mb={:.1f} "
                  "vram_blocks={}",
@@ -209,7 +237,10 @@ public:
                  static_cast<double>(skipped_bytes.exchange(0)) * ToMiB,
                  images_created.exchange(0), images_destroyed.exchange(0),
                  static_cast<double>(image_bytes_created.exchange(0)) * ToMiB,
-                 reuse_hits.exchange(0), reuse_misses.exchange(0),
+                 recycler_hits.exchange(0), recycler_misses.exchange(0),
+                 recycler_pool_images.load(),
+                 static_cast<double>(recycler_pool_bytes.load()) * ToMiB,
+                 recycler_destroys.load(), reuse_hits.exchange(0), reuse_misses.exchange(0),
                  static_cast<double>(reuse_bytes.load()) * ToMiB,
                  reuse_destroyed.exchange(0), copies.exchange(0),
                  static_cast<double>(copy_bytes.exchange(0)) * ToMiB,
@@ -237,6 +268,14 @@ private:
     static inline std::atomic<u64> images_created{};
     static inline std::atomic<u64> images_destroyed{};
     static inline std::atomic<u64> image_bytes_created{};
+    // Kept from the tree the line was extracted from even though nothing here drives them: the
+    // harness scripts parse these names, and a RENDERSTAT line has to stay comparable with the
+    // historic runs it is read against.
+    static inline std::atomic<u64> recycler_hits{};
+    static inline std::atomic<u64> recycler_misses{};
+    static inline std::atomic<u32> recycler_pool_images{};
+    static inline std::atomic<u64> recycler_pool_bytes{};
+    static inline std::atomic<u64> recycler_destroys{};
     static inline std::atomic<u64> reuse_hits{};
     static inline std::atomic<u64> reuse_misses{};
     static inline std::atomic<u64> reuse_bytes{};
