@@ -100,31 +100,33 @@ void UniqueImage::Destroy() {
     if (!image) {
         return;
     }
-    ImageReusePool::Entry entry{};
-    entry.shape.image_ci = image_ci;
-    entry.shape.view_formats.assign(view_formats.begin(), view_formats.end());
-    if (image_ci.queueFamilyIndexCount != 0 && image_ci.pQueueFamilyIndices != nullptr) {
-        entry.shape.queue_family_indices.assign(
-            image_ci.pQueueFamilyIndices,
-            image_ci.pQueueFamilyIndices + image_ci.queueFamilyIndexCount);
-        entry.shape.image_ci.pQueueFamilyIndices = entry.shape.queue_family_indices.data();
-    }
-    entry.image = image;
-    entry.allocation = allocation;
-    entry.allocator = allocator;
-    entry.bytes = allocation_bytes;
-    // TextureCache::DeleteImage erases the UniqueImage only from a Scheduler::DeferOperation;
-    // PopPendingOperations runs it only after the master semaphore reports that tick complete.
-    // Thus a pooled image is GPU-idle before another owner can acquire it. Direct destruction
-    // paths remain conservative: a failed release falls back to the original VMA destroy.
     const bool reuse_was_safe = reuse_safe;
-    if (reuse_safe && ImageReusePool::Get().Release(std::move(entry))) {
-        image = vk::Image{};
-        allocation = {};
-        allocation_bytes = 0;
-        reuse_safe = false;
-        return;
+    if (reuse_safe) {
+        ImageReusePool::Entry entry{};
+        entry.shape.image_ci = image_ci;
+        entry.shape.view_formats.assign(view_formats.begin(), view_formats.end());
+        if (image_ci.queueFamilyIndexCount != 0 && image_ci.pQueueFamilyIndices != nullptr) {
+            entry.shape.queue_family_indices.assign(
+                image_ci.pQueueFamilyIndices,
+                image_ci.pQueueFamilyIndices + image_ci.queueFamilyIndexCount);
+            entry.shape.image_ci.pQueueFamilyIndices = entry.shape.queue_family_indices.data();
+        }
+        entry.image = image;
+        entry.allocation = allocation;
+        entry.allocator = allocator;
+        entry.bytes = allocation_bytes;
+        // TextureCache::DeleteImage erases the UniqueImage only from a Scheduler::DeferOperation;
+        // PopPendingOperations runs it only after the master semaphore reports that tick complete.
+        // Thus a pooled image is GPU-idle before another owner can acquire it.
+        if (ImageReusePool::Get().Release(std::move(entry))) {
+            image = vk::Image{};
+            allocation = {};
+            allocation_bytes = 0;
+            reuse_safe = false;
+            return;
+        }
     }
+    // Direct destruction paths are not marked idle and retain the existing VMA destruction path.
     ScopedTimer timed{ImageStats::destroy_ns};
     ImageStats::NoteImageDestroyed();
     if (reuse_was_safe && ImageReusePool::Enabled()) {
