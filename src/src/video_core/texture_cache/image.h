@@ -65,6 +65,10 @@ struct UniqueImage {
         }
     }
     UniqueImage& operator=(UniqueImage&& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Destroy();
         image = std::exchange(other.image, VK_NULL_HANDLE);
         allocator = std::exchange(other.allocator, VK_NULL_HANDLE);
         allocation = std::exchange(other.allocation, VK_NULL_HANDLE);

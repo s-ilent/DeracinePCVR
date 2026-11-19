@@ -211,7 +211,14 @@ Instance::Instance(Frontend::WindowSDL& window, s32 physical_device_index,
 }
 
 Instance::~Instance() {
-    ImGui::Core::Shutdown(GetDevice());
+    const vk::Device device = GetDevice();
+    ImGui::Core::Shutdown(device);
+    // ImGui shutdown is idempotent and may skip its wait when another instance shut it down first.
+    // Always idle the device before destroying cached images and their VMA allocations.
+    if (const vk::Result result = device.waitIdle(); result != vk::Result::eSuccess) {
+        LOG_WARNING(Render_Vulkan, "Failed to wait for Vulkan device idle during teardown: {}",
+                    vk::to_string(result));
+    }
     ImageReusePool::Get().Shutdown();
     vmaDestroyAllocator(allocator);
 }

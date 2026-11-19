@@ -66,7 +66,7 @@ bool ImageReusePool::Enabled() {
 
 ImageReusePool& ImageReusePool::Get() {
     // Function-local lifetime avoids namespace-scope initialization-order dependencies. The
-    // destructor intentionally does not call Vulkan: Instance::Instance shuts this pool down
+    // destructor intentionally does not call Vulkan: Instance::~Instance shuts this pool down
     // before destroying its VMA allocator.
     static ImageReusePool pool;
     return pool;
