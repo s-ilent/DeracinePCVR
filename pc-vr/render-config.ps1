@@ -17,10 +17,11 @@
 #   frames  (PSVRFrameSequence, [/Script/MorpheusEditor.MorpheusRuntimeSettings]): which PSVR frame
 #           sequence the title asks its headset path for. "120" writes the tested native-render mode
 #           (Render120Scanout120, with bSmoothFrameRate=False, the 22..250 smoothed range, t.MaxFPS=0
-#           and r.FinishCurrentFrame=0 that were measured with it); "60" writes nothing and leaves the
-#           game's own sequence alone. This is the setting that made the title submit 120 unique
-#           frames a second instead of 60 (measured 2026-11-17: 1932 unique frames in 16.1 s, vblank
-#           waits per frame 1.19 against 2.03); see the document for what was and was not verified.
+#           and r.FinishCurrentFrame=0 that were measured with it). "60" puts the frame-mode keys
+#           back to the values the file had before DéracinePCVR ever wrote them, and touches nothing
+#           else. This is the setting that made the title submit 120 unique frames a second instead
+#           of 60 (measured 2026-11-17: 1932 unique frames in 16.1 s, vblank waits per frame 1.19
+#           against 2.03); see the document for what was and was not verified.
 #
 #   msaa    (r.MSAACount, [SystemSettings]): the samples the game's own scene targets are made
 #           with. The game ships with 2. Measured with the emulator's quality diagnostics at 1, 2
@@ -28,9 +29,13 @@
 #           many samples. This is NOT the emulator's sample cap (SHADPS4_MAX_MSAA, `msaa=` in
 #           settings.txt), which limits what the host pictures may use.
 #
-# Every value is produced from the file as it was before DéracinePCVR first changed it (kept beside
-# it as engine.ini.deracine-original), so switching a mode on and off is idempotent and no unrelated
-# key or section is ever rewritten, reordered or dropped.
+# Every change is made to the file as it is now, not to a remembered copy of it: a key the game or
+# the player changed after the last time this ran is still there afterwards, and so are section
+# order, unrelated keys, their duplicates, the file's line endings and its last newline. The copy
+# kept before the first change (engine.ini.deracine-original) is never written to again; it is read
+# for exactly two things - putting the whole file back (-Restore), and knowing what the frame-mode
+# keys were before this project first wrote them, so that frame_mode=60 can restore those keys and
+# only those.
 #
 # Nothing here touches the game's own assets: not eboot.bin, not the pak, not the configs inside it.
 # The saved configuration is a file the game itself writes at runtime, and it is backed up here
@@ -74,6 +79,10 @@ $FrameMode120 = @(
 $MorpheusSection = "/Script/MorpheusEditor.MorpheusRuntimeSettings"
 $MorpheusKey = "PSVRFrameSequence"
 $FrameSequence120 = "Render120Scanout120"
+# Every key the frame-mode option owns. frame_mode=120 sets all of them to the tested values;
+# frame_mode=60 puts all of them back to what the file had before this project first wrote them.
+$FrameModeKeys = @($FrameMode120) + @(@{ Section = $MorpheusSection; Key = $MorpheusKey
+                                        Value = $FrameSequence120 })
 
 function Say([string]$text) {
     if (-not $Quiet) { Write-Output $text }
@@ -177,6 +186,97 @@ function Set-IniValue($parsed, [string]$section, [string]$key, [string]$value) {
         $result.Add([pscustomobject]@{ Text = "$key=$value"; Section = $section })
     }
     return [pscustomobject]@{ Lines = $result; Dropped = $dropped }
+}
+
+# Whether a section sets a key at all. Distinct from Get-ManagedValue, which cannot tell a key that
+# is absent from one that is present and empty.
+function Test-IniKeyInSection($parsed, [string]$section, [string]$key) {
+    $inSection = $false
+    foreach ($entry in $parsed) {
+        $trimmed = $entry.Text.Trim()
+        if ($trimmed -match '^\[(.+)\]$') {
+            $inSection = ($matches[1] -ieq $section)
+            continue
+        }
+        if ($inSection -and $trimmed -match ('^\s*' + [regex]::Escape($key) + '\s*=')) { return $true }
+    }
+    return $false
+}
+
+# Whether a section header is in the file at all.
+function Test-IniSection($parsed, [string]$section) {
+    foreach ($entry in $parsed) {
+        if ($entry.Text.Trim() -match '^\[(.+)\]$' -and $matches[1] -ieq $section) { return $true }
+    }
+    return $false
+}
+
+# Removes every entry that sets `key` inside `section`. Nothing else moves.
+function Remove-IniKey($parsed, [string]$section, [string]$key) {
+    $result = New-Object System.Collections.Generic.List[object]
+    $inSection = $false
+    $removed = 0
+    foreach ($entry in $parsed) {
+        $trimmed = $entry.Text.Trim()
+        if ($trimmed -match '^\[(.+)\]$') {
+            $inSection = ($matches[1] -ieq $section)
+            $result.Add($entry)
+            continue
+        }
+        if ($inSection -and $trimmed -match ('^\s*' + [regex]::Escape($key) + '\s*=')) {
+            $removed++
+            continue
+        }
+        $result.Add($entry)
+    }
+    return [pscustomobject]@{ Lines = $result; Removed = $removed }
+}
+
+# Drops a section this project created only to carry a key it has just removed - and the one blank
+# line that was put in front of it, if it was. `endsBlank` is whether the file, before it was first
+# changed, already ended with a blank line: it is the difference between "a blank was added" and
+# "that blank was already there", and it is what makes putting the key back leave the file byte for
+# byte as it was. A section the original file already had is never dropped, however empty it is.
+function Remove-CreatedSection($parsed, [string]$section, [bool]$endsBlank) {
+    $header = -1
+    $filled = 0
+    for ($i = 0; $i -lt $parsed.Count; $i++) {
+        $trimmed = $parsed[$i].Text.Trim()
+        if ($trimmed -match '^\[(.+)\]$') {
+            if ($header -ge 0) { break } # the section being looked at has ended
+            if ($matches[1] -ieq $section) { $header = $i }
+            continue
+        }
+        if ($header -ge 0 -and $trimmed -ne "") { $filled++ }
+    }
+    if ($header -lt 0 -or $filled -gt 0) { return , $parsed }
+    $result = New-Object System.Collections.Generic.List[object]
+    for ($i = 0; $i -lt $parsed.Count; $i++) {
+        if ($i -eq $header) { continue }
+        if (-not $endsBlank -and $i -eq ($header - 1) -and $parsed[$i].Text.Trim() -eq "") { continue }
+        $result.Add($parsed[$i])
+    }
+    return , $result
+}
+
+# Puts one key back to what the file had before this project first wrote it: its earlier value where
+# there was one, and gone where there was not. `original` is the file as kept, which is never written
+# to; `parsed` is the file as it is now.
+function Restore-IniKey($parsed, $original, [string]$section, [string]$key, [bool]$originalEndsBlank) {
+    if (Test-IniKeyInSection $original $section $key) {
+        $set = Set-IniValue $parsed $section $key (Get-ManagedValue $original $section $key)
+        return [pscustomobject]@{ Lines = $set.Lines; Dropped = $set.Dropped; Removed = 0; Section = $false }
+    }
+    $removed = Remove-IniKey $parsed $section $key
+    $lines = $removed.Lines
+    $sectionDropped = $false
+    if ($removed.Removed -gt 0 -and -not (Test-IniSection $original $section)) {
+        $without = Remove-CreatedSection $lines $section $originalEndsBlank
+        if ($without.Count -ne $lines.Count) { $sectionDropped = $true }
+        $lines = $without
+    }
+    return [pscustomobject]@{ Lines = $lines; Dropped = 0; Removed = $removed.Removed
+                              Section = $sectionDropped }
 }
 
 # The game's file is written by the guest, which may use bare newlines. Whatever it uses is what a
@@ -288,11 +388,16 @@ if ($showMsaa -ne "") {
     $guestMsaa = $parsedMsaa
 }
 
-# --- the file the game reads, from what it was before we ever changed it ---------------------------
-$original = Get-OriginalLines
-$parsed = @(Get-IniLines $original)
+# --- the file the game reads, as it is now ---------------------------------------------------------
+# The base is what is in the file at this moment, so anything written into it since the last time
+# this ran - by the game, or by hand - is still there after this. The kept original is read only for
+# the values the frame-mode keys had before this project first wrote them.
+$original = @(Get-IniLines (Get-OriginalLines))
+$parsed = @(Get-IniLines (Read-IniLines $ini $existed))
+$originalEndsBlank = ($original.Count -gt 1 -and $original[$original.Count - 1].Text.Trim() -eq "")
 $notes = @()
 $dropped = 0
+$restored = @()
 
 if ($percent -gt 0) {
     $set = Set-IniValue $parsed "SystemSettings" "r.ScreenPercentage" "$percent"
@@ -305,35 +410,41 @@ if ($guestMsaa -gt 0) {
     $dropped += $set.Dropped
 }
 if ($frameMode -eq "120") {
-    foreach ($entry in $FrameMode120) {
+    foreach ($entry in $FrameModeKeys) {
         $set = Set-IniValue $parsed $entry.Section $entry.Key $entry.Value
         $parsed = [object[]]$set.Lines
         $dropped += $set.Dropped
     }
-    $set = Set-IniValue $parsed $MorpheusSection $MorpheusKey $FrameSequence120
-    $parsed = [object[]]$set.Lines
-    $dropped += $set.Dropped
     $notes += "native 120: $FrameSequence120 with smoothing off, t.MaxFPS=0 and r.FinishCurrentFrame=0"
 }
 if ($frameMode -eq "60") {
-    # The game's own sequence: whatever the untouched file says (the key is not in the shipped saved
-    # configuration at all), and no companion keys either.
-    $seqInOriginal = Get-ManagedValue (Get-IniLines $original) $MorpheusSection $MorpheusKey
-    if ($seqInOriginal -eq $FrameSequence120) {
-        Report "own-frame-sequence" ("the game's own file already asks for $seqInOriginal, which " +
-            "frame_mode=60 does not change: use render_restore=1 to put that file back, or " +
-            "frame_mode=120 to keep it deliberately")
+    # The frame-mode keys go back to the values the file had before this project first wrote them -
+    # those keys and no others, so anything changed in the file since is left alone.
+    foreach ($entry in $FrameModeKeys) {
+        $back = Restore-IniKey $parsed $original $entry.Section $entry.Key $originalEndsBlank
+        $parsed = [object[]]$back.Lines
+        $dropped += $back.Dropped
+        if ($back.Removed -gt 0 -or $back.Section) { $restored += $entry.Key }
     }
-    $notes += "native 60: the game's own frame sequence, no change to smoothing or frame finishing"
+    if ($restored.Count -gt 0) {
+        $notes += "native 60: the frame-mode keys this project sets are back to what the file had (" +
+                  ($restored -join ", ") + "), and nothing else in it was changed"
+    } else {
+        $notes += "native 60: the file already had the frame-mode keys as the frame mode left them"
+    }
+    if ((Get-ManagedValue $original $MorpheusSection $MorpheusKey) -eq $FrameSequence120) {
+        Report "own-frame-sequence" ("the game's own file already asks for $FrameSequence120, so " +
+            "frame_mode=60 puts that value back rather than removing it: use render_restore=1 to put " +
+            "the whole file back, or frame_mode=120 to keep it deliberately")
+    }
 }
-$originalText = if ($existed) { [System.IO.File]::ReadAllText($ini) } else { "" }
-$newline = Get-Newline $originalText
+$currentText = if ($existed) { [System.IO.File]::ReadAllText($ini) } else { "" }
+$newline = Get-Newline $currentText
 $text = (($parsed | ForEach-Object { $_.Text }) -join $newline)
 # ReadAllLines drops the file's last line terminator; a file that ended with one keeps it, so what is
 # written back is the same file with the settings changed and nothing else about it different.
-if ($originalText.EndsWith("`n") -and $parsed.Count -gt 0) { $text += $newline }
-$current = $originalText
-if ((Get-ComparableText $current) -eq (Get-ComparableText $text)) {
+if ($currentText.EndsWith("`n") -and $parsed.Count -gt 0) { $text += $newline }
+if ((Get-ComparableText $currentText) -eq (Get-ComparableText $text)) {
     Report "unchanged" ("$ini already holds what was asked for")
     exit 0
 }

@@ -137,6 +137,76 @@ Check-True "a file that ends with a newline still does" ((Get-IniText $trailing)
 Check-False "and gains no second one" ((Get-IniText $trailing).EndsWith("`n`n"))
 Check "and is otherwise the game's own file with only the scale changed" ((Get-IniText $trailing).Replace("r.ScreenPercentage=200", "r.ScreenPercentage=130")) (($original -join "`n") + "`n")
 
+# --- what is written into the file after a mode is applied must survive ---------------------------
+# The regression this covers: the settings used to be rebuilt from the kept original on every run,
+# which silently threw away anything the game or the player had written into the file since.
+$keep = New-Game "keep-external"
+$iniKeep = Join-Path $keep "gameproject\saved\config\ps4\engine.ini"
+[System.IO.File]::WriteAllText($iniKeep, ($original -join "`n") + "`n")
+[void](Invoke-RenderConfig $keep @("-Percent", "200", "-FrameMode", "120", "-Quiet"))
+$backupHash = (Get-FileHash "$iniKeep.deracine-original" -Algorithm SHA256).Hash
+$backupText = [System.IO.File]::ReadAllText("$iniKeep.deracine-original")
+# The game (or the player) writes something of its own into the file afterwards.
+$edited = (Get-IniText $keep).Replace("r.ForwardShading=True", "r.ForwardShading=False`nr.ShadowQuality=2")
+[System.IO.File]::WriteAllText($iniKeep, $edited)
+Check "the external edit is in the file before the switch" (Get-IniValue $keep "/Script/Engine.RendererSettings" "r.ShadowQuality") "2"
+# Switching the frame mode back must keep it, and must put the frame-mode keys back.
+$out = Invoke-RenderConfig $keep @("-FrameMode", "60", "-Quiet")
+Check "switching back to 60 reports itself" (Get-Report $out) "applied"
+Check "an unrelated key the game wrote afterwards survives the switch" (Get-IniValue $keep "/Script/Engine.RendererSettings" "r.ForwardShading") "False"
+Check "another unrelated key it wrote survives too" (Get-IniValue $keep "/Script/Engine.RendererSettings" "r.ShadowQuality") "2"
+Check "the frame sequence is gone again" (Get-IniValue $keep "/Script/MorpheusEditor.MorpheusRuntimeSettings" "PSVRFrameSequence") ""
+Check "smoothing is the game's own again" (Get-IniValue $keep "/Script/Engine.Engine" "bSmoothFrameRate") "True"
+Check "the smoothed range is the game's own again" (Get-IniValue $keep "/Script/Engine.Engine" "SmoothedFrameRateRange") "(LowerBound=(Type=Inclusive,Value=22),UpperBound=(Type=Exclusive,Value=62))"
+Check "the frame is finished as the game asks again" (Get-IniValue $keep "SystemSettings" "r.FinishCurrentFrame") "1"
+Check "t.MaxFPS is gone again" (Get-IniValue $keep "SystemSettings" "t.MaxFPS") ""
+Check "the render scale is untouched by the frame mode" (Get-IniValue $keep "SystemSettings" "r.ScreenPercentage") "200"
+# Changing the render scale instead must keep it too.
+[void](Invoke-RenderConfig $keep @("-Percent", "250", "-Quiet"))
+Check "an unrelated key survives a render-scale change as well" (Get-IniValue $keep "/Script/Engine.RendererSettings" "r.ShadowQuality") "2"
+Check "and the render scale is the new one" (Get-IniValue $keep "SystemSettings" "r.ScreenPercentage") "250"
+# The kept original was never written to, through any of it.
+Check "the kept original is still the file as it was" ((Get-FileHash "$iniKeep.deracine-original" -Algorithm SHA256).Hash) $backupHash
+Check "and is still the game's own file, byte for byte" ([System.IO.File]::ReadAllText("$iniKeep.deracine-original")) $backupText
+# Putting the whole file back is still the one thing that drops later edits - and it says so.
+$out = Invoke-RenderConfig $keep @("-Restore", "-Quiet")
+Check "the whole file can still be put back" (Get-Report $out) "restored"
+Check "which takes the later external edit with it, as documented" (Get-IniValue $keep "/Script/Engine.RendererSettings" "r.ShadowQuality") ""
+
+# A file with no Morpheus section at all - what the private shadows look like - must come back byte
+# for byte when the mode is switched off again, section header and blank line included.
+foreach ($ending in @("", "`n")) {
+    $name = "bare-" + $(if ($ending -eq "") { "noeol" } else { "eol" })
+    $bare = New-Game $name
+    $iniBare = Join-Path $bare "gameproject\saved\config\ps4\engine.ini"
+    $bareOriginal = "[SystemSettings]`nr.ScreenPercentage=300`nr.MSAACount=2" + $ending
+    [System.IO.File]::WriteAllText($iniBare, $bareOriginal)
+    [void](Invoke-RenderConfig $bare @("-FrameMode", "120", "-Quiet"))
+    Check "120 gives a file with no Morpheus section one ($name)" (Get-IniValue $bare "/Script/MorpheusEditor.MorpheusRuntimeSettings" "PSVRFrameSequence") "Render120Scanout120"
+    Check "and adds only the sections the mode needs ($name)" (Get-IniSections (Get-IniText $bare)) "SystemSettings,/Script/Engine.Engine,/Script/MorpheusEditor.MorpheusRuntimeSettings"
+    [void](Invoke-RenderConfig $bare @("-FrameMode", "60", "-Quiet"))
+    Check "and switching it off leaves that file byte for byte as it was ($name)" (Get-IniText $bare) $bareOriginal
+}
+
+# A key that is not ours, written twice, is not ours to merge either.
+$dupes = New-Game "unrelated-dupes"
+$iniDupes = Join-Path $dupes "gameproject\saved\config\ps4\engine.ini"
+[System.IO.File]::WriteAllText($iniDupes, "[SystemSettings]`nr.ScreenPercentage=300`nr.ShadowQuality=1`nr.ShadowQuality=2`nr.MSAACount=2")
+[void](Invoke-RenderConfig $dupes @("-FrameMode", "120", "-Quiet"))
+Check "an unrelated key written twice is left twice" (@([regex]::Matches([System.IO.File]::ReadAllText($iniDupes), 'r\.ShadowQuality=')).Count) 2
+[void](Invoke-RenderConfig $dupes @("-Percent", "200", "-FrameMode", "60", "-Quiet"))
+Check "and is still twice after the mode is switched off" (@([regex]::Matches([System.IO.File]::ReadAllText($iniDupes), 'r\.ShadowQuality=')).Count) 2
+Check "while the managed scale is the one asked for" (Get-IniValue $dupes "SystemSettings" "r.ScreenPercentage") "200"
+
+# The game's own file already holding the 120 sequence is put back to that value, not emptied.
+$keptSeq = New-Game "kept-sequence"
+$iniKept = Join-Path $keptSeq "gameproject\saved\config\ps4\engine.ini"
+[System.IO.File]::WriteAllText($iniKept, ($original -join "`n").Replace("bEnableMorpheus=True", "bEnableMorpheus=True`nPSVRFrameSequence=Render120Scanout120"))
+[void](Invoke-RenderConfig $keptSeq @("-FrameMode", "60", "-Quiet"))
+Check "a sequence the game's own file had is put back, not removed" (Get-IniValue $keptSeq "/Script/MorpheusEditor.MorpheusRuntimeSettings" "PSVRFrameSequence") "Render120Scanout120"
+Check "and the warning says so" (Get-Report (Invoke-RenderConfig $keptSeq @("-FrameMode", "60", "-Quiet"))) "own-frame-sequence"
+
+
 # --- refusals ---------------------------------------------------------------------------------
 $beforeRefusal = Get-IniValue $game "SystemSettings" "r.ScreenPercentage"
 $out = Invoke-RenderConfig $game @("-Percent", "400", "-Quiet")

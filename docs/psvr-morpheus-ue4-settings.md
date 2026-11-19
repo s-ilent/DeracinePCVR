@@ -133,13 +133,18 @@ explainable if that file's `[SystemSettings]` value is what the Morpheus path en
 
 `render-config.ps1` therefore:
 
-- takes its input from the file **as it was before this project first changed it**, kept beside it as
-  `engine.ini.deracine-original`, so switching `frame_mode` on and off is idempotent;
-- sets only the keys in the table in §1, inside their own sections, and drops a duplicate of a key it
-  manages rather than adding a second one;
-- keeps the file's own line endings (the guest writes bare newlines);
-- refuses `render_percent` above 300 instead of writing a value the engine will clamp anyway (§5);
-- reports `render_restore=1` → the kept copy is put back and forgotten.
+- makes every change to the file **as it is at that moment**, so anything written into it since the
+  last run — by the game, or by hand — is still there afterwards, along with section order, unrelated
+  keys and their duplicates, the file's line endings and its last newline;
+- sets only the keys in the table in §1, inside their own sections, and collapses a duplicate of a key
+  it manages rather than adding another;
+- restores **only the frame-mode keys** when `frame_mode` goes back to `60`: their values from before
+  this project first wrote them, and nothing else. A section it created for them and no longer needs
+  goes with them; a section the game's own file had is never dropped;
+- keeps the copy taken before the first change (`engine.ini.deracine-original`) immutable. It is read
+  for exactly two things: knowing those earlier frame-mode values, and `render_restore=1`, which puts
+  the whole file back and is the one operation that also discards later edits;
+- refuses `render_percent` above 300 instead of writing a value the engine will clamp anyway (§5).
 
 Nothing in it touches `eboot.bin`, the pak, or any config inside the pak. The saved configuration is a
 file the game writes while it runs; it is backed up before the first change.
@@ -384,9 +389,12 @@ they live in; they are cited, not copied.
   `GPU.vblank_frequency` otherwise (§4.2).
 - The presentation-size chain and its precedence (`docs/vr-presentation-resolution.md` §2.1).
 - `SHADPS4_MAX_MSAA` sets a host sample cap that is applied after the guest's own request (§6).
-- All of `render-config.ps1`'s file behaviour: which keys it writes, into which sections, that it backs
-  the file up once, that switching modes is idempotent, that unrelated keys, sections and line endings
-  are untouched, and that out-of-range or unknown values are refused (§10).
+- All of `render-config.ps1`'s file behaviour: which keys it writes, into which sections; that an
+  unrelated key written into the file afterwards survives a later mode or scale change; that the kept
+  original is never written to and is read only for the frame-mode keys and `render_restore=1`; that
+  switching modes is idempotent and leaves a file the mode created sections in byte for byte as it was;
+  that line endings and the last newline are untouched; and that out-of-range or unknown values are
+  refused (§10).
 
 **Measured on 2026-11-17 with the headset, on the then-current tree and binary, not since reproduced on
 `main`:**
@@ -444,7 +452,13 @@ under `build/morpheus-config-test`, and checks, among others:
 - a `r.ScreenPercentage` in another section (the device profile) is left alone, an unrelated key is
   left alone, and no section is added or reordered;
 - asking for the same thing twice writes nothing the second time;
-- `frame_mode=60` returns the file **exactly** to the game's own, and removes the companion keys;
+- `frame_mode=60` returns the frame-mode keys **and only those** to the game's own, and a file the mode
+  created sections in comes back byte for byte — with and without a trailing newline;
+- a key the game or the player writes into the file **after** a mode has been applied survives the next
+  frame-mode or render-scale change, while the frame-mode keys still go back to their earlier values;
+- the kept original is byte-identical after every one of those operations, and is only discarded by
+  `render_restore=1`;
+- an unrelated key written twice is left twice;
 - `render_restore=1` puts the kept copy back byte-for-byte and forgets it;
 - a file with bare newlines keeps bare newlines and a file with Windows newlines keeps those;
 - 400 % is refused, with a message naming the clamp patch, and nothing is written;
