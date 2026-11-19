@@ -255,7 +255,7 @@ cells, never projection.
 |---|---|---|---|---|---|
 | CPU-01 | `BindResources` parent | `queued` | P0 | 11.41 ms/frame over 1,867 calls | Decompose without adding child costs |
 | CPU-02 | Depth-overlap resolution | `queued` | P0 | ~3.7 ms/frame `depth_ms` (M2 window) | Split matching vs conversion vs recreation vs sync |
-| CPU-03 | Vulkan image create/destroy | `investigating` | P0 | **3.149 ms/frame** (0.852 create + 2.297 destroy), 3.89/frame — all of it the two 74.75 MiB `0x2068000000` shapes | Classification done; implement the scoped two-entry reuse only after the lifetime model is reviewed |
+| CPU-03 | Vulkan image create/destroy | `completed` | P0 | **3.149 ms/frame** (0.852 create + 2.297 destroy), 3.89/frame — all of it the two 74.75 MiB `0x2068000000` shapes | Integration awaiting review on `perf/cpu03-integration-2026-11-20`; toggle `SHADPS4_DBG_IMAGE_REUSE`, default off, set at process start. See `image-reuse-pool-validation.md` |
 | CPU-04 | `FindImage` slow path / generation | `queued` | P1 | 13,639 lookups/frame, 1,651 slow, 83.9 % generation mismatches | Quantify wasted-but-exclusive work |
 | CPU-05 | Vertex/index binding | `queued` | P1 | 3.23 ms/frame over 1,867 calls | Split cache search vs binds vs barriers |
 | CPU-06 | Render-state preparation | `queued` | P1 | 2.21 ms/frame over 2,060 calls; ~193 draws skipped after it | Test safe reordering after the empty-draw decision |
@@ -338,7 +338,17 @@ cells, never projection.
 
 ### CPU-03 — Vulkan image creation/destruction
 
-- **Status:** `investigating` · **Priority:** P0 · **Last update:** 2026-11-19
+- **Status:** `completed` · **Priority:** P0 · **Last update:** 2026-11-20
+- **Result (2026-11-20):** the scoped two-entry reuse is implemented and validated on
+  `perf/cpu03-integration-2026-11-20` (source tree `534e44d0`), behind `SHADPS4_DBG_IMAGE_REUSE`
+  which is **off by default** and read once at process start. Steady gameplay: `create_ms +
+  destroy_ms` 89.25–92.39 → 1.68–24.09 ms/s, 59.6–68.2 pool hits/s, retention bounded at 219.4 MiB
+  against the 256 MiB cap, `vram_blocks` flat, clean teardown with allocations still pooled, and no
+  rendered-image change attributable to reuse. Two same-executable OFF/ON pairs measured +15.9 % and
+  +14.3 % rendered frame rate; the magnitude is not settled (one OFF/one ON per executable, ~27 %
+  within-configuration spread, no 100 %/200 % cells). Full record:
+  `docs/performance/image-reuse-pool-validation.md`; harness defects found on the way:
+  `docs/performance/harness-defects.md`. Integration pending review; not merged into `main`.
 - **Experiment:** `cpu03-alloc-classes-2026-11-19`, cell `arm0-a1` (valid gameplay: 32.66 unique FPS,
   1,867 draws, 933 Mpx, 59.8 passes, GPU busy 48.9 %, 173 windows 99.4 % in band), on the existing
   instrumentation only (`SHADPS4_DBG_TRACE_IMAGES=1` + `SHADPS4_DBG_OVERLAP=1` +

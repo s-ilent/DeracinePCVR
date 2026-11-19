@@ -23,13 +23,18 @@ treated the mismatch as noise. The pairs below are same-executable and agree in 
     rebuild (the rebase forced a full relink; `src/` identical, so the same code).
 - `ctest --test-dir build-tests -R ImageReusePool --output-on-failure`: **7/7 passed**.
 - **What these cells validated:** the source tree at `534e44d0`, i.e. the binary
-  `E4AD38248B21AFE6…`. The branch tip adds one further source commit, `5c9abe34` (*safely clean up
-  reused images*: `device.waitIdle()` before the pool drain, a `UniqueImage` self-assignment guard,
-  and `Destroy()` on move-assign). It **compiles cleanly** — the build tree is up to date at that
-  commit and produces `634225B4CAA901D306FDEDB146FDD1307205B87E17D90BD74AF2D73FF4F6C940` — but it
-  was **not run**: every number in this document belongs to `534e44d0`. It is a teardown-only change,
-  which is where the risk of a whole-run regression is lowest, but that is an argument, not a
-  measurement.
+  `E4AD38248B21AFE6…`. That tree is exactly what this integration branch carries.
+- A later teardown-only change, `5c9abe34` (*safely clean up reused images*: `device.waitIdle()`
+  before the pool drain, a `UniqueImage` self-assignment guard, and `Destroy()` on move-assign),
+  appeared on the working branch and is **deliberately excluded here**. It compiles cleanly — it
+  produced `634225B4CAA901D306FDEDB146FDD1307205B87E17D90BD74AF2D73FF4F6C940` — but it was never
+  run, so it is preserved unmeasured on `perf/image-reuse-teardown-unmeasured` and must not ride
+  along with this feature. Its runtime reach was reviewed anyway: `UniqueImage::operator=`
+  *is* reachable during gameplay (`Image::EnsureViewFormat`, `Image::SetBackingSamples` from
+  `vk_rasterizer.cpp` and the `vk_runtime.cpp` copy paths), but every current site assigns onto a
+  freshly `emplace_back`'d `BackingImage` whose `UniqueImage` is empty, so the added `Destroy()` is a
+  no-op there and the self-assignment guard never fires; there are no whole-`Image` move-assignment
+  sites. Only the `waitIdle` in `Instance::~Instance` changes behaviour, and only at teardown.
 - The full test tree still fails on the pre-existing Windows portability error
   (`src/tests/libraries/test_usbd_event_loop.cpp:6`, `<sys/time.h>`); unrelated to this change.
 
@@ -134,28 +139,44 @@ frames were captured (`reuse_hits` 30–37/s in the dumped windows).
   `SHADPS4_DBG_IMAGE_REUSE_MAX_MB` (256). Invalid values fall back to the defaults.
 - Rollback at runtime: unset the switch. Rollback in the tree: revert the feature commits; nothing
   outside `video_core` and `src/tests` is touched, and no on-disk state is created.
-- The switch is read once per process (`ImageReusePool::Enabled()`), so a cell's arm is fixed at
-  launch. It is inert unless explicitly set.
+- **The switch is read once, at process startup** (`ImageReusePool::Enabled()` caches it, and the pool
+  latches its bounds and its shutdown state for the life of the process). Setting or clearing it
+  therefore has **no effect on a running instance: the emulator must be restarted to change it.**
+  There is no in-game or menu control for it, and it is inert unless explicitly set.
+- A build with the feature present but the switch unset behaves as the unmodified code does for
+  allocation ownership, which is the intended deployment: ship the code, leave the switch to the
+  user's environment until the runtime results warrant otherwise.
 
 ## Integration record
 
-- Branch: `perf/aliased-image-reuse-2026-11-19`, rebased onto `main`, pushed.
-- **Validated commit: `534e44d0`** — the tree every runtime cell above was measured on, and the tree
-  the recorded binary `E4AD3824…` was built from.
-- **Branch tip: `89203952`** (this document) on top of `5c9abe34` (teardown fixes, compiles, not
-  run). Integrate the tip if the teardown change is wanted as-is; integrate `534e44d0` if only the
-  measured tree should land, and land `5c9abe34` separately with its own cell.
+- Branch: **`perf/cpu03-integration-2026-11-20`**, based on current `origin/main` (`9e8034c0`) and
+  fast-forwarded onto the validated tree; pushed for review, **not merged into `main`**.
+- **Source commit carried: `534e44d0`** — the tree every runtime cell above was measured on, and the
+  tree the recorded binary `E4AD3824…` was built from. `git diff 534e44d0 HEAD -- src` is empty on
+  this branch.
+- The unmeasured teardown change is preserved separately on `perf/image-reuse-teardown-unmeasured`
+  (`5c9abe34`). It is **not** on this branch and not part of this integration.
 - Feature commits: `4a42dfeb` reuse Vulkan images by exact create shape, `c74b83b6` implementation
   report, `85332841` avoid reuse bookkeeping for direct destroys, `7ea6958e` pool follow-up record,
   `2db4d41f` keep the RENDERSTAT recycler fields beside the reuse counters, `ba2c6189` include VMA
-  headers for the reuse test suite, `5c9abe34` teardown fixes (not authored or run by this
-  validation), then this validation record.
+  headers for the reuse test suite, then this validation record.
 - Tree scope: `src/src/video_core/renderer_vulkan/vk_image_reuse_pool.{h,cpp}`,
   `texture_cache/{image.cpp,image.h,image_stats.h,texture_cache.cpp}`, `renderer_vulkan/vk_instance.cpp`,
   `src/CMakeLists.txt`, `src/tests/{CMakeLists.txt,video_core/test_image_reuse_pool.cpp}`, plus docs.
   No descriptor, frame-pacing or D32→R32 change.
-- Builds from a clean tree at `534e44d0` (the `E4AD3824…` binary was built from it and ran cells
-  `backslash1` and `arm1-g2`), and the tip `5c9abe34` compiles cleanly as `634225B4…`.
+- Integration was additive: no conflicts, and no source modification was needed to integrate — the
+  branch is the validated tree plus documentation.
+- Ancestry verified before integrating: `534e44d0` → `5c9abe34` → `c4362abd` is a linear chain on
+  `perf/aliased-image-reuse-2026-11-19`, and `origin/main` (`9e8034c0`) is an ancestor of
+  `534e44d0`, so the integration branch could be fast-forwarded onto the validated tree exactly
+  instead of being reconstructed. `5c9abe34` is therefore **not** an ancestor of this branch.
+- Integration build: **PASS**, exit 0 (`_build/build.ps1 -Root wt-cpu03-int`), producing
+  `build\shadPS4.exe` SHA-256
+  `1C1D411E4D1EB2F614D79323DBAEB116750B18B264C2D00C2F8428B86E89F299`. No emulator was launched from
+  this tree.
+- Integration tests: `ctest --test-dir build-tests -R ImageReusePool --output-on-failure` on this
+  tree — **7/7 passed**. The full test tree was not built; its pre-existing `<sys/time.h>` failure is
+  unrelated to this change.
 
 ## Validation artifacts (preserved, not deleted)
 
