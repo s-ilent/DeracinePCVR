@@ -167,28 +167,37 @@ same scene is exactly the cadence (§2): 2.03 vblank waits per frame → 1.19.
 isolated anywhere is `r.FinishCurrentFrame`, historically and outside this harness: 48.7 against 44.0
 frames a second in the cold state, §2.)
 
-**A bounded 60 → 120 → 60 replication, run 2026-11-19 on current `main`, did not reproduce the first
-pair's gain.** The full record is `docs/morpheus-frame-mode-ab.md`; the summary is:
+**The group removes a ceiling, and it was measured doing so.** `frame_mode=120` makes the title ask its
+headset path for one vblank wait per frame instead of two, so it doubles the rendered rate **where the
+renderer has room**, and changes nothing where it does not. Three arms of the M2 gameplay scenario were
+run 2026-11-19 on current `main` (`a60` and `c60` in 60 mode, `b120` in 120 mode — the full record is
+`docs/morpheus-frame-mode-ab.md`), and each run passes through the front end and the title backdrop
+before gameplay, so three scenes come out of the same three logs:
 
-| | first pair (no `GPU_TIMING`) | replication (M2 diagnostics) |
-|---|---|---|
-| 60-mode arms | 34.39 (1 run) | **34.06 and 36.50** — 7.2 % apart, which is this workload's local spread |
-| 120-mode arm(s) | 40.76 (1 run) | **37.17** (1 run) |
-| 60 against 120, full windows | +18.5 % | **+5.4 %** (0.75 × the local spread) |
-| 60 against 120, matched pixel load | +11.0 %, on 36 of 207 samples | **+0.6 %** across the shared Mpx range, +4.8 % at ±5 % of the pooled median |
-| best-matched single pair | windows 946 against 872 Mpx — not matched | `c60` against `b120`: identical Mpx (871.9), draws (1,866), GPU executing (11.92 ms) and command thread (23.85 ms) medians → **36.50 against 37.17 = +1.8 %** |
+| scene (same three runs) | draws / Mpx (median) | 60 mode | 120 mode |
+|---|---|---|---|
+| calibration / front end | 32 / 208 | **59.9** (n=81), **60.0** (n=82) | **119.9** (n=77) |
+| menu / title backdrop | 477–482 / 535–575 | 51.2 (n=19), 59.9 (n=31) | **61.2** (n=19) |
+| gameplay at 300 % render | 1,865–1,866 / 872–914 | 34.7 (n=235), 36.7 (n=224) | 37.5 (n=240) |
 
-So the honest reading is that **no effect of the frame-mode group is detectable at this sample size**:
-the first pair's +11 % came from a matched cut that retained only a fifth of the 120-mode arm's
-samples, and both of its windows carried different pixel loads. A real effect of 2–5 % is **not**
-excluded — resolving one against a 7 % spread needs several runs per arm, not one or two.
+- The **calibration band** is trivially cheap (~30 draws, ~200 Mpx), so neither arm is renderer-limited:
+  60 mode sits at exactly 60 and 120 mode at exactly 120, across ~80 windows each. That is this
+  feature's whole purpose, and it is the same doubling the 120.0 fps session measurement found on the
+  same class of screen (with vblank waits per frame 2.03 → 1.19; current `main` does not instrument
+  that counter, so the rate is the evidence).
+- The **gameplay band at 300 %** is below the ceiling for both modes — 27 ms frames — so nothing is due
+  there and nothing was seen: 34.7 / 36.7 against 37.5, inside the **7.2 %** spread that two runs of the
+  *same* 60-mode configuration showed. The first pair's +11 % came from a matched cut that retained only
+  36 of 207 samples. **The frame mode does not make an overloaded scene faster, and that says nothing
+  for or against it.**
+- **Whether it helps gameplay depends on the scene's cost**, i.e. on `render_percent`: it needs a scene
+  that can pass 60 at the chosen scale. The M2 gameplay cell at 300 % is not one. (A 100 % run of that
+  cell would fail the scenario's own `min_mpx 450` gate and would be a differently-scened measurement,
+  not a re-run.)
 
-Two arm-runs are not comparable with each other and are never pooled above: the first pair ran without
-`SHADPS4_GPU_TIMING`/`SHADPS4_DBG_OVERLAP`, the replication with them. For scale, the same 120-mode
-configuration at the same median Mpx measured 40.76 there and 37.17 here.
-
-And neither batch reaches 120 fps: at 300 % the frame budget of §4.3 still governs, and none of this
-says anything about a worn session.
+The earlier pair and the replication are never pooled: the pair ran without
+`SHADPS4_GPU_TIMING`/`SHADPS4_DBG_OVERLAP`, the replication with them; the same 120-mode configuration at
+the same median Mpx measured 40.76 there and 37.17 here.
 
 ### 4.2 What does **not** control it
 
@@ -221,7 +230,7 @@ which roughly 1.8 ms is host time, so the scene has to be drawn at about **210 %
 for 120 fps to fit on the reference card, with the presentation left at the runtime's own size
 (`present=auto`) so that what is given up is sharpness, not size.
 
-### 4.4 The evidence on the front end, and what it does not settle
+### 4.4 The front-end ceiling: what it was, and what the frame mode does to it
 
 The front end held **58.7 fps at vblank 120** and **58.6 fps with `SHADPS4_VR_PACE=1`**, with the GPU
 only 37.5–38 % busy at 210 %. The conclusion drawn at the time was that "the 60 fps ceiling is the
@@ -248,22 +257,30 @@ to the GPU-bound heavy scene.
 
 So the state of the evidence is:
 
-- The configuration **has** been used with the headset, and the 120.0 unique fps in §2 came from such a
-  session — but in a lighter workload. 120 unique frames **in gameplay** is what has never been
-  verified; there, gameplay was the ~52 fps quoted in §9.
-- With nobody wearing the headset, the key does **not** lift the **front-end/menu** pacing: 55.3 / 57.3
-  against 60.6 / 61.7 fps on the shadow without it. That is consistent with the XR present path
-  stalling when the headset is asleep, and it is a statement about the menu band, not about the scene.
-- With nobody wearing the headset, what the frame-mode group does to the **gameplay band at 300 %** is
-  **not resolved**: the first pair suggested +11 % pixel-matched, and the bounded replication that
-  followed put the difference at +5.4 % over the full windows and +1.8 % against the best-matched
-  60-mode arm, against a 7.2 % local spread between two runs of the *same* 60-mode configuration
-  (§4.1; the full record is `docs/morpheus-frame-mode-ab.md`).
+- **The 60-frame ceiling was the 60-mode pacing, and the frame mode removes it.** The front end once
+  looked like an inherent ~60 fps cap ("the title's own front end, not the emulated vblank"): it held
+  58.7 fps at vblank 120 and 58.6 with `SHADPS4_VR_PACE=1` (an inert variable here, §4.2) with the GPU
+  only 37.5–38 % busy — and both of those arms ran, unknowingly, with the title asking for its
+  **default** sequence. Measured on current `main` on 2026-11-19 with the 120 sequence written into the
+  game's own saved configuration, the same class of scene gives **59.9 / 60.0 fps in 60 mode against
+  119.9 in 120 mode** (n≈80 each, ~30 draws and ~200 Mpx, so neither arm is renderer-limited). §4.1 has
+  the table; the ceiling and the feature are the same fact from two sides.
+- **The configuration has been used with the headset** — the 120.0 unique fps in §2 came from such a
+  session (the calibration/menu screen), with vblank waits per frame 2.03 → 1.19. That is the same
+  doubling the calibration row above shows headless. 120 unique frames **in gameplay** is what has never
+  been verified; there, gameplay was the ~52 fps quoted in §9.
+- **Where the scene cannot reach the ceiling, the mode is worth nothing** — the gameplay band at 300 %
+  measured 34.7 / 36.7 (60 mode) against 37.5 (120 mode), inside a 7.2 % local spread, because a 27 ms
+  frame never waits on a two-vblank clock. §4.1 and `docs/morpheus-frame-mode-ab.md`.
+- **The ledger's menu-band cells are a third band** and are not in conflict with either: their 55.3 /
+  57.3 against 60.6 / 61.7 fps are the early windows of gameplay-band runs, i.e. the heavy title
+  backdrop (≈480 draws, ≈550 Mpx, GPU about half busy), not the ~30-draw calibration screen. In the same
+  three runs that band measured 51.2 / 59.9 (60 mode) against 61.2 (120 mode) — near the ceiling, with
+  n=19–31, so consistent with the calibration row without being independent evidence of it.
 
-Those two headless results are not in conflict — they measure different bands — but neither of them is
-a session, and neither reaches 120 unique frames at 300 %. The measurement this configuration exists to
-make possible is still: same scene, same build, same size, `frame_mode=60` against `frame_mode=120`, at
-a size the budget allows, comparing **unique rendered fps** rather than the compositor's cadence.
+None of this is a session, and none of it reaches 120 unique frames in gameplay. The measurement still
+worth making is the gameplay one at a size the §4.3 budget allows — `render_percent` around 210 %, or
+whatever a live cell shows can pass 60 — comparing **unique rendered fps**, not the compositor's cadence.
 
 ---
 
@@ -451,26 +468,30 @@ they live in; they are cited, not copied.
 - The `r.ScreenPercentage` mapping, and 300 % as a standing configuration (§5).
 - The 300 % clamp instruction and the 400 % patch's effect (§5.1, §5.2).
 - The MSAA sample counts and the host-cap loss (§6).
-- The front-end ~60 fps ceiling, and the 0.028 ms/Mpx frame budget (§4.3, §4.4) — the budget measured
-  **without** the Morpheus key, and the ceiling's attribution weakened by §4.4.
+- The ~60 fps ceiling in a scene with headroom, and the 0.028 ms/Mpx frame budget (§4.3, §4.4).
 - The 4× MSAA crash on `address_space.cpp Protect: Unreachable code!` (§6) — pre-existing, not caused
   by MSAA, and not re-confirmed on `main`.
 
 **Measured on current `main`, 2026-11-19** (`docs/performance/target-ledger.md` §4.6 — not by this
-document, and not a 120 fps result): two cells on a private shadow carrying the §2 block, gameplay
-band, 32.80 and 34.45 unique fps at ≈876 Mpx with the GPU under half busy, run-to-run spread 4.8 %.
-Those cells were run with nobody wearing the headset, which is why they say nothing about a session.
+document): two cells on a private shadow carrying the §2 block, gameplay band, 32.80 and 34.45 unique fps
+at ≈876 Mpx with the GPU under half busy, run-to-run spread 4.8 %. Those cells were run with nobody
+wearing the headset and are below the ceiling for both modes, so they say nothing about the frame mode —
+only about the cell's cost.
 
-Also measured on current `main`, 2026-11-19, by this work: two headless batches on a private shadow
-whose `engine.ini` the control wrote for each arm (same binary, same runner, same scene, same save; the
-arms differ only in that file).
+Also measured on current `main`, 2026-11-19, by this work: two headless batches on a private shadow whose
+`engine.ini` the control wrote for each arm (same binary, same runner, same scene, same save; the arms
+differ only in that file).
 
-- The first batch's pair: 34.39 (`frame_mode=60`) against 40.76 (`frame_mode=120`) over each arm's own
-  window, 34.58 against 38.38 at a matched pixel load. One run per arm, no `GPU_TIMING`.
-- The bounded replication with the M2 diagnostics, which **did not reproduce it**: two 60-mode runs at
-  34.06 and 36.50 (7.2 % apart — the local spread), one 120-mode run at 37.17, i.e. +5.4 % over the
-  full windows, +0.6 % across the pixel range the windows share, and +1.8 % against the 60-mode arm
-  whose window was matched on Mpx, draws, GPU executing and command-thread time alike.
+- The first batch's pair, over the gameplay window at 300 %: 34.39 (`frame_mode=60`) against 40.76
+  (`frame_mode=120`), 34.58 against 38.38 at a matched pixel load. One run per arm, no `GPU_TIMING`.
+- The bounded 60 → 120 → 60 replication with the M2 diagnostics, on the gameplay band: two 60-mode runs
+  at 34.06 and 36.50 (**7.2 % apart** — the local spread for that workload), one 120-mode run at 37.17,
+  i.e. +5.4 % over the full windows and +1.8 % against the best-matched 60-mode arm. That band is below
+  the ceiling for both modes, so no difference is due there.
+- **The same three runs' calibration band is where the feature shows**: 59.9 and 60.0 fps in 60 mode
+  against **119.9** in 120 mode (~80 windows each), on a scene of ~30 draws and ~200 Mpx that neither
+  mode is renderer-limited by. This is the ceiling being removed, headless, and it is the same doubling
+  the session measurement found.
 
 The full record, including every arm's hashes, the frame-time percentiles, the matched-cut sample
 counts and the one arm lost to the pre-existing `address_space.cpp:568` crash, is
@@ -486,6 +507,11 @@ counts and the one arm lost to the pre-existing `address_space.cpp:568` crash, i
   withdrawn in the same investigation, once the Morpheus route worked.
 - The 400 % "success" in one early screenshot was crop/resample of a 2880×3240 image, not a larger
   render; the real 400 % needed the clamp patch.
+- The frame-mode replication was first written up as "no effect detectable", full stop, on the strength
+  of the gameplay band at 300 %. That measured an overloaded renderer: in 60-mode terms the feature is
+  worth the frames a scene cannot otherwise reach above 60, and a 35 fps scene has none to reach. The
+  same three runs' calibration band shows the ceiling being removed (59.9 / 60.0 → 119.9 fps). Corrected
+  the same day; the scope of the claim was the mistake, not its numbers.
 
 ---
 
@@ -533,11 +559,12 @@ call uses a **hash** splat, because an array splat is expanded positionally and 
 `-Percent` as an argument rather than as a parameter name.
 
 What the suites cannot check is the part that needs the game: that the guest actually consumes the
-settings and renders differently. That has been measured headless twice — the pair in §4.1 and the
-replication in `docs/morpheus-frame-mode-ab.md`, which found no effect above a 7.2 % local spread —
-and before them the two cells in `docs/performance/target-ledger.md` §4.6 (run with nobody wearing the
-headset, timing a different band). What has not been done is a design with enough runs per arm to
-resolve a small effect, or a session at a size the §4.3 budget allows. The procedure is:
+settings and renders differently. Headless, that has been measured: the frame-mode group doubles the
+rendered rate in a scene with headroom (59.9 / 60.0 → 119.9 fps in the calibration band, §4.1) and
+changes nothing in a scene below the ceiling (gameplay at 300 %, inside a 7.2 % local spread) — the full
+record is `docs/morpheus-frame-mode-ab.md`, with the two cells in `docs/performance/target-ledger.md`
+§4.6 as a third band. What has not been done is the gameplay-band measurement at a size that can pass
+60, and a session. The procedure is:
 
 1. Copy the game to a **private shadow** (never the original). Point `render-config.ps1` at the shadow
    with `-Eboot`, which writes the shadow's own `engine.ini` and nothing else; the shadow's `saved`
