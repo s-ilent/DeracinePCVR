@@ -1,4 +1,4 @@
-﻿# Settings for "Play Deracine VR.bat", one key=value a line. Lines starting with # are ignored;
+# Settings for "Play Deracine VR.bat", one key=value a line. Lines starting with # are ignored;
 # what is commented out below shows the value that applies when the line is left out.
 
 # game: Location of the game's eboot.bin or .pkg package.
@@ -22,7 +22,8 @@ frame_mode=60
 
 # render_percent: the size the game draws its scene at, in percent of a PlayStation VR's 960x1080
 # an eye: 100 is 960x1080, 130 what the game asks for itself (1248x1404), 200 is 1920x2160 and 300
-# is 2880x3240. Left out: the game's own setting is kept. The engine clamps at 300 (one instruction
+# is 2880x3240. Left out: this setting is not touched, so the file keeps what it has (render_restore=1
+# puts the game's own file back whole). The engine clamps at 300 (one instruction
 # in its Morpheus size path); more than that needs the optional clamp patch and is refused here.
 # This is the game's picture. What the headset is shown is `present`/`resolution` below, and the two
 # are independent: at render_percent=300 with present=auto the 2880x3240 scene is shown at the
@@ -31,7 +32,7 @@ render_percent=300
 
 # guest_msaa: the samples the game's own scene targets are made with (1, 2, 4). The game asks for 2.
 # Measured at 1, 2 and 4 with the emulator's quality diagnostics: the guest's scene colour and depth
-# buffers and the bound pipeline all carry that many samples. Left out: the game's own.
+# buffers and the bound pipeline all carry that many samples. Left out: not touched, like render_percent.
 #guest_msaa=2
 
 # 1: put the game's own saved configuration back (the copy kept before DeracinePCVR changed it).
