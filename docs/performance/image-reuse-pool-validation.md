@@ -149,13 +149,13 @@ frames were captured (`reuse_hits` 30–37/s in the dumped windows).
 
 ## Integration record
 
-- Branch: **`perf/cpu03-integration-2026-11-20`**, based on current `origin/main` (`9e8034c0`) and
-  fast-forwarded onto the validated tree; pushed for review, **not merged into `main`**.
+- Branch: **`perf/cpu03-integration-2026-11-20`**, based on `origin/main` (`9e8034c0`) and
+  fast-forwarded onto the validated tree. **Merged into `main`** by fast-forward (no conflicts, no
+  divergence), so the feature commits below keep their exact hashes.
 - **Source commit carried: `534e44d0`** — the tree every runtime cell above was measured on, and the
-  tree the recorded binary `E4AD3824…` was built from. `git diff 534e44d0 HEAD -- src` is empty on
-  this branch.
+  tree the recorded binary `E4AD3824…` was built from. `git diff 534e44d0 HEAD -- src` is empty.
 - The unmeasured teardown change is preserved separately on `perf/image-reuse-teardown-unmeasured`
-  (`5c9abe34`). It is **not** on this branch and not part of this integration.
+  (`5c9abe34`). It is **not** in `main` and not part of this integration.
 - Feature commits: `4a42dfeb` reuse Vulkan images by exact create shape, `c74b83b6` implementation
   report, `85332841` avoid reuse bookkeeping for direct destroys, `7ea6958e` pool follow-up record,
   `2db4d41f` keep the RENDERSTAT recycler fields beside the reuse counters, `ba2c6189` include VMA
