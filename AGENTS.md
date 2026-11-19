@@ -9,6 +9,8 @@ for the C++ tree live in `src/AGENTS.md` and override inherited upstream guidanc
 - v0.21.0 merge log and resolved build/runtime errors: `HANDOFF_V0.21.0.md`
 - The game's Morpheus/Unreal settings, the frame modes, and what has actually been measured:
   `docs/psvr-morpheus-ue4-settings.md`
+- What the frame-mode configuration was measured to do, headless (60 → 120 → 60, local spread, matched
+  pixel loads): `docs/morpheus-frame-mode-ab.md`
 
 ## Autonomous engineering contract
 

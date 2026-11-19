@@ -160,27 +160,35 @@ emulator was found to be capable of enabling it: `frame_mode=120` changes a sett
 and the game then submits twice as many frames. The measured change in the emulator's own view of the
 same scene is exactly the cadence (§2): 2.03 vblank waits per frame → 1.19.
 
-**A matched A/B of the two modes, run 2026-11-19 on current `main`** (the artifact is
-`_out/morpheus-ab-2026-11-19/`, whose `AB.json` records every hash and `analyze-ab.ps1` reproduces the
-numbers). One private shadow, one binary, the same scene and save; the arms differ **only** in that
-shadow's `engine.ini`, which the control wrote. Both arms' `env` blocks are identical apart from the
-per-arm input paths.
+**What the group is:** `frame_mode=120` writes five settings, not one. Alongside
+`PSVRFrameSequence=Render120Scanout120` it sets `bSmoothFrameRate=False`, a smoothed range to 250,
+`t.MaxFPS=0` and `r.FinishCurrentFrame=0` (§1, §2). Every measured result below therefore belongs to
+**the configuration as a whole**; no single key has been isolated inside this harness. (The only key
+isolated anywhere is `r.FinishCurrentFrame`, historically and outside this harness: 48.7 against 44.0
+frames a second in the cold state, §2.)
 
-| | `frame_mode=60` | `frame_mode=120` |
+**A bounded 60 → 120 → 60 replication, run 2026-11-19 on current `main`, did not reproduce the first
+pair's gain.** The full record is `docs/morpheus-frame-mode-ab.md`; the summary is:
+
+| | first pair (no `GPU_TIMING`) | replication (M2 diagnostics) |
 |---|---|---|
-| effective `engine.ini` hash | `78C0D8AC…` (the file every earlier cell ran on) | `1E895554…` (the same keys and values as the campaign's measured shadow) |
-| unique rendered fps, whole in-band window | **34.39** | **40.76** (+18.5 %) |
-| unique rendered fps, pixel-matched (Mpx 890–1003) | **34.58** | **38.38** (+11.0 %) |
-| draws / GPU busy | 1866.6 / 54.2 % | 1866.9 / 59.6 % |
+| 60-mode arms | 34.39 (1 run) | **34.06 and 36.50** — 7.2 % apart, which is this workload's local spread |
+| 120-mode arm(s) | 40.76 (1 run) | **37.17** (1 run) |
+| 60 against 120, full windows | +18.5 % | **+5.4 %** (0.75 × the local spread) |
+| 60 against 120, matched pixel load | +11.0 %, on 36 of 207 samples | **+0.6 %** across the shared Mpx range, +4.8 % at ±5 % of the pooled median |
+| best-matched single pair | windows 946 against 872 Mpx — not matched | `c60` against `b120`: identical Mpx (871.9), draws (1,866), GPU executing (11.92 ms) and command thread (23.85 ms) medians → **36.50 against 37.17 = +1.8 %** |
 
-So the control does change what the title does: at the same scene and draw count, the native 120
-configuration produced **11 % more unique rendered frames** than the game's own, both numbers taken at
-the same pixel load. The two arms' windows did not cover identical pixels (946 Mpx median against 872),
-which is why the pixel-matched cut is quoted; the +18.5 % over each arm's own window is the
-unnormalised figure. **One run per arm**, so this is a matched pair and not a distribution — the ledger
-records 4.8 % run-to-run spread for the 120 configuration, and +11 % is above it but was not repeated.
-It also does not reach 120 fps: at 300 % the frame budget of §4.3 still governs, and this pair says
-nothing about a worn session.
+So the honest reading is that **no effect of the frame-mode group is detectable at this sample size**:
+the first pair's +11 % came from a matched cut that retained only a fifth of the 120-mode arm's
+samples, and both of its windows carried different pixel loads. A real effect of 2–5 % is **not**
+excluded — resolving one against a 7 % spread needs several runs per arm, not one or two.
+
+Two arm-runs are not comparable with each other and are never pooled above: the first pair ran without
+`SHADPS4_GPU_TIMING`/`SHADPS4_DBG_OVERLAP`, the replication with them. For scale, the same 120-mode
+configuration at the same median Mpx measured 40.76 there and 37.17 here.
+
+And neither batch reaches 120 fps: at 300 % the frame budget of §4.3 still governs, and none of this
+says anything about a worn session.
 
 ### 4.2 What does **not** control it
 
@@ -246,8 +254,11 @@ So the state of the evidence is:
 - With nobody wearing the headset, the key does **not** lift the **front-end/menu** pacing: 55.3 / 57.3
   against 60.6 / 61.7 fps on the shadow without it. That is consistent with the XR present path
   stalling when the headset is asleep, and it is a statement about the menu band, not about the scene.
-- With nobody wearing the headset, the key **does** change the **gameplay band at 300 %**: the matched
-  pair in §4.1 measured +11 % pixel-matched (34.58 → 38.38) and +18.5 % over each arm's own window.
+- With nobody wearing the headset, what the frame-mode group does to the **gameplay band at 300 %** is
+  **not resolved**: the first pair suggested +11 % pixel-matched, and the bounded replication that
+  followed put the difference at +5.4 % over the full windows and +1.8 % against the best-matched
+  60-mode arm, against a 7.2 % local spread between two runs of the *same* 60-mode configuration
+  (§4.1; the full record is `docs/morpheus-frame-mode-ab.md`).
 
 Those two headless results are not in conflict — they measure different bands — but neither of them is
 a session, and neither reaches 120 unique frames at 300 %. The measurement this configuration exists to
@@ -392,7 +403,8 @@ the table as "what the game was built with" until a run measures it.
 | The 120 Hz artifact | `D:\Temp\Deracine\1.0\Image0\...\gameproject\saved\config\ps4\engine.ini` | the §2 block plus `r.ScreenPercentage=300` | **not part of the game.** Corrected on 2026-11-19 (see §9): it is an artifact the earlier frametime investigation added. It is the provenance of §2, not a shipped default |
 | The private shadow that reproduces it | `_out/gpu01-depthpass-2026-11-19/shadow-morpheus120/gameproject/saved/config/ps4/engine.ini` (parent worktree, not in the repository) | the §2 block verbatim, plus `r.MSAACount=2`; `engine.ini` hash `26C43971…` | the two 2026-11-19 cells in ledger §4.6 were run on it; §4.3's figures were not |
 | The 60-mode shadows | `_build/frame-time-profile-full-2026-11-18/...`, `D:\Temp\Deracine\CUSA11919-qual\...` | `[SystemSettings] r.ScreenPercentage=300`, `r.MSAACount=2` only | the configuration every M2 benchmark cell ran with; **no Morpheus key** (ledger §4.5) |
-| The matched A/B of the two frame modes | `_out/morpheus-ab-2026-11-19/` (parent worktree, not in the repository): `AB.json` (provenance and both verdicts), `analyze-ab.ps1`, `arm60/`, `arm120/` (each with its `run.json` and log), `shadow/` | §4.1, §9: 34.39 against 40.76 unique rendered fps | measured by this work on current `main`, 2026-11-19, one run per arm |
+| The matched A/B of the two frame modes | `_out/morpheus-ab-2026-11-19/` (parent worktree, not in the repository): `AB.json` (provenance and both verdicts), `analyze-ab.ps1`, `arm60/`, `arm120/`, `shadow/` | §4.1, §9: 34.39 against 40.76 unique rendered fps | measured by this work on current `main`, 2026-11-19, one run per arm, no `GPU_TIMING` |
+| The replication of that A/B | `_out/morpheus-ab2-2026-11-19/` (parent worktree): `run-arm.ps1`, `analyze-ab2.ps1`, `a60/`, `b120/`, `c60/`, `<arm>.mode.json`, `a60-attempt1-crash/` | §4.1, §9: 34.06 / 36.50 / 37.17 unique rendered fps, 7.2 % local spread, no effect above it | measured by this work on current `main`, 2026-11-19, with the M2 diagnostic set; **the numbers themselves are in `docs/morpheus-frame-mode-ab.md`** |
 | The emulator's per-run verdict schema | `tools/benchmark/validator.py`, `tools/benchmark/reference/scene-gameplay.json` (**in the repository**) | how `run.json`'s `unique_fps`, gate and band are defined | enforced by the harness itself |
 | The clamp patch | `D:\Temp\Deracine\CUSA11919-qual\quality-cap400.xml` (outside the repository) | the §5.2 pattern patch | verified at runtime (320 %, 400 %) |
 | The measurements | `_handoff/2026-11-17/(dead) Framerate Investigation #1.md` (parent worktree) | §2, §5, §6, §7 numbers | a dated investigation log; its own corrections are part of it (§9) |
@@ -449,13 +461,21 @@ document, and not a 120 fps result): two cells on a private shadow carrying the 
 band, 32.80 and 34.45 unique fps at ≈876 Mpx with the GPU under half busy, run-to-run spread 4.8 %.
 Those cells were run with nobody wearing the headset, which is why they say nothing about a session.
 
-Also measured on current `main`, 2026-11-19, by this work: the **matched pair** in §4.1, on a private
-shadow whose `engine.ini` the control itself wrote for each arm — 34.39 (`frame_mode=60`) against 40.76
-(`frame_mode=120`) unique rendered fps over each arm's own window, 34.58 against 38.38 at a matched
-pixel load, same draws. Same binary, same runner, same scene, same save, identical environments. One
-run per arm. The provenance (binary, runner, eboot and both `engine.ini` hashes, both verdicts) is
-`_out/morpheus-ab-2026-11-19/AB.json`; `analyze-ab.ps1` beside it reproduces the figures from the
-emulator's own frame-stat series.
+Also measured on current `main`, 2026-11-19, by this work: two headless batches on a private shadow
+whose `engine.ini` the control wrote for each arm (same binary, same runner, same scene, same save; the
+arms differ only in that file).
+
+- The first batch's pair: 34.39 (`frame_mode=60`) against 40.76 (`frame_mode=120`) over each arm's own
+  window, 34.58 against 38.38 at a matched pixel load. One run per arm, no `GPU_TIMING`.
+- The bounded replication with the M2 diagnostics, which **did not reproduce it**: two 60-mode runs at
+  34.06 and 36.50 (7.2 % apart — the local spread), one 120-mode run at 37.17, i.e. +5.4 % over the
+  full windows, +0.6 % across the pixel range the windows share, and +1.8 % against the 60-mode arm
+  whose window was matched on Mpx, draws, GPU executing and command-thread time alike.
+
+The full record, including every arm's hashes, the frame-time percentiles, the matched-cut sample
+counts and the one arm lost to the pre-existing `address_space.cpp:568` crash, is
+`docs/morpheus-frame-mode-ab.md`. Raw artifacts: `_out/morpheus-ab-2026-11-19/` and
+`_out/morpheus-ab2-2026-11-19/`.
 
 **Recorded corrections** (kept because they are the kind of mistake this document exists to prevent):
 
@@ -512,11 +532,12 @@ Both suites are run on Windows PowerShell 5.1 and on PowerShell 7; the launcher'
 call uses a **hash** splat, because an array splat is expanded positionally and would pass
 `-Percent` as an argument rather than as a parameter name.
 
-What the suites cannot check is the part that needs the game: that the guest actually consumes
-`PSVRFrameSequence` and renders more frames. That has now been measured once, headless: the matched
-pair in §4.1, and before it the two cells in `docs/performance/target-ledger.md` §4.6 (which were run
-with nobody wearing the headset, and timed a different band). What has not been done is a **repeat**
-of the pair to bound its spread, and a session at a size the §4.3 budget allows. The procedure is:
+What the suites cannot check is the part that needs the game: that the guest actually consumes the
+settings and renders differently. That has been measured headless twice — the pair in §4.1 and the
+replication in `docs/morpheus-frame-mode-ab.md`, which found no effect above a 7.2 % local spread —
+and before them the two cells in `docs/performance/target-ledger.md` §4.6 (run with nobody wearing the
+headset, timing a different band). What has not been done is a design with enough runs per arm to
+resolve a small effect, or a session at a size the §4.3 budget allows. The procedure is:
 
 1. Copy the game to a **private shadow** (never the original). Point `render-config.ps1` at the shadow
    with `-Eboot`, which writes the shadow's own `engine.ini` and nothing else; the shadow's `saved`
@@ -548,6 +569,8 @@ In the repository:
 
 - `docs/vr-presentation-resolution.md` — the presentation side, the sizing policy and its measured
   acceptance (`SHADPS4_VR_RESOLUTION`, legacy `SHADPS4_VR_SCALE` / `SHADPS4_TITLE_EYE_WIDTH`).
+- `docs/morpheus-frame-mode-ab.md` — what the frame-mode configuration was measured to do, headless:
+  the bounded 60 → 120 → 60 replication, its local noise estimate, and the matched pixel-load cuts.
 - `docs/performance/target-ledger.md` §4.5–4.6 and the 2026-11-19 entries — the tweak's provenance,
   its re-baseline cells, and the record that the front-end pacing did not improve headless.
 - `docs/integration/HEADSET-ACCEPTANCE.md` §7 — what a headset session must record.
