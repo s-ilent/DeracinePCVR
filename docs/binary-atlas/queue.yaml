@@ -1,5 +1,13 @@
 # Research tasks must be promoted only after actual original-target-byte verification.
 items:
+  - id: A-011-RESOURCE-BATCH-REGISTRATION
+    track: A
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "Original SELF block 0x0CC2ADE..0x0CC2C48 snapshots global 0x04496748, stamps one of two resource layouts, and appends paired 16-byte records to context +0x428/+0x438 arrays"
+    report: "reports/atlas_resource_batch_a011.md"
+    verifier: "tools/atlas/verify_resource_batch_a011.py"
+    next: "Trace consumers of paired arrays and global stamp producer; no unverified frame-counter or C++ ownership attribution"
   - id: A-010-DIRECT-CONTEXT-ATTACHMENT
     track: A
     priority: 1
