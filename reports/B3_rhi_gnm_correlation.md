@@ -124,7 +124,7 @@ because those were issued before the RHI probe's first captured entry.
 $env:SHADPS4_VR='1'; $env:SHADPS4_OPENXR='0'; $env:SHADPS4_VR_DEMO='0'
 $env:SHADPS4_DERACINE_RHI_PROBE='1'
 pwsh -File tools/benchmark/runner.ps1 -Exe <a2 build>\shadPS4.exe -Out <fresh _out path> `
-  -ShadowRoot D:\Temp\Deracine\CUSA11919-guardrails-2026-11-17 -Lab <fresh lab> `
+  -ShadowRoot <private game shadow> -Lab <fresh lab> `
   -Autopress 0 -TimeoutSeconds 90
 ```
 
