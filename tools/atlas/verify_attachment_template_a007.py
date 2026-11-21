@@ -52,7 +52,7 @@ def main():
             ("2f5d24c", "call"), ("2f5d257", "mov"), ("2f5d268", "movabs"),
             ("2f5d272", "mov"), ("2f5d28e", "ret")
         ]:
-            assert re.search(rf"^\\s*{addr}:\\s+(?:[0-9a-f]{{2}}\\s+)+{mnemonic}\\b", output, re.M), (addr, mnemonic)
+            assert re.search(rf"^\s*{addr}:\s+(?:[0-9a-f]{{2}}\s+)+{mnemonic}\b", output, re.M), (addr, mnemonic)
     print("A-007 verified: original SELF digest, 3 original-byte windows, direct call and instruction boundaries")
 if __name__ == "__main__":
     main()
