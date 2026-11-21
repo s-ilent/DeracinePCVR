@@ -117,7 +117,9 @@
       "descriptor_slots": 8,
       "confidence": "high for command producer and binding semantics; exact C++ class and resource ownership unresolved",
       "runtime_observed": false,
-      "report": "reports/atlas_render_target_command_a005.md"
+      "report": "reports/atlas_render_target_command_a005.md",
+      "map": "maps/atlas_attachment_command_a005.tsv",
+      "verifier": "tools/atlas/verify_render_target_command.py"
     }
   ],
   "known_false": [],
