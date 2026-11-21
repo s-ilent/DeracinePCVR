@@ -1,5 +1,18 @@
 # Research tasks must be promoted only after actual original-target-byte verification.
 items:
+  - id: A-005-DEFERRED-ATTACHMENT-COMMAND
+    track: A
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "Original SELF constructor 0x1420F77 installs command vtable 0x03F26A28; Execute 0x13A6A30 forwards eight 0x18-byte descriptors to context method 0x0CC2420, which binds resources through 0x0CC7E00"
+    report: "reports/atlas_render_target_command_a005.md"
+    constraint: "C++ SetRenderTargets name inferred, not recovered; no runtime reachability"
+  - id: A-006-ATTACHMENT-RESOURCE-OWNERSHIP
+    track: A
+    priority: 1
+    status: READY_STATIC
+    target: "Decode 0x0CC7E00, resource virtual slot +0x38 and context mask +0x510/+0x514/+0x518 to recover render-target/depth attachment resource lifetime"
+    acceptance: "Independently verified ELF instructions, FDEs, producer and resource layout; exact method names remain hypotheses until corroborated"
   - id: A-003-INDIRECT-CALLER-OWNERSHIP
     track: A
     priority: 1
