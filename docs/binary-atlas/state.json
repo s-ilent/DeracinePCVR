@@ -7,8 +7,8 @@
   "repo_visibility_at_check": "public",
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
-  "draft_pr_created": false,
-  "github_write_status": "branch_creation_succeeded; file_commit_and_pr_pending",
+  "draft_pr_created": true,
+  "github_write_status": "branch creation, sanitized files committed, draft PR #1 open",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -43,5 +43,13 @@
   },
   "new_original_binary_findings": [],
   "known_false": [],
-  "next_action": "Restore authorized original SELF/ZIP bytes, verify hashes, then decode new RHI/FD4 target and update evidence; do not claim discovery without original-byte checks."
+  "next_action": "Restore authorized original SELF/ZIP bytes, verify hashes, then decode new RHI/FD4 target and update evidence; do not claim discovery without original-byte checks.",
+  "draft_pr_url": "https://github.com/s-ilent/DeracinePCVR/pull/1",
+  "draft_pr_number": 1,
+  "recheck": {
+    "result": "Project sources retry: index accessible; original SELF and session ZIP remain not available for raw-byte materialization",
+    "source_scan": "files.list conversation did not expose either binary source",
+    "binary_materialization_warning": "This Project file does not have an authorized raw-byte materialization path",
+    "zip_materialization_warning": "This Project file does not have an authorized raw-byte materialization path"
+  }
 }
