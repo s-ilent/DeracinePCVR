@@ -1,7 +1,8 @@
 # Next phase: UE4 PS4 RHI graphics-context vtable and adjacent interfaces
 
 Investigation targets for the phase after the runtime interception work. Nothing here is
-verified yet; this is a prioritized plan grounded in what the completed phase established.
+verified at runtime yet; this is a prioritized plan grounded in what the completed phase
+established and in A2's existing static relocation evidence.
 
 ## What the completed phase established
 
@@ -15,94 +16,107 @@ Verified at runtime, headless, on the pinned CUSA11919 01.01 image:
 
 Not established: the UE4 symbol name of that method. The executable is stripped.
 
-## Why a vtable is the right next target
+## What A2 already recovered statically
 
-The completed phase proved one method by address. That does not scale: each additional
-operation would need its own detour and its own run. A graphics-context vtable would give a
-contiguous, ordered table of function pointers, so one recovery pass yields many methods at
-once, and the slot order itself carries semantic information about which operations the
-backend implements.
+The vtable search is **already done**. Do not repeat it. A2's report records:
 
-The working hypothesis is that `0x0CBB9C0` is one slot in such a table. That is an inference,
-not a verified fact. Confirming it is the first task.
+- A relative ELF relocation at table slot `0x03EE0190` points to function VA `0x0CBB9C0`.
+- The table base is `0x03EDFCA0`.
+- That base is loaded at code VA `0x0CACE4B`.
+- The instruction at `0x0CACE52` stores the pointer through `[RBX]`, consistent with an object
+  vptr assignment.
+- The draw entry sits at byte offset `+0x4F0` from the table base.
+- The table is vtable-shaped. RTTI and type name are not recovered.
 
-## Target 1: locate and validate the vtable
+Two candidate vtable address points therefore exist:
 
-Goal: find the table that contains the known method, and prove the containment.
-
-Approach:
-
-1. Search the image's read-only data for a pointer equal to `0x0CBB9C0` plus the image base
-   convention used by the loader. A vtable slot holds the absolute VA.
-2. For each hit, read the surrounding pointer array and check that neighbouring entries land
-   inside executable PT_LOAD ranges and inside plausible FDE ranges.
-3. Cross-check against the known caller `0x13A68E8`: a virtual dispatch site typically loads
-   the object pointer, loads the vtable pointer from offset 0, then calls through a fixed slot
-   offset. If the caller reaches `0x0CBB9C0` that way, the slot index is confirmed.
-4. Record the slot index, the table VA, the table extent, and the RVA of every entry.
-
-Acceptance: the known method's address appears in a pointer table, the caller's dispatch
-sequence is decoded and consistent with that slot, and every table entry is classified as
-in-range or out-of-range.
-
-Risk: the method may be called directly rather than virtually. If the caller uses a direct
-`E8` call, the vtable hypothesis is wrong for this method and the plan shifts to recovering
-the object layout from the caller's field accesses instead.
-
-## Target 2: shader operations
-
-The atlas already has static candidates for the two shader setters:
-
-| Item | VA | Status |
+| Candidate | Address | Meaning |
 | --- | --- | --- |
-| `sceGnmSetVsShader` import stub | `0x33c81b0` | static import mapping |
-| its caller candidate | `0xcb7075` | static, inside FDE `[0xcb5130, 0xcb865f)` |
-| `sceGnmSetPsShader350` import stub | `0x33c8340` | static import mapping |
-| its caller candidate | `0xcb6113` | static, inside FDE `[0xcb5130, 0xcb865f)` |
+| Slot | `0x03EE0190` | the relocated pointer to the draw method |
+| Table base | `0x03EDFCA0` | the vtable start, loaded at `0x0CACE4B` |
 
-Both callers sit in the same FDE, which suggests one function programs both stages. That
-function is a strong vtable-slot candidate for a "set shader" operation.
+The same table base has further relative relocation targets already identified:
 
-What to recover: the shader program address argument, the register-array layout, and whether
-the same function handles the null/disable branch. The semantic prize is mapping a PS4 GCN
-program address to a stable shader identity across frames.
+| Slot | Target | Reaches | Interpretation |
+| --- | --- | --- | --- |
+| `0x03EDFDB8` | FDE start `0x0CADC00` | `sceGnmDispatchDirect` at `0x0CADDA0` | compute dispatch candidate |
+| `0x03EDFFE0` | FDE start `0x0CB5130` | `sceGnmSetVsShader` `0x0CB7075`, `sceGnmSetPsShader350` `0x0CB702B` | shader/pipeline-state candidate |
 
-## Target 3: buffer and texture operations
+## Target 1: validate dispatch from caller `0x13A68E8`
 
-No buffer or texture setter appears in the current atlas. That is a gap, not a finding.
+This is the single highest-value task, and it is a validation task, not a search task.
 
-Approach: once the vtable is located, classify slots by the GNM import each one reaches. The
-import list is the ground truth for which operations exist. Slots that reach no GNM import are
-either inline PM4 writers or state-only helpers, and both are interesting.
+The question: does the runtime caller `0x13A68E8` reach `0x0CBB9C0` through the vtable slot
+`0x03EE0190`, or through a direct call?
 
-Specifically look for:
+Why it matters: the completed phase proved the call happens. It did not prove the dispatch
+mechanism. If dispatch is virtual, the whole table is a recoverable interface and every slot
+becomes a named operation. If dispatch is direct, the table is still real but the caller is
+not using it, and the object layout must be recovered from field accesses instead.
 
-- Index and vertex buffer binding, which should sit near the draw slot.
-- Texture and sampler binding, which should reference descriptor memory.
-- Constant buffer updates, which should show a size and a GPU address.
+Approach, static first:
 
-## Target 4: render-target and pipeline state
+1. Disassemble the caller at `0x13A68E8` and its containing FDE. Identify the call instruction
+   that reaches `0x0CBB9C0`.
+2. If it is an indirect call, decode the operand: which register, which displacement. A
+   displacement of `+0x4F0` from a vtable pointer confirms slot `0x03EE0190`.
+3. Trace where that vtable pointer came from. The store at `0x0CACE52` through `[RBX]` is the
+   likely origin; confirm the object identity.
+4. If it is a direct `E8` call, record that plainly and switch to recovering the object layout
+   from the caller's field accesses.
 
-The atlas has no render-target setter either. The completed phase saw only one draw topology
-(triangle list, `NumPrimitives` 1 or 2) and one GNM `type` value (`0x1`), so the current trace
-does not exercise the state space.
+Acceptance: the dispatch instruction at the caller is decoded, its target resolution is
+explained, and the result either confirms or refutes the `+0x4F0` slot path.
 
-What to recover: the render-target set call, the viewport/scissor set, and the blend/depth
-state set. These are the operations that would let a future backend reconstruct a pass
-boundary rather than a flat draw list.
+Note the address-space distinction: `0x13A68E8` is a runtime RVA-derived VA from the 01.01
+image. The A2 static evidence is on the 1.00 image (`8caee78e...`). The two images are both
+approved by the probe contract, but the RVAs must be reconciled before comparing them
+directly. Confirm the same table and slot exist at the corresponding offset in 01.01.
+
+## Target 2: enumerate the table
+
+Once dispatch is confirmed, walk the table from `0x03EDFCA0` and classify every slot.
+
+For each slot: the target VA, whether it lands in an executable PT_LOAD and inside an FDE, and
+which GNM import the target FDE reaches. Slots that reach no GNM import are either inline PM4
+writers or state-only helpers, and both are interesting.
+
+The two known slots give the expected shape: draw at `+0x4F0`, compute dispatch at
+`+0x118` (`0x03EDFDB8 - 0x03EDFCA0`), shader state at `+0x340`
+(`0x03EDFFE0 - 0x03EDFCA0`). The spacing suggests a large interface, consistent with a UE4
+RHI command context.
+
+## Target 3: shader operations
+
+The shader slot `0x03EDFFE0` targets FDE `0x0CB5130`, which calls both `sceGnmSetVsShader`
+(`0x0CB7075`) and `sceGnmSetPsShader350` (`0x0CB702B`). One function programming both stages
+is consistent with a pipeline-state or shader-binding operation.
+
+What to recover: the shader program address argument, the register-array layout, and the
+null/disable branch. The semantic prize is mapping a PS4 GCN program address to a stable shader
+identity across frames.
+
+## Target 4: buffer, texture and render-target operations
+
+No buffer, texture or render-target setter is identified yet. That is a gap, not a negative
+result. Target 2 is the way to close it: classify slots by the GNM import each reaches.
+
+Look specifically for index/vertex buffer binding near the draw slot, texture and sampler
+binding referencing descriptor memory, and constant buffer updates carrying a size and a GPU
+address.
 
 ## Target 5: the submission boundary
 
-`sceGnmSubmitCommandBuffers` at `0x33c85a0`, with caller candidate `0xcd6bc4` inside FDE
-`[0xcd69a0,0xcd6cd2)`, is the frame boundary. It is the natural place to delimit a frame in
-any future trace, and it is already statically mapped.
+`sceGnmSubmitCommandBuffers` at `0x033C85A0`, with caller `0x0CD6BC4` inside FDE
+`[0x0CD69A0,0x0CD6CD2)`, is the frame boundary. A2 found no relocation to its FDE start in the
+context table, so treat it as a separate boundary rather than a member of this vtable.
 
 What to recover: whether every frame passes through it, and how it relates to
-`sceGnmSubmitDone` at `0x33c86e0` (caller `0xcd2b4c`).
+`sceGnmSubmitDone` at `0x033C86E0` (caller `0x0CD2B4C`).
 
 ## Method notes
 
-- Prefer static recovery first. The atlas shows that byte decoding plus FDE containment
+- Prefer static recovery. A2 shows byte decoding plus FDE containment plus relocation analysis
   already yields high-confidence candidates without running anything.
 - Use the existing probe only to confirm a static candidate, not to discover one. The probe is
   default-off and should stay that way.
