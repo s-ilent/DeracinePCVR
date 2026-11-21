@@ -120,3 +120,33 @@ ShaderBinding	field	program_data+0x5E	-	VERIFIED	per-index flag byte, stride 4
 SetBoundShaderState	absent	-	-	VERIFIED	no command object carries FBoundShaderStateRHIParamRef
 BeginRenderPass	absent	-	-	UNRESOLVED	not found in the command vtable cluster
 EndRenderPass	absent	-	-	UNRESOLVED	not found in the command vtable cluster
+#
+# A7 additions: command production, executor shape, shader semantics.
+#
+CommandList	field	+0x00	8	VERIFIED	head (Root)
+CommandList	field	+0x08	8	VERIFIED	tail slot (CommandLink)
+CommandList	field	+0x14	4	VERIFIED	command count
+CommandList	field	+0x30	8	VERIFIED	bump allocator cursor
+CommandList	field	+0x38	8	VERIFIED	bump allocator end
+CommandList	append	0x13D6906	0x14	VERIFIED	*tail=cmd; tail=&cmd->Next; Next=0; vptr=table
+CommandList	allocator	0x13D67E0	-	VERIFIED	shared command allocator, ~130 callers
+CommandList	executor	0x14B00	0x100	VERIFIED	FDE [0x14B00,0x14C00); array walk at +0x18/+0x20
+CommandList	teardown	0x14810	0x2F0	VERIFIED	FDE [0x14810,0x14B00); slot walk, vtable[1]
+CommandList	executor_array	+0x18	8	VERIFIED	array base
+CommandList	executor_count	+0x20	4	VERIFIED	array count
+CommandList	sort_key	cmd+0x48	4	UNRESOLVED	per-command key read by the executor
+#
+# A7 shader semantics.
+#
+ShaderBinding	null_branch	0x0CCD045	5	VERIFIED	testq %rax,%rax; je 0xccd08c
+ShaderBinding	nonnull_array	0x0CCD07E	4	VERIFIED	addq ,%r12 -> program_data+8
+ShaderBinding	selector_stride	0x0CCD12C	5	VERIFIED	leaq 0x40(%r12,%rbx,4),%rdx; size fixed 0x1D
+ShaderBinding	flag_table	0x0CCD14C	4	VERIFIED	movb 0x5e(%r12,%rax,4),%al; bit 1 = variant
+ShaderBinding	modifier_arg	shader_state+0x1C0	4	VERIFIED	shader_modifier, masked into SPI_SHADER_PGM_RSRC1_VS
+ShaderBinding	modifier_valid_bits	0x030003c0	4	VERIFIED	VGPRS, SGPRS, priority/float-mode fields
+#
+# A7 corrections to earlier claims.
+#
+SetRenderTargets	payload_size	0x130	-	VERIFIED	caller requirement
+SetRenderTargets	growth_request	0x138	-	VERIFIED	allocator hint, 0x130 + 8 slack
+SetBoundShaderState	scoped_absent	-	-	UNRESOLVED	absent from the searched cluster only, not globally

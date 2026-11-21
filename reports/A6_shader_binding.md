@@ -2,15 +2,22 @@
 
 ## Result
 
-`FRHICommandSetBoundShaderState` is **not** a separate deferred command in this binary.
+`FRHICommandSetBoundShaderState` is **not** a separate deferred command in the regions A6
+searched.
 
 The shader binding happens inside the recording routine at `0x0CB5130`, which is itself vtable
 slot `+0x340` of the context vtable. There is no command object whose payload is a
-`FBoundShaderStateRHIParamRef`. The public UE4.18.3 header declares such a command; this build
-does not use it on the path that reaches the draw.
+`FBoundShaderStateRHIParamRef` on the path that reaches the draw. The public UE4.18.3 header
+declares such a command; this build does not use it there.
 
-That is a negative result for the primary target, and it is the more useful finding: the chain
-I proposed in A5 was wrong about this link.
+**Scope correction (A7):** this is a scoped negative, not a global one. A6 searched the command
+vtable cluster around `0x03F26A00`, the call sites of the two shader setters, and the pointer
+tables for the recorder and receiver. It did not enumerate every vtable in the image, and the
+trivial-destructor heuristic that finds command vtables matches far more broadly than that
+cluster. A `SetBoundShaderState` command elsewhere in the image is not excluded.
+
+The positive finding stands: the shader binding that reaches the draw happens inside the
+recording routine, and that path is verified.
 
 ## What was searched
 

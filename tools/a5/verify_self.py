@@ -260,6 +260,44 @@ def main():
           self_.read_va(0x0CCD0BE, 4) == b"\x31\xd2\xe8\x7b",
           "xorl %edx,%edx; callq")
 
+    # --- A7: command append, executor shape, shader semantics ---
+    append = self_.read_va(0x13D6906, 0x14)
+    check("command append: *tail_slot = cmd then tail_slot = &cmd->Next",
+          append is not None and
+          append[0:4] == b"\x48\x8b\x4b\x08" and
+          append[4:7] == b"\x48\x89\x01" and
+          append[7:11] == b"\x48\x89\x73\x08",
+          "movq 0x8(%rbx),%rcx; movq %rax,(%rcx); movq %rsi,0x8(%rbx)")
+    check("command append: Next cleared and vptr stored",
+          append is not None and
+          append[0x0B:0x13] == b"\x48\xc7\x40\x08\x00\x00\x00\x00" and
+          append[0x13:0x14] == b"\x48",
+          "movq $0x0,0x8(%rax); movq %rdx,(%rax)")
+    check("executor: walks an array at +0x18 with a count at +0x20",
+          self_.read_va(0x14B22, 4) == b"\x41\x8b\x45\x20" and
+          self_.read_va(0x14B40, 7) == b"\x49\x8b\x4d\x18\x89\xdb\x48",
+          "movl 0x20(%r13),%eax; movq 0x18(%r13),%rcx")
+    check("teardown: walks slots with an 8-byte stride calling vtable[1]",
+          self_.read_va(0x1484B, 3) == b"\xff\x50\x08" and
+          self_.read_va(0x14855, 4) == b"\x48\x83\xc3\x08",
+          "callq *0x8(%rax); addq $0x8,%rbx")
+    check("SetRenderTargets: 0x130 payload, 0x138 growth request",
+          self_.read_va(0x13D697A, 7) == b"\x48\x8d\x88\x30\x01\x00\x00" and
+          self_.read_va(0x13D6987, 5) == b"\xbe\x38\x01\x00\x00",
+          "leaq 0x130(%rax),%rcx; movl $0x138,%esi")
+    check("shader: null PS array is the null-shader branch",
+          self_.read_va(0x0CCD045, 5) == b"\x48\x85\xc0\x74\x42",
+          "testq %rax,%rax; je 0xccd08c")
+    check("shader: non-null PS path uses program_data+8",
+          self_.read_va(0x0CCD07E, 4) == b"\x49\x83\xc4\x08",
+          "addq $0x8,%r12")
+    check("shader: selector shifts the array start by 4 bytes per step",
+          self_.read_va(0x0CCD12C, 5) == b"\x49\x8d\x54\x9c\x40",
+          "leaq 0x40(%r12,%rbx,4),%rdx")
+    check("shader: +0x5E flag table indexed by the same selector",
+          self_.read_va(0x0CCD14C, 4) == b"\x41\x8a\x44\x84",
+          "movb 0x5e(%r12,%rax,4),%al")
+
     passed = sum(1 for c in CHECKS if c["passed"])
     total = len(CHECKS)
 
