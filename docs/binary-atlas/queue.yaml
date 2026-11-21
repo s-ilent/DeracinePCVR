@@ -1,0 +1,78 @@
+# Research tasks must be promoted only after actual original-target-byte verification.
+items:
+  - id: A-005-DEFERRED-ATTACHMENT-COMMAND
+    track: A
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "Original SELF constructor 0x1420F77 installs command vtable 0x03F26A28; Execute 0x13A6A30 forwards eight 0x18-byte descriptors to context method 0x0CC2420, which binds resources through 0x0CC7E00"
+    report: "reports/atlas_render_target_command_a005.md"
+    constraint: "C++ SetRenderTargets name inferred, not recovered; no runtime reachability"
+  - id: A-006-ATTACHMENT-RESOURCE-OWNERSHIP
+    track: A
+    priority: 1
+    status: PARTIAL_VERIFIED_STATIC
+    finding: "Original SELF: 0x0CC7E00 calls resource virtual +0x38, reads backing +0x3C, calls 0x0CC9240 which emits 12-byte graphics-state words through context writer +0x460"
+    report: "reports/atlas_attachment_backing_a006.md"
+    verifier: "tools/atlas/verify_attachment_backing_a006.py"
+    target: "Resolve virtual +0x38 implementation and backing ownership, packet semantics and context masks +0x510/+0x514/+0x518"
+    acceptance: "FDE/vtable producer, backing layout and ownership with multiple original-byte corroborations"
+  - id: A-003-INDIRECT-CALLER-OWNERSHIP
+    track: A
+    priority: 1
+    status: READY_STATIC
+    target: "Trace source/callers of 0x0CBBEF0 via context vtable +0x4f8, and distinguish method RDI from fourth argument RCX->R13"
+    constraint: "Use 1.00 original hash and decode real indirect call instructions plus object/vptr provenance; no inferred runtime reachability"
+    acceptance: "New FDE-bounded original-SELF call/producer edge, resolved vtable +0x4f8 dispatch or direct path, multiple corroborating state/resource-offset accesses and competing interpretations"
+  - id: A-004-ADJACENT-INDIRECT-VARIANT
+    track: A
+    priority: 2
+    status: READY_STATIC
+    target: "Decode +0x4e8 => 0x0CBB410, observed GNM call at 0x0CBB841; distinguish this method from new +0x4f8 operation"
+    constraint: "The raw import call and table pointer were already reported; require new verified semantic/ownership finding, not relabeling"
+    acceptance: "Decoded FDE, call-state differences and upstream type/usage corroboration"
+  - id: A-001-CALLER-DISPATCH
+    track: A
+    priority: 1
+    status: BLOCKED_WITH_RESOURCES
+    target: "Decode RVA 0x13A68E8 on the separately hashed 01.01 image; determine direct E8 vs indirect vtable+0x4f0 and trace object provenance"
+    constraint: "Runtime caller was reported in B3; reconcile 1.00/1.01 RVAs rather than assuming equivalence"
+    acceptance: "Original-byte instruction-boundary disassembly, containing FDE, register/vptr provenance, competing hypotheses and distinct VA/offset domains"
+  - id: A-002-NEIGHBOR-CONTEXT
+    track: A
+    priority: 2
+    status: VERIFIED_STATIC
+    finding: "Verified ELF VA 0x0CBBEF0 indexed-indirect draw method; vtable slot 0x03EE0198; exact FDE and GNM indirect call"
+    report: "reports/atlas_indirect_indexed_draw_a002.md"
+    verifier: "tools/atlas/verify_indexed_indirect.py"
+    target: "Independently identify a previously unattributed adjacent vtable slot on the 1.00 image (not A2's indexed draw, compute or shader slot)"
+    constraint: "No byte-pattern-only hits or relabeling of A2 findings"
+    acceptance: "Confirmed target disassembly and vtable relocation, multiple member uses and/or import/xrefs, confidence and contrary evidence"
+  - id: INGEST-001-PRIVATE-AGENTS
+    track: provenance
+    priority: 3
+    status: PARTIAL_DONE
+    progress: "Verified SHA+all 33 ZIP CRCs; first-pass indexed 11 non-memory streams; sanitized event index saved"
+    evidence: "docs/binary-atlas/session-provenance-20261121.md"
+    target: "Verify ZIP SHA and index, then stream agent A/RHI, B/GPU, C/FD4, D/atlas, E/runtime, A2 and B2/B3 event windows selectively"
+    constraint: "No raw logs, source paths, tokens or transcripts may be committed; no full repeated archive ingestion"
+    acceptance: "Sanitized per-agent event ordinals and candidate classification ALREADY_VERIFIED/CANDIDATE_VERIFY/KNOWN_FALSE/NEW_READY_STATIC; promotion only after original ELF verification"
+  - id: B-001-COMMANDLIST
+    track: B
+    priority: 4
+    status: READY_STATIC
+    target: "Trace FRHICommandList Execute -> context slot dispatch above GNM with exact version-specific UE4 interface comparison"
+    acceptance: "Independently verified original target edges and explicit distinction from public UE4 reference"
+  - id: C-001-SHADER-RESOURCE
+    track: C
+    priority: 5
+    status: READY_STATIC
+    target: "Trace graphics shader-state slot to guest resource ownership, uniform descriptor construction and program identity"
+    acceptance: "Binary-backed field uses, allocation/binding evidence and differentiated shader hash/GPU VA/ELF VA"
+  - id: D-001-FD4-BRIDGE
+    track: D
+    priority: 6
+    status: READY_STATIC
+    target: "Recover an original-binary FD4Plugin->FD4/dantelion2 ownership edge affecting render/camera/VR state"
+    acceptance: "Relocation/xrefs/disassembly plus structure-layout corroboration; no offset transplant from other games"
+
+# All static READY items use the original hash-verified SELF. A-001 needs the separately hashed 01.01 image.

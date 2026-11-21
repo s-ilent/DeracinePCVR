@@ -1,0 +1,9 @@
+kind	inner_elf_va	original_self_offset	interpretation
+command_vtable	0x03F26A28	0x03F47C68	2 QWORDs Execute 0x13A6A30 destructor 0x13A6A70
+producer_lea	0x1420F77	0x1440CA7	RIP-relative vtable address load
+producer_store	0x1420F86	0x1440CB6	command vptr store
+execute_entry	0x13A6A30	0x13C6760	command list context forwarding
+execute_call	0x13A6A62	0x13C6792	direct call to context 0x0CC2420
+context_entry	0x0CC2420	0x0CE2150	per-slot resource binding
+context_bind_call	0x0CC251E	0x0CE224E	direct call to helper 0x0CC7E00
+context_stride	0x0CC256F	0x0CE229F	0x18 descriptor stride

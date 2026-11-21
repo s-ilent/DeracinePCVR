@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "run_status": "VERIFIED_STATIC_NEW",
+  "run_is_accepted_finding": true,
+  "repo": "s-ilent/DeracinePCVR",
+  "checked_main_commit": "e2f981c40cba7c8490177c20c179cb3608cc1442",
+  "repo_visibility_at_check": "public",
+  "branch": "research/deracine-self-atlas",
+  "branch_created": true,
+  "draft_pr_created": true,
+  "github_write_status": "A-006 original SELF analysis and byte verifier committed on dedicated branch; draft PR #1 open; main unchanged",
+  "self": {
+    "expected_size": 81506767,
+    "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+    "bytes_accessible": true,
+    "sha256_verified_this_run": true,
+    "access_error": null,
+    "source": "direct user-provided original SELF; private, not Git"
+  },
+  "archive": {
+    "expected_size": 92544428,
+    "sha256_expected": "336d0746d64915c988fa985a92ce2eb8ea1ecf328034385c8d055766a93c984c",
+    "bytes_accessible": true,
+    "sha256_verified_this_run": true,
+    "access_error": null,
+    "source": "direct user-provided original session ZIP; private, not Git",
+    "member_count_verified": 33,
+    "total_uncompressed_bytes_verified": 272185371,
+    "all_zip_member_crcs_passed": true
+  },
+  "index": {
+    "sha256": "1f661e2956ef8c34e75c83ace75823149a9e1dee10045fa96536a15697f4b772",
+    "structural_checks_passed_prior_run": true,
+    "archive_integrity_verified": true,
+    "stream_count": 33,
+    "declared_uncompressed_bytes": 272185371,
+    "inspected_archive_event_ranges": [
+      {
+        "member_role": "first-round A/RHI",
+        "ordinal_event_windows": [
+          "237/seq235"
+        ],
+        "classification": "ALREADY_VERIFIED_IMPORT_CALLSITE"
+      },
+      {
+        "member_role": "first-round E/runtime",
+        "ordinal_event_windows": [
+          "253/seq251"
+        ],
+        "classification": "ALREADY_VERIFIED_IMPORT_INVENTORY"
+      },
+      {
+        "member_role": "A2/internal UE4 RHI",
+        "ordinal_event_windows": [
+          "292/seq290",
+          "936/seq934",
+          "944/seq942",
+          "1019/seq1017"
+        ],
+        "classification": "ALREADY_VERIFIED_TABLE_ONLY"
+      }
+    ],
+    "sha256_verified_this_run": true,
+    "members_crosschecked_against_zip": 33,
+    "first_pass_non_memory_streams_scanned": 11,
+    "memory_streams_intentionally_skipped": 22,
+    "sanitized_provenance_path": "docs/binary-atlas/session-provenance-20261121.md"
+  },
+  "source_branches": {
+    "A2": "research/ue4-internal-rhi-a2-20261121",
+    "B3": "research/semantic-capture-b2-20261121",
+    "checked_main_commit": "e2f981c40cba7c8490177c20c179cb3608cc1442"
+  },
+  "already_reported": {
+    "draw_elf_va": "0x0CBB9C0",
+    "draw_vtable_base": "0x03EDFCA0",
+    "draw_vtable_entry": "0x03EE0190",
+    "runtime_caller_rva_0101": "0x13A68E8"
+  },
+  "new_original_binary_findings": [
+    {
+      "id": "A-002-INDEXED-INDIRECT-VTABLE",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "method_elf_va": "0x0CBBEF0",
+      "table_base_elf_va": "0x03EDFCA0",
+      "vtable_slot_elf_va": "0x03EE0198",
+      "slot_offset": "+0x4F8",
+      "fde_start_elf_va": "0x0CBBEF0",
+      "fde_end_exclusive_elf_va": "0x0CBC4D7",
+      "fde_record_elf_va": "0x038F7A50",
+      "callsite_elf_va": "0x0CBC359",
+      "call_target_import_stub_elf_va": "0x033C8390",
+      "call_target_import_got_elf_va": "0x04381DA8",
+      "raw_nid": "ED9-Fjr8Ta4",
+      "friendly_import_name": "sceGnmDrawIndexIndirect",
+      "rela_index": 37982,
+      "jmprel_index": 451,
+      "body_sha256": "53fbfe5da0dbe6a7e6bf85e37a0062fbbfb1557247c7506bcd3a6e74c5344bc5",
+      "confidence": "high for indexed-indirect GNM emitter; C++ exact virtual method/class unresolved",
+      "runtime_observed": false,
+      "notes": "Existing A2 indexed table pointer and earlier raw E8 callsite were known separately; new binary-backed semantic attribution and method-state argument flow verified",
+      "report": "reports/atlas_indirect_indexed_draw_a002.md",
+      "map": "maps/atlas_indirect_draw_a002.tsv",
+      "verifier": "tools/atlas/verify_indexed_indirect.py"
+    },
+    {
+      "id": "A-005-DEFERRED-ATTACHMENT-COMMAND",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "vtable_elf_va": "0x03F26A28",
+      "constructor_site_elf_va": "0x1420F77",
+      "execute_elf_va": "0x13A6A30",
+      "context_callee_elf_va": "0x0CC2420",
+      "resource_binding_helper_elf_va": "0x0CC7E00",
+      "descriptor_stride": "0x18",
+      "descriptor_slots": 8,
+      "confidence": "high for command producer and binding semantics; exact C++ class and resource ownership unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_render_target_command_a005.md",
+      "map": "maps/atlas_attachment_command_a005.tsv",
+      "verifier": "tools/atlas/verify_render_target_command.py"
+    },
+    {
+      "id": "A-006-ATTACHMENT-BACKING-STATE",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "helper_elf_va": "0x0CC7E00",
+      "state_writer_elf_va": "0x0CC9240",
+      "resource_virtual_offset": "+0x38",
+      "backing_field_offset": "+0x3C",
+      "context_writer_offset": "+0x460",
+      "context_state_offsets": [
+        "+0x480",
+        "+0x484"
+      ],
+      "confidence": "high for backing-state dispatch and command writer; exact packet semantics and resource ownership unknown",
+      "runtime_observed": false,
+      "report": "reports/atlas_attachment_backing_a006.md",
+      "verifier": "tools/atlas/verify_attachment_backing_a006.py"
+    }
+  ],
+  "known_false": [],
+  "next_action": "Resolve attachment resource vtable producer and +0x38 implementation, then identify backing object type and state packet meanings; verify FDE boundaries.",
+  "draft_pr_url": "https://github.com/s-ilent/DeracinePCVR/pull/1",
+  "draft_pr_number": 1,
+  "recheck": {
+    "result": "Previous access blocker RESOLVED by direct user attachments; earlier materialization warning is historical",
+    "source_scan": "files.list conversation did not expose either binary source",
+    "binary_materialization_warning": "This Project file does not have an authorized raw-byte materialization path",
+    "zip_materialization_warning": "This Project file does not have an authorized raw-byte materialization path",
+    "resolved_by": "direct user-uploaded SELF and ZIP, validated independently"
+  }
+}
