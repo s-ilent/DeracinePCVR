@@ -82,17 +82,33 @@ presented as such.
 
 ## The bounded next step
 
-The classroom needs `Mpx >= 500` at ~446 draws, and this build produces ~469. Two candidate
-explanations, both testable without new instrumentation:
+The classroom needs `Mpx >= 500` at ~446 draws, and this build produces ~469.
+
+A longer run was tried to test whether the classroom appears later. `long-run-1` ran 200 s with
+dumps at 40, 70, 100 and 130 s. Every dump was a loading screen:
+
+| Dump | Similarity to classroom |
+| --- | --- |
+| 40 s | -0.0768 |
+| 70 s | -0.0358 |
+| 100 s | -0.0259 |
+
+Across 205 samples, exactly **one** reached the band: 34 s, 469 draws, 501.0 Mpx. One sample is
+not two consecutive windows, so the gate still cannot pass.
+
+So the scene is not reached later either. The classroom is not reachable in this configuration.
+
+## What the evidence supports
+
+Two candidate explanations remain, and this phase does not distinguish them:
 
 1. The gate's Mpx floor was calibrated on a different build. The reference note cites branch
-   `test/v0.21.0-plus-fixes`; this branch is `research/sc04-scene-association-20261122`, which
-   descends from `main` at `e2f981c4`. A renderer difference would change Mpx at the same draw
-   count.
-2. The classroom is reached later than 38 s and the plateau is a loading screen.
+   `test/v0.21.0-plus-fixes`; this branch descends from `main` at `e2f981c4`. A renderer
+   difference would change Mpx at the same draw count, and 469 versus 500 is a 6% gap.
+2. The classroom requires input this harness does not supply. The autopress schedule advances
+   past the health warning and into loading, but never settles on the menu.
 
-The cheapest discriminator is a dump at a later time in a longer run, checking whether any frame
-is non-uniform and matches the reference. That is one cell, not a new investigation.
+Distinguishing them needs the reference build, which is outside this branch's scope.
 
 ## Reproducible checks
 
