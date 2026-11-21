@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "A-006 original SELF analysis and byte verifier committed on dedicated branch; draft PR #1 open; main unchanged",
+  "github_write_status": "A-007 original SELF four-way attachment template writer committed on research branch; draft PR #1 open; main unchanged",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -138,10 +138,36 @@
       "runtime_observed": false,
       "report": "reports/atlas_attachment_backing_a006.md",
       "verifier": "tools/atlas/verify_attachment_backing_a006.py"
+    },
+    {
+      "id": "A-007-ATTACHMENT-STATE-TEMPLATES",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "caller_elf_va": "0x0CC9240",
+      "callee_elf_va": "0x02F5D0F0",
+      "callsite_elf_va": "0x0CC93B5",
+      "table_selector": "1..4",
+      "table_va": [
+        "0x035AF340",
+        "0x035AF350",
+        "0x035AF360",
+        "0x035AF370",
+        "0x035AF380",
+        "0x035C3940"
+      ],
+      "packet_lengths_dwords": [
+        18,
+        4,
+        3
+      ],
+      "confidence": "high for writer packet sizes and four-case dispatch; exact table relocated values and GPU semantics unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_attachment_template_a007.md",
+      "verifier": "tools/atlas/verify_attachment_template_a007.py"
     }
   ],
   "known_false": [],
-  "next_action": "Resolve attachment resource vtable producer and +0x38 implementation, then identify backing object type and state packet meanings; verify FDE boundaries.",
+  "next_action": "Recover data-segment mapping and relocation-resolved four-way attachment template values; identify backing resource construction/ownership and packet meaning.",
   "draft_pr_url": "https://github.com/s-ilent/DeracinePCVR/pull/1",
   "draft_pr_number": 1,
   "recheck": {
