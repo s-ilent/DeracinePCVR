@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "research branch and draft PR #1 open; verified report, new static map, checker and sanitized session index committed; main unchanged",
+  "github_write_status": "A-005 original SELF analysis committed on dedicated research branch; draft PR #1 remains open; main unchanged",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -103,10 +103,25 @@
       "report": "reports/atlas_indirect_indexed_draw_a002.md",
       "map": "maps/atlas_indirect_draw_a002.tsv",
       "verifier": "tools/atlas/verify_indexed_indirect.py"
+    },
+    {
+      "id": "A-005-DEFERRED-ATTACHMENT-COMMAND",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "vtable_elf_va": "0x03F26A28",
+      "constructor_site_elf_va": "0x1420F77",
+      "execute_elf_va": "0x13A6A30",
+      "context_callee_elf_va": "0x0CC2420",
+      "resource_binding_helper_elf_va": "0x0CC7E00",
+      "descriptor_stride": "0x18",
+      "descriptor_slots": 8,
+      "confidence": "high for command producer and binding semantics; exact C++ class and resource ownership unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_render_target_command_a005.md"
     }
   ],
   "known_false": [],
-  "next_action": "Prioritize original SELF 1.00 indexed-indirect vtable member caller/producer and ownership (A-003); verify exact decoded dispatch/callers above GNM. Do not repeat A2 indexed draw or A3/B3 runtime correlation. Do not reprocess whole ZIP; resume from sanitized agent event windows. 01.01 caller RVA remains separately blocked without its matching image.",
+  "next_action": "Decode 0x0CC7E00 resource-binding helper and virtual slot +0x38 to identify attachment lifetime and depth/resolve semantics; independently corroborate FDEs and exact class attribution.",
   "draft_pr_url": "https://github.com/s-ilent/DeracinePCVR/pull/1",
   "draft_pr_number": 1,
   "recheck": {
