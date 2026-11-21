@@ -150,3 +150,29 @@ ShaderBinding	modifier_valid_bits	0x030003c0	4	VERIFIED	VGPRS, SGPRS, priority/f
 SetRenderTargets	payload_size	0x130	-	VERIFIED	caller requirement
 SetRenderTargets	growth_request	0x138	-	VERIFIED	allocator hint, 0x130 + 8 slack
 SetBoundShaderState	scoped_absent	-	-	UNRESOLVED	absent from the searched cluster only, not globally
+#
+# A8 corrections: the real executor. SUPERSEDES the A7 executor rows above.
+#
+CommandList	executor	0x13764D0	0x1190	VERIFIED	FDE [0x13764D0,0x1377660); walks Next from head
+CommandList	dispatch	0x1376954	2	VERIFIED	callq *(%rax) with rdi=cmd, rsi=list, rdx=scratch
+CommandList	executor_head	0x1376934	3	VERIFIED	movq (%r15),%rdi
+CommandList	executor_next	0x1376940	4	VERIFIED	movq 0x8(%rdi),%rbx
+CommandList	executor_rsi	0x137694B	3	VERIFIED	movq %r15,%rsi
+CommandList	executor_reset	0x137696E	0x12	VERIFIED	NumCommands=0; head=null; tail=&head
+CommandList	bExecuting	+0x10	1	VERIFIED	set 1 before the walk, 0 after
+CommandList	NumCommands	+0x14	4	VERIFIED	zeroed on reset
+#
+# A8: 0x14B00 is NOT the executor. It is a task/job dispatcher.
+#
+NotExecutor	function	0x14B00	0x100	VERIFIED	receives object+0x38, reads +0x18/+0x20 of that
+NotExecutor	caller	0x1485E	4	VERIFIED	leaq 0x38(%r15),%rdi
+NotExecutor	key_read	0x14B4F	3	VERIFIED	movl 0x48(%rdi),%eax on each element
+NotExecutor	no_rsi	0x14B9F	4	VERIFIED	dispatch with no rsi setup
+#
+# A8: RSRC1 field correction. Supersedes the A7 modifier_valid_bits row.
+#
+ShaderBinding	modifier_bits	0x030003c0	4	VERIFIED	SGPRS (bits 6-9) + bits 24-25, NOT VGPRS/priority/float-mode
+ShaderBinding	rsrc1_vgprs	0x0000003f	4	VERIFIED	bits 0-5, not in the allowed mask
+ShaderBinding	rsrc1_sgprs	0x000003c0	4	VERIFIED	bits 6-9, in the allowed mask
+ShaderBinding	rsrc1_priority	0x00001c00	4	VERIFIED	bits 10-12, not in the allowed mask
+ShaderBinding	rsrc1_float_mode	0x00002000	4	VERIFIED	bit 13, not in the allowed mask

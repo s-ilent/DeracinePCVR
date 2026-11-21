@@ -1,5 +1,16 @@
 # A7 handoff: command production, executor shape and shader semantics
 
+> **SUPERSEDED IN PART (A8).** The executor identification below is wrong. `0x14B00` is not the
+> RHI command executor; it is a task/job dispatcher. The real executor is at `0x13764D0`, with
+> the dispatch at `0x1376954`, and it walks the linked list via `Next` at `cmd+0x08`, passing the
+> list as `%rsi`. See `reports/A8_executor_recovery.md`.
+>
+> Also superseded: the RSRC1 field attribution. The allowed mask `0x030003C0` is SGPRS (bits 6-9)
+> plus bits 24-25, not VGPRS, priority or float mode.
+>
+> Everything else here stands: the append mechanism, the allocator analysis, the `0x130`/`0x138`
+> reconciliation, the null-pixel-shader branch, and the shader program pointer chain.
+
 Evidence package for the independent Binary Atlas track. Checkable against the original SELF
 with `tools/a5/verify_self.py`, which gates on image identity and runs 48 checks.
 
@@ -23,7 +34,9 @@ Both images pass all 48 checks. No address differs between them.
 `0x13D6906` is four stores: `*tail = cmd`, `tail = &cmd->Next`, `cmd->Next = null`,
 `cmd->vptr = table`. That is `FRHICommandListBase::AllocCommand` exactly.
 
-**2. The executor walks a different structure than the list.** `0x14B00` walks an array of
+**2. The executor walks a different structure than the list.** *(SUPERSEDED by A8: this is
+wrong. `0x14B00` is a task dispatcher, not the RHI executor. The real executor at `0x13764D0`
+walks the linked list via `Next`.)* `0x14B00` walks an array of
 command pointers at `+0x18` with a count at `+0x20`. The teardown at `0x14810` walks the same
 array by slot. So the same command objects are reachable two ways: the list orders them, the
 array stores them.

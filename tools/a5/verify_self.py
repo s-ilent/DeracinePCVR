@@ -298,6 +298,46 @@ def main():
           self_.read_va(0x0CCD14C, 4) == b"\x41\x8a\x44\x84",
           "movb 0x5e(%r12,%rax,4),%al")
 
+    # --- A8: the real executor, and why 0x14B00 is not it ---
+    # Semantic cross-check: the executor must set rsi to the list before dispatching,
+    # and the wrapper must read 0x20(%rsi). Byte matching alone would not tie them.
+    exec_loop = self_.read_va(0x137692F, 0x30)
+    check("executor: sets bExecuting then loads the head",
+          exec_loop is not None and
+          exec_loop[0:5] == b"\x41\xc6\x47\x10\x01" and
+          exec_loop[5:8] == b"\x49\x8b\x3f",
+          "movb $0x1,0x10(%r15); movq (%r15),%rdi")
+    check("executor: loads Next from cmd+0x08",
+          exec_loop is not None and exec_loop[0x11:0x15] == b"\x48\x8b\x5f\x08",
+          "movq 0x8(%rdi),%rbx")
+    check("executor: passes the list as rsi before dispatching",
+          exec_loop is not None and exec_loop[0x1C:0x1F] == b"\x4c\x89\xfe",
+          "movq %r15,%rsi")
+    check("executor: dispatches vtable[0]",
+          exec_loop is not None and exec_loop[0x22:0x25] == b"\x48\x8b\x07" and
+          exec_loop[0x25:0x27] == b"\xff\x10",
+          "movq (%rdi),%rax; callq *(%rax)")
+    check("executor: resets the list after the walk",
+          self_.read_va(0x137696E, 0x12) ==
+          b"\x41\xc7\x47\x14\x00\x00\x00\x00\x49\xc7\x07\x00\x00\x00\x00\x4d\x89\x7f",
+          "NumCommands=0; head=null; tail=&head")
+
+    # The wrapper must consume rsi as the command list, which is what ties the two.
+    check("cross-check: wrapper reads 0x20(%rsi) as the context",
+          self_.read_va(0x13A68B6, 4) == b"\x48\x8b\x46\x20",
+          "movq 0x20(%rsi),%rax")
+
+    # 0x14B00 is NOT the executor: it receives object+0x38 and never sets rsi.
+    check("0x14B00 is not the executor: caller passes object+0x38",
+          self_.read_va(0x1485E, 4) == b"\x49\x8d\x7f\x38",
+          "leaq 0x38(%r15),%rdi")
+    check("0x14B00 is not the executor: reads +0x48 of each element",
+          self_.read_va(0x14B4F, 3) == b"\x8b\x47\x48",
+          "movl 0x48(%rdi),%eax")
+    check("0x14B00 is not the executor: no rsi set before the dispatch",
+          self_.read_va(0x14B9F, 4) == b"\x48\x8b\x07\xff",
+          "movq (%rdi),%rax; callq *(%rax) with no rsi setup")
+
     passed = sum(1 for c in CHECKS if c["passed"])
     total = len(CHECKS)
 
