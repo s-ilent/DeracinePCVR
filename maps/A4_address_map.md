@@ -5,10 +5,12 @@ All addresses are inner-ELF virtual addresses from the pinned images. The runtim
 
 ## Images
 
-| Image | SHA-256 | Path |
+| Image | SHA-256 | Location |
 | --- | --- | --- |
-| 1.00 | `8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0` | `D:\Temp\Deracine\1.0\Image0\eboot.bin` |
-| 01.01 | `8da8e46ac5fdc48e4e9b59e459920a266039993dc13a2d92740f8803e46fdf75` | `D:\Temp\Deracine\CUSA11919-1.01\eboot.bin` |
+| 1.00 | `8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0` | `<dump>\1.0\Image0\eboot.bin` |
+| 01.01 | `8da8e46ac5fdc48e4e9b59e459920a266039993dc13a2d92740f8803e46fdf75` | `<dump>\CUSA11919-1.01\eboot.bin` |
+
+`<dump>` is the local Déraciné dump root. The SHA-256 is the identity; the path is only a hint.
 
 Both are 81,506,767 bytes. Every address in this map was checked in both images and agrees.
 
