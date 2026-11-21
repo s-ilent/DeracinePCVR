@@ -1,0 +1,41 @@
+# Research tasks must be promoted only after actual original-target-byte verification.
+items:
+  - id: A-001-CALLER-DISPATCH
+    track: A
+    priority: 1
+    status: BLOCKED_WITH_RESOURCES
+    target: "Decode RVA 0x13A68E8 on the separately hashed 01.01 image; determine direct E8 vs indirect vtable+0x4f0 and trace object provenance"
+    constraint: "Runtime caller was reported in B3; reconcile 1.00/1.01 RVAs rather than assuming equivalence"
+    acceptance: "Original-byte instruction-boundary disassembly, containing FDE, register/vptr provenance, competing hypotheses and distinct VA/offset domains"
+  - id: A-002-NEIGHBOR-CONTEXT
+    track: A
+    priority: 2
+    status: BLOCKED_WITH_RESOURCES
+    target: "Independently identify a previously unattributed adjacent vtable slot on the 1.00 image (not A2's indexed draw, compute or shader slot)"
+    constraint: "No byte-pattern-only hits or relabeling of A2 findings"
+    acceptance: "Confirmed target disassembly and vtable relocation, multiple member uses and/or import/xrefs, confidence and contrary evidence"
+  - id: INGEST-001-PRIVATE-AGENTS
+    track: provenance
+    priority: 3
+    status: BLOCKED_WITH_RESOURCES
+    target: "Verify ZIP SHA and index, then stream agent A/RHI, B/GPU, C/FD4, D/atlas, E/runtime, A2 and B2/B3 event windows selectively"
+    constraint: "No raw logs, source paths, tokens or transcripts may be committed; no full repeated archive ingestion"
+    acceptance: "Sanitized per-agent event ordinals and candidate classification ALREADY_VERIFIED/CANDIDATE_VERIFY/KNOWN_FALSE/NEW_READY_STATIC; promotion only after original ELF verification"
+  - id: B-001-COMMANDLIST
+    track: B
+    priority: 4
+    status: BLOCKED_WITH_RESOURCES
+    target: "Trace FRHICommandList Execute -> context slot dispatch above GNM with exact version-specific UE4 interface comparison"
+    acceptance: "Independently verified original target edges and explicit distinction from public UE4 reference"
+  - id: C-001-SHADER-RESOURCE
+    track: C
+    priority: 5
+    status: BLOCKED_WITH_RESOURCES
+    target: "Trace graphics shader-state slot to guest resource ownership, uniform descriptor construction and program identity"
+    acceptance: "Binary-backed field uses, allocation/binding evidence and differentiated shader hash/GPU VA/ELF VA"
+  - id: D-001-FD4-BRIDGE
+    track: D
+    priority: 6
+    status: BLOCKED_WITH_RESOURCES
+    target: "Recover an original-binary FD4Plugin->FD4/dantelion2 ownership edge affecting render/camera/VR state"
+    acceptance: "Relocation/xrefs/disassembly plus structure-layout corroboration; no offset transplant from other games"
