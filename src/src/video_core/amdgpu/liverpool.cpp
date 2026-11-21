@@ -18,6 +18,7 @@
 #include "core/libraries/videoout/driver.h"
 #include "core/memory.h"
 #include "core/platform.h"
+#include "core/rhi_entry_probe.h"
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/amdgpu/pm4_cmds.h"
 #include "video_core/amdgpu/pm4_packet.h"
@@ -546,6 +547,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
             }
             case PM4ItOpcode::DrawIndex2: {
                 const auto* draw_index = reinterpret_cast<const PM4CmdDrawIndex2*>(header);
+                Core::RhiEntryProbe::CapturePm4DrawIndex2(
+                    draw_index->max_size, draw_index->index_base_lo, draw_index->index_base_hi,
+                    draw_index->index_count, draw_index->draw_initiator);
                 regs.max_index_size = draw_index->max_size;
                 regs.index_base_address.base_addr_lo = draw_index->index_base_lo;
                 regs.index_base_address.base_addr_hi = draw_index->index_base_hi;

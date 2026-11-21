@@ -26,6 +26,7 @@
 #include "core/libraries/videoout/video_out.h"
 #include "core/memory.h"
 #include "core/platform.h"
+#include "core/rhi_entry_probe.h"
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/amdgpu/pm4_cmds.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
@@ -458,6 +459,8 @@ u32 PS4_SYSV_ABI sceGnmDispatchInitDefaultHardwareState(u32* cmdbuf, u32 size) {
 
 s32 PS4_SYSV_ABI sceGnmDrawIndex(u32* cmdbuf, u32 size, u32 index_count, uintptr_t index_addr,
                                  u32 flags, u32 type) {
+    Core::RhiEntryProbe::CaptureGnmDrawIndex(reinterpret_cast<std::uintptr_t>(cmdbuf), size,
+                                             index_count, index_addr, flags, type);
     LOG_TRACE(Lib_GnmDriver, "called");
 
     if (cmdbuf && (size == 10) && (index_addr != 0) && (index_addr & 1) == 0 &&

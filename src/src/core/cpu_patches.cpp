@@ -1,10 +1,15 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
+#include <atomic>
+#include <cstring>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <set>
+#include <span>
 #include <vector>
 #include <Zydis/Zydis.h>
 #include <xbyak/xbyak.h>
@@ -15,11 +20,13 @@
 #include "common/decoder.h"
 #include "common/signal_context.h"
 #include "common/types.h"
+#include "core/memory.h"
 #include "core/signals.h"
 #include "core/tls.h"
 #include "cpu_patches.h"
 
 #ifdef _WIN32
+#include <intrin.h>
 #include <windows.h>
 #else
 #if defined(__FreeBSD__)
@@ -513,10 +520,16 @@ struct PatchModule {
     /// Code generator for writing trampoline patches.
     Xbyak::CodeGenerator trampoline_gen;
 
+    /// Bounds of the guest executable trampoline area associated with this module.
+    u8* trampoline_start;
+    u8* trampoline_end;
+
     PatchModule(u8* module_ptr, const u64 module_size, u8* trampoline_ptr,
                 const u64 trampoline_size)
         : start(module_ptr), end(module_ptr + module_size), patch_gen(module_size, module_ptr),
-          trampoline_gen(trampoline_size, trampoline_ptr) {}
+          trampoline_gen(trampoline_size, trampoline_ptr),
+          trampoline_start(static_cast<u8*>(trampoline_ptr)),
+          trampoline_end(static_cast<u8*>(trampoline_ptr) + trampoline_size) {}
 };
 static std::map<u64, PatchModule> modules;
 
@@ -867,6 +880,524 @@ static void PatchesInit() {
         signals->RegisterAccessViolationHandler(PatchesAccessViolationHandler, priority);
         signals->RegisterIllegalInstructionHandler(PatchesIllegalInstructionHandler, priority);
     }
+}
+
+namespace {
+
+constexpr size_t GuestEntryRedZoneSize = 128;
+constexpr size_t GuestEntryStackAdjustment =
+    sizeof(GuestEntryRegisterFrame) + GuestEntryRedZoneSize;
+static_assert(GuestEntryStackAdjustment == 776,
+              "The full YMM frame plus guest red zone must remain 776 bytes");
+static_assert(GuestEntryStackAdjustment % 16 == 8,
+              "The saved entry frame must align the observer call stack");
+
+[[nodiscard]] static bool AddSignedAddress(VAddr base, s64 offset, VAddr& result) {
+    if (offset >= 0) {
+        const auto amount = static_cast<u64>(offset);
+        if (base > (std::numeric_limits<VAddr>::max)() - amount)
+            return false;
+        result = base + amount;
+        return true;
+    }
+    const auto amount = static_cast<u64>(-(offset + 1)) + 1;
+    if (base < amount)
+        return false;
+    result = base - amount;
+    return true;
+}
+
+[[nodiscard]] static bool RelativeDisplacement(VAddr target, VAddr next_instruction,
+                                               s64& displacement) {
+    if (target >= next_instruction) {
+        const auto delta = target - next_instruction;
+        if (delta > static_cast<u64>((std::numeric_limits<s64>::max)()))
+            return false;
+        displacement = static_cast<s64>(delta);
+        return true;
+    }
+    const auto delta = next_instruction - target;
+    const auto min_magnitude = static_cast<u64>((std::numeric_limits<s64>::max)()) + 1;
+    if (delta > min_magnitude)
+        return false;
+    displacement =
+        delta == min_magnitude ? (std::numeric_limits<s64>::min)() : -static_cast<s64>(delta);
+    return true;
+}
+
+[[nodiscard]] static bool WriteSignedDisplacement(u8* bytes, size_t instruction_length,
+                                                  u8 field_offset, u8 field_size_bits,
+                                                  s64 displacement) {
+    if (field_size_bits != 8 && field_size_bits != 16 && field_size_bits != 32)
+        return false;
+    const size_t field_size = field_size_bits / 8;
+    if (field_offset > instruction_length || field_size > instruction_length - field_offset) {
+        return false;
+    }
+    const s64 min_value = -(1LL << (field_size_bits - 1));
+    const s64 max_value = (1LL << (field_size_bits - 1)) - 1;
+    if (displacement < min_value || displacement > max_value)
+        return false;
+    const auto encoded = static_cast<u64>(displacement);
+    for (size_t i = 0; i < field_size; ++i) {
+        bytes[field_offset + i] = static_cast<u8>(encoded >> (i * 8));
+    }
+    return true;
+}
+
+[[nodiscard]] static bool RemapTrampolineTarget(VAddr target, VAddr original_start,
+                                                VAddr trampoline_start, size_t stolen_length,
+                                                VAddr& remapped) {
+    if (original_start > (std::numeric_limits<VAddr>::max)() - stolen_length ||
+        trampoline_start > (std::numeric_limits<VAddr>::max)() - stolen_length) {
+        return false;
+    }
+    const VAddr original_end = original_start + stolen_length;
+    if (target < original_start || target > original_end) {
+        remapped = target;
+        return true;
+    }
+    remapped = trampoline_start + (target - original_start);
+    return true;
+}
+
+[[nodiscard]] static bool RelocateEntryInstruction(const u8* source_bytes, VAddr source_address,
+                                                   u8* destination_bytes, VAddr destination_address,
+                                                   size_t instruction_length, VAddr original_start,
+                                                   VAddr trampoline_start, size_t stolen_length) {
+    ZydisDecodedInstruction instruction{};
+    ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT]{};
+    if (!ZYAN_SUCCESS(Common::Decoder::Instance()->decodeInstruction(
+            instruction, operands, const_cast<u8*>(source_bytes), instruction_length)) ||
+        instruction.length != instruction_length) {
+        return false;
+    }
+    std::memcpy(destination_bytes, source_bytes, instruction_length);
+
+    bool wrote_displacement = false;
+    for (u8 i = 0; i < instruction.operand_count; ++i) {
+        const auto& operand = operands[i];
+        if (operand.type == ZYDIS_OPERAND_TYPE_MEMORY && operand.mem.base == ZYDIS_REGISTER_RIP) {
+            if (wrote_displacement || instruction.raw.disp.size == 0)
+                return false;
+            VAddr referenced_address{};
+            VAddr next_source{};
+            VAddr next_destination{};
+            if (source_address > (std::numeric_limits<VAddr>::max)() - instruction_length ||
+                destination_address > (std::numeric_limits<VAddr>::max)() - instruction_length) {
+                return false;
+            }
+            next_source = source_address + instruction_length;
+            next_destination = destination_address + instruction_length;
+            if (!AddSignedAddress(next_source, operand.mem.disp.value, referenced_address) ||
+                original_start > (std::numeric_limits<VAddr>::max)() - stolen_length) {
+                return false;
+            }
+            const VAddr stolen_end = original_start + stolen_length;
+            // A RIP-relative data reference into the overwritten bytes would observe the jump
+            // patch instead of the original bytes; fail closed rather than redirecting it into
+            // the trampoline's callback stub.
+            if (referenced_address >= original_start && referenced_address < stolen_end) {
+                return false;
+            }
+            s64 new_displacement{};
+            if (!RelativeDisplacement(referenced_address, next_destination, new_displacement) ||
+                !WriteSignedDisplacement(destination_bytes, instruction_length,
+                                         instruction.raw.disp.offset, instruction.raw.disp.size,
+                                         new_displacement)) {
+                return false;
+            }
+            wrote_displacement = true;
+        } else if (operand.type == ZYDIS_OPERAND_TYPE_IMMEDIATE && operand.imm.is_relative) {
+            if (wrote_displacement || instruction.raw.imm[0].size == 0)
+                return false;
+            VAddr branch_target{};
+            VAddr next_source{};
+            VAddr next_destination{};
+            if (source_address > (std::numeric_limits<VAddr>::max)() - instruction_length ||
+                destination_address > (std::numeric_limits<VAddr>::max)() - instruction_length) {
+                return false;
+            }
+            next_source = source_address + instruction_length;
+            next_destination = destination_address + instruction_length;
+            if (!AddSignedAddress(next_source, operand.imm.value.s, branch_target) ||
+                !RemapTrampolineTarget(branch_target, original_start, trampoline_start,
+                                       stolen_length, branch_target)) {
+                return false;
+            }
+            s64 new_displacement{};
+            if (!RelativeDisplacement(branch_target, next_destination, new_displacement) ||
+                !WriteSignedDisplacement(destination_bytes, instruction_length,
+                                         instruction.raw.imm[0].offset, instruction.raw.imm[0].size,
+                                         new_displacement)) {
+                return false;
+            }
+            wrote_displacement = true;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] static bool FlushCodeRange(void* address, size_t size) {
+    if (address == nullptr || size == 0)
+        return false;
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+#ifdef _WIN32
+    if (!FlushInstructionCache(GetCurrentProcess(), address, size))
+        return false;
+    int registers[4]{};
+    __cpuid(registers, 0);
+    (void)registers[0];
+#else
+    auto* begin = static_cast<char*>(address);
+    __builtin___clear_cache(begin, begin + size);
+    unsigned int eax = 0;
+    unsigned int ebx{};
+    unsigned int ecx = 0;
+    unsigned int edx{};
+    asm volatile("mfence\n\tcpuid" : "+a"(eax), "=b"(ebx), "+c"(ecx), "=d"(edx) : : "memory");
+    (void)eax;
+    (void)ebx;
+    (void)ecx;
+    (void)edx;
+#endif
+    return true;
+}
+
+[[nodiscard]] static bool GenerateGuestEntryTrampoline(PatchModule& module, VAddr target,
+                                                       VAddr mapped_end,
+                                                       GuestEntryObserver observer, void* user_data,
+                                                       EntryPatchPlan& patch,
+                                                       VAddr& trampoline_entry) {
+    auto* target_bytes = reinterpret_cast<u8*>(target);
+    const VAddr module_start = reinterpret_cast<VAddr>(module.start);
+    const VAddr safe_end = (std::min)(reinterpret_cast<VAddr>(module.end), mapped_end);
+    if (target < module_start || target >= safe_end)
+        return false;
+    const auto available = static_cast<size_t>(safe_end - target);
+    std::array<u8, EntryPatchPlan::MaxBytes> original{};
+    std::array<u8, EntryPatchPlan::MaxBytes> instruction_lengths{};
+    size_t stolen_length = 0;
+    size_t instruction_count = 0;
+    while (stolen_length < 5) {
+        if (stolen_length >= original.size() || stolen_length >= available)
+            return false;
+        ZydisDecodedInstruction instruction{};
+        ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT]{};
+        const auto bytes_available = (std::min<size_t>)(15, available - stolen_length);
+        if (!ZYAN_SUCCESS(Common::Decoder::Instance()->decodeInstruction(
+                instruction, operands, target_bytes + stolen_length, bytes_available)) ||
+            instruction.length == 0 || instruction.length > 15 ||
+            instruction.length > original.size() - stolen_length) {
+            return false;
+        }
+        std::memcpy(original.data() + stolen_length, target_bytes + stolen_length,
+                    instruction.length);
+        instruction_lengths[instruction_count++] = instruction.length;
+        stolen_length += instruction.length;
+    }
+
+    auto& generator = module.trampoline_gen;
+    auto* const generated_begin = generator.getCurr();
+    trampoline_entry = reinterpret_cast<VAddr>(generated_begin);
+    if (reinterpret_cast<VAddr>(generated_begin) <
+            reinterpret_cast<VAddr>(module.trampoline_start) ||
+        reinterpret_cast<VAddr>(generated_begin) >=
+            reinterpret_cast<VAddr>(module.trampoline_end)) {
+        return false;
+    }
+    const auto plan = BuildEntryPatchPlan(
+        target, trampoline_entry, std::span<const u8>{original.data(), stolen_length},
+        std::span<const u8>{instruction_lengths.data(), instruction_count});
+    if (!plan)
+        return false;
+
+    try {
+        auto& c = generator;
+        c.lea(rsp, ptr[rsp - GuestEntryStackAdjustment]);
+#define SAVE_GPR(member, reg) c.mov(qword[rsp + offsetof(GuestEntryRegisterFrame, member)], reg)
+        SAVE_GPR(r15, r15);
+        SAVE_GPR(r14, r14);
+        SAVE_GPR(r13, r13);
+        SAVE_GPR(r12, r12);
+        SAVE_GPR(r11, r11);
+        SAVE_GPR(r10, r10);
+        SAVE_GPR(r9, r9);
+        SAVE_GPR(r8, r8);
+        SAVE_GPR(rdi, rdi);
+        SAVE_GPR(rsi, rsi);
+        SAVE_GPR(rbp, rbp);
+        SAVE_GPR(rbx, rbx);
+        SAVE_GPR(rdx, rdx);
+        SAVE_GPR(rcx, rcx);
+        SAVE_GPR(rax, rax);
+#undef SAVE_GPR
+        for (size_t i = 0; i < 16; ++i) {
+            const auto offset = offsetof(GuestEntryRegisterFrame, ymm) + i * 32;
+            c.vmovdqu(yword[rsp + offset], Xbyak::Ymm{static_cast<int>(i)});
+        }
+        c.lea(rax, ptr[rsp + GuestEntryStackAdjustment]);
+        c.mov(qword[rsp + offsetof(GuestEntryRegisterFrame, original_rsp)], rax);
+        c.pushfq();
+        c.pop(rax);
+        c.mov(qword[rsp + offsetof(GuestEntryRegisterFrame, rflags)], rax);
+
+        c.mov(rdi, rsp);
+        c.mov(rsi, reinterpret_cast<uintptr_t>(user_data));
+        c.mov(rax, reinterpret_cast<uintptr_t>(observer));
+        c.call(rax);
+
+        for (size_t i = 0; i < 16; ++i) {
+            const auto offset = offsetof(GuestEntryRegisterFrame, ymm) + i * 32;
+            c.vmovdqu(Xbyak::Ymm{static_cast<int>(i)}, yword[rsp + offset]);
+        }
+        c.push(qword[rsp + offsetof(GuestEntryRegisterFrame, rflags)]);
+        c.popfq();
+#define RESTORE_GPR(member, reg) c.mov(reg, qword[rsp + offsetof(GuestEntryRegisterFrame, member)])
+        RESTORE_GPR(r15, r15);
+        RESTORE_GPR(r14, r14);
+        RESTORE_GPR(r13, r13);
+        RESTORE_GPR(r12, r12);
+        RESTORE_GPR(r11, r11);
+        RESTORE_GPR(r10, r10);
+        RESTORE_GPR(r9, r9);
+        RESTORE_GPR(r8, r8);
+        RESTORE_GPR(rdi, rdi);
+        RESTORE_GPR(rsi, rsi);
+        RESTORE_GPR(rbp, rbp);
+        RESTORE_GPR(rbx, rbx);
+        RESTORE_GPR(rdx, rdx);
+        RESTORE_GPR(rcx, rcx);
+        RESTORE_GPR(rax, rax);
+#undef RESTORE_GPR
+        c.lea(rsp, ptr[rsp + GuestEntryStackAdjustment]);
+
+        // Internal relative branches must target the relocated instruction body, which follows
+        // the register-preserving observer stub at the start of the trampoline.
+        const VAddr relocated_start = reinterpret_cast<VAddr>(generator.getCurr());
+        std::array<u8, 15> relocated{};
+        size_t copied = 0;
+        for (size_t i = 0; i < instruction_count; ++i) {
+            const size_t length = instruction_lengths[i];
+            const VAddr source_address = target + copied;
+            const VAddr destination_address = reinterpret_cast<VAddr>(generator.getCurr());
+            if (!RelocateEntryInstruction(original.data() + copied, source_address,
+                                          relocated.data(), destination_address, length, target,
+                                          relocated_start, stolen_length)) {
+                generator.setSize(generated_begin - generator.getCode());
+                return false;
+            }
+            generator.db(relocated.data(), length);
+            copied += length;
+        }
+        c.jmp(reinterpret_cast<const void*>(target + stolen_length),
+              Xbyak::CodeGenerator::LabelType::T_NEAR);
+        if (reinterpret_cast<VAddr>(generator.getCurr()) >
+            reinterpret_cast<VAddr>(module.trampoline_end)) {
+            generator.setSize(generated_begin - generator.getCode());
+            return false;
+        }
+        patch = *plan;
+        return true;
+    } catch (const Xbyak::Error&) {
+        generator.setSize(generated_begin - generator.getCode());
+        return false;
+    }
+}
+
+[[nodiscard]] static bool QueryPatchMapping(MemoryManager& memory, VAddr target,
+                                            size_t patch_size, u32& protection,
+                                            VAddr* mapping_end = nullptr) {
+    if (patch_size == 0 || target > (std::numeric_limits<VAddr>::max)() - patch_size) return false;
+    void* range_start{};
+    void* range_end{};
+    if (memory.QueryProtection(target, &range_start, &range_end, &protection) != 0) return false;
+    const auto begin = reinterpret_cast<VAddr>(range_start);
+    const auto end = reinterpret_cast<VAddr>(range_end);
+    const u32 required = static_cast<u32>(MemoryProt::CpuRead) |
+                         static_cast<u32>(MemoryProt::CpuExec);
+    if (begin > target || end < target + patch_size || (protection & required) != required) {
+        return false;
+    }
+    if (mapping_end != nullptr) *mapping_end = end;
+    return true;
+}
+
+[[nodiscard]] static MemoryProt WritableExecutableProtection(u32 protection) {
+    return static_cast<MemoryProt>(protection | static_cast<u32>(MemoryProt::CpuWrite));
+}
+
+} // namespace
+
+bool InstallGuestEntryObserver(MemoryManager& memory, VAddr target, GuestEntryObserver observer,
+                                void* user_data, GuestEntryObserverHandle& handle) {
+#if !defined(ARCH_X86_64) || defined(SHADPS4_ENABLE_FEX_GUEST_CPU)
+    (void)memory;
+    (void)target;
+    (void)observer;
+    (void)user_data;
+    (void)handle;
+    return false;
+#else
+    if (handle.active || target == 0 || observer == nullptr) return false;
+    auto* module = GetModule(reinterpret_cast<const void*>(target));
+    if (module == nullptr) return false;
+    std::unique_lock lock{module->mutex};
+    auto* target_bytes = reinterpret_cast<u8*>(target);
+    const VAddr module_start = reinterpret_cast<VAddr>(module->start);
+    const VAddr module_end = reinterpret_cast<VAddr>(module->end);
+    if (target < module_start || target >= module_end) return false;
+
+    u32 previous_protection{};
+    VAddr mapping_end{};
+    if (!QueryPatchMapping(memory, target, 5, previous_protection, &mapping_end)) return false;
+    EntryPatchPlan patch;
+    VAddr trampoline_entry{};
+    if (!GenerateGuestEntryTrampoline(*module, target, mapping_end, observer, user_data, patch,
+                                      trampoline_entry)) {
+        return false;
+    }
+    if (!FlushCodeRange(reinterpret_cast<void*>(trampoline_entry),
+                        static_cast<size_t>(module->trampoline_gen.getCurr() -
+                                            reinterpret_cast<u8*>(trampoline_entry)))) {
+        module->trampoline_gen.setSize(reinterpret_cast<u8*>(trampoline_entry) -
+                                       module->trampoline_gen.getCode());
+        return false;
+    }
+    u32 current_protection{};
+    if (!QueryPatchMapping(memory, target, patch.size, current_protection) ||
+        current_protection != previous_protection ||
+        !MatchesOriginalEntryPatch(std::span<const u8>{target_bytes, patch.size}, patch)) {
+        module->trampoline_gen.setSize(reinterpret_cast<u8*>(trampoline_entry) -
+                                       module->trampoline_gen.getCode());
+        return false;
+    }
+
+    const auto writable_protection = WritableExecutableProtection(previous_protection);
+    if (memory.Protect(target, patch.size, writable_protection) != 0) {
+        module->trampoline_gen.setSize(reinterpret_cast<u8*>(trampoline_entry) -
+                                       module->trampoline_gen.getCode());
+        return false;
+    }
+    if (!MatchesOriginalEntryPatch(std::span<const u8>{target_bytes, patch.size}, patch)) {
+        (void)memory.Protect(target, patch.size, static_cast<MemoryProt>(previous_protection));
+        module->trampoline_gen.setSize(reinterpret_cast<u8*>(trampoline_entry) -
+                                       module->trampoline_gen.getCode());
+        return false;
+    }
+    auto target_span = std::span<u8>{target_bytes, patch.size};
+    const auto rewind_trampoline = [&] {
+        module->trampoline_gen.setSize(reinterpret_cast<u8*>(trampoline_entry) -
+                                       module->trampoline_gen.getCode());
+    };
+    const auto rollback_installed_patch = [&] {
+        u32 current{};
+        if (!QueryPatchMapping(memory, target, patch.size, current) ||
+            memory.Protect(target, patch.size, WritableExecutableProtection(current)) != 0) {
+            (void)memory.Protect(target, patch.size, static_cast<MemoryProt>(previous_protection));
+            return false;
+        }
+        const bool restored = RestoreEntryPatchIfMatches(target_span, patch);
+        const bool restored_flush = restored && FlushCodeRange(target_bytes, patch.size);
+        const bool protection_restored =
+            memory.Protect(target, patch.size, static_cast<MemoryProt>(previous_protection)) == 0;
+        return restored && restored_flush && protection_restored;
+    };
+    if (!ApplyEntryPatchIfMatchesOriginal(target_span, patch)) {
+        (void)memory.Protect(target, patch.size, static_cast<MemoryProt>(previous_protection));
+        rewind_trampoline();
+        return false;
+    }
+    if (!FlushCodeRange(target_bytes, patch.size)) {
+        if (rollback_installed_patch()) rewind_trampoline();
+        return false;
+    }
+    if (memory.Protect(target, patch.size, static_cast<MemoryProt>(previous_protection)) != 0) {
+        if (rollback_installed_patch()) rewind_trampoline();
+        return false;
+    }
+
+    handle.target = target;
+    handle.patch = patch;
+    handle.original_protection = previous_protection;
+    handle.active = true;
+    return true;
+#endif
+}
+
+bool RemoveGuestEntryObserver(MemoryManager& memory, GuestEntryObserverHandle& handle,
+                              GuestThreadQuiescence quiescence) {
+#if !defined(ARCH_X86_64) || defined(SHADPS4_ENABLE_FEX_GUEST_CPU)
+    (void)memory;
+    (void)handle;
+    (void)quiescence;
+    return false;
+#else
+    if (quiescence != GuestThreadQuiescence::Confirmed || !handle.active || handle.target == 0 ||
+        handle.patch.size < 5 ||
+        handle.patch.size > EntryPatchPlan::MaxBytes) {
+        return false;
+    }
+    auto* module = GetModule(reinterpret_cast<const void*>(handle.target));
+    if (module == nullptr) return false;
+    std::unique_lock lock{module->mutex};
+    auto* target_bytes = reinterpret_cast<u8*>(handle.target);
+    const VAddr module_start = reinterpret_cast<VAddr>(module->start);
+    const VAddr module_end = reinterpret_cast<VAddr>(module->end);
+    if (handle.target < module_start || handle.target >= module_end) return false;
+
+    u32 previous_protection{};
+    if (!QueryPatchMapping(memory, handle.target, handle.patch.size, previous_protection) ||
+        previous_protection != handle.original_protection ||
+        !MatchesInstalledEntryPatch(std::span<const u8>{target_bytes, handle.patch.size},
+                                    handle.patch)) {
+        return false;
+    }
+    if (memory.Protect(handle.target, handle.patch.size,
+                       WritableExecutableProtection(previous_protection)) != 0) {
+        return false;
+    }
+    auto target_span = std::span<u8>{target_bytes, handle.patch.size};
+    const auto reinstate_patch = [&] {
+        u32 current{};
+        if (!QueryPatchMapping(memory, handle.target, handle.patch.size, current) ||
+            memory.Protect(handle.target, handle.patch.size, WritableExecutableProtection(current)) !=
+                0) {
+            (void)memory.Protect(handle.target, handle.patch.size,
+                                 static_cast<MemoryProt>(previous_protection));
+            handle.active = MatchesInstalledEntryPatch(target_span, handle.patch);
+            return false;
+        }
+        const bool applied = ApplyEntryPatchIfMatchesOriginal(target_span, handle.patch);
+        const bool flushed = applied && FlushCodeRange(target_bytes, handle.patch.size);
+        const bool protection_restored =
+            memory.Protect(handle.target, handle.patch.size,
+                           static_cast<MemoryProt>(previous_protection)) == 0;
+        handle.active = MatchesInstalledEntryPatch(target_span, handle.patch);
+        return applied && flushed && protection_restored;
+    };
+    if (!MatchesInstalledEntryPatch(target_span, handle.patch)) {
+        (void)memory.Protect(handle.target, handle.patch.size,
+                             static_cast<MemoryProt>(previous_protection));
+        return false;
+    }
+    if (!RestoreEntryPatchIfMatches(target_span, handle.patch)) {
+        (void)memory.Protect(handle.target, handle.patch.size,
+                             static_cast<MemoryProt>(previous_protection));
+        return false;
+    }
+    if (!FlushCodeRange(target_bytes, handle.patch.size)) {
+        (void)reinstate_patch();
+        return false;
+    }
+    if (memory.Protect(handle.target, handle.patch.size,
+                       static_cast<MemoryProt>(previous_protection)) != 0) {
+        (void)reinstate_patch();
+        return false;
+    }
+    handle.active = false;
+    return true;
+#endif
 }
 
 void RegisterPatchModule(void* module_ptr, u64 module_size, void* trampoline_area_ptr,

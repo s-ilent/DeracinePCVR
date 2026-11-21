@@ -1023,6 +1023,8 @@ set(CORE src/core/aerolib/stubs.cpp
           src/core/known_title_scenes.h
           src/core/linker.cpp
          src/core/linker.h
+          src/core/rhi_entry_probe.cpp
+          src/core/rhi_entry_probe.h
          src/core/memory.cpp
          src/core/memory.h
          src/core/unreal/guest_memory.cpp
