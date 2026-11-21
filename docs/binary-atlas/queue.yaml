@@ -1,5 +1,13 @@
 # Research tasks must be promoted only after actual original-target-byte verification.
 items:
+  - id: A-010-DIRECT-CONTEXT-ATTACHMENT
+    track: A
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "Original SELF function 0x0D049F0 selects a global indexed resource, emits dimension-derived state via context writer +0x460, stamps resource +0x68/+0x6C/+0x70, and directly calls attachment context method 0x0CC2420"
+    report: "reports/atlas_context_attachment_a010.md"
+    verifier: "tools/atlas/verify_context_attachment_a010.py"
+    next: "Trace resource table producer and global 0x04496748 writer; determine dimension and resource ownership semantics"
   - id: A-009-ATTACHMENT-BACKING-METADATA
     track: A
     priority: 1
