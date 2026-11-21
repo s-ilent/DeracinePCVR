@@ -237,6 +237,29 @@ def main():
           loop is not None and loop[0x08] == 0x48 and loop[0x0B] == 0xFF and loop[0x0C] == 0x10,
           "movq (%rdi),%rax; callq *(%rax)")
 
+    # --- A6: the shader binding path is inside the recorder, not a command ---
+    check("shader binding: recorder 0x0CB5130 is vtable slot +0x340",
+          self_.u64(0x03EDFFE0) == 0x0CB5130,
+          "slot value")
+    check("shader binding: receiver is called from the recorder",
+          self_.read_va(0x0CB6502, 5) == b"\xe8\xe9\x5d\x01\x00",
+          "callq 0x0CCC2F0 at 0x0CB6502")
+    check("shader binding: context+0x468 loads the shader-state object",
+          self_.read_va(0x0CCD0D4, 7) == b"\x48\x8b\x80\x68\x04\x00\x00",
+          "movq 0x468(%rax),%rax")
+    check("shader binding: shader-state+0x200 loads the shader resource",
+          self_.read_va(0x0CCD0DB, 7) == b"\x4c\x8b\xa8\x00\x02\x00\x00",
+          "movq 0x200(%rax),%r13")
+    check("shader binding: shader-resource+0x1D8 loads the program data",
+          self_.read_va(0x0CCD0F6, 7) == b"\x4d\x8b\xa5\xd8\x01\x00\x00",
+          "movq 0x1d8(%r13),%r12")
+    check("shader binding: register array is program_data+0x40 indexed by a byte",
+          self_.read_va(0x0CCD12C, 5) == b"\x49\x8d\x54\x9c\x40",
+          "leaq 0x40(%r12,%rbx,4),%rdx")
+    check("shader binding: pixel-shader setter passes a null array",
+          self_.read_va(0x0CCD0BE, 4) == b"\x31\xd2\xe8\x7b",
+          "xorl %edx,%edx; callq")
+
     passed = sum(1 for c in CHECKS if c["passed"])
     total = len(CHECKS)
 

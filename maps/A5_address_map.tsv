@@ -96,3 +96,27 @@ sceGnmInsertPopMarker	import	0x033C82C0	-	VERIFIED	NID (see A4 correction)
 sceGnmSetPsShader350	import	0x033C8340	-	VERIFIED	NID (see A4 correction)
 sceGnmInsertPushMarker	import	0x033C8380	-	VERIFIED	NID (see A4 correction)
 scePthreadGetthreadid	import	0x033C6770	-	VERIFIED	used by the SetStreamSource debug branch
+#
+# A6 additions: shader binding path. There is no SetBoundShaderState command.
+#
+ShaderBinding	recorder	0x0CB5130	0x3530	VERIFIED	FDE [0x0CB5130,0x0CB8660); vtable slot +0x340 of 0x03EDFCA0
+ShaderBinding	receiver	0x0CCC2F0	0x1190	VERIFIED	FDE [0x0CCC2F0,0x0CCD480); called only from 0x0CB5130
+ShaderBinding	call_site	0x0CB6502	5	VERIFIED	callq 0x0CCC2F0
+ShaderBinding	call_site	0x0CB7453	5	VERIFIED	callq 0x0CCC2F0
+ShaderBinding	call_site	0x0CB804F	5	VERIFIED	callq 0x0CCC2F0
+ShaderBinding	vs_setter	0x0CCD139	5	VERIFIED	callq sceGnmSetVsShader with leaq 0x40(%r12,%rbx,4),%rdx
+ShaderBinding	vs_setter_variant	0x0CCD201	5	VERIFIED	callq sceGnmSetVsShader with r12+8 as the array
+ShaderBinding	ps_setter	0x0CCD0C0	5	VERIFIED	callq sceGnmSetPsShader350 with a null array
+ShaderBinding	field	context+0x468	8	VERIFIED	shader-state object
+ShaderBinding	field	shader_state+0x200	8	VERIFIED	shader resource
+ShaderBinding	field	shader_state+0x1C0	4	VERIFIED	passed as the GNM flags argument
+ShaderBinding	field	shader_resource+0x1D8	8	VERIFIED	program data
+ShaderBinding	field	program_data+0x3	1	VERIFIED	register-array selector byte
+ShaderBinding	field	program_data+0x40	-	VERIFIED	register array base, indexed by the selector
+ShaderBinding	field	program_data+0x5E	-	VERIFIED	per-index flag byte, stride 4
+#
+# A6 negative results.
+#
+SetBoundShaderState	absent	-	-	VERIFIED	no command object carries FBoundShaderStateRHIParamRef
+BeginRenderPass	absent	-	-	UNRESOLVED	not found in the command vtable cluster
+EndRenderPass	absent	-	-	UNRESOLVED	not found in the command vtable cluster
