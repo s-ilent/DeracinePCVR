@@ -43,9 +43,9 @@ SetRenderTargets	payload	+0x00	8	VERIFIED	vptr
 SetRenderTargets	payload	+0x08	8	VERIFIED	Next
 SetRenderTargets	payload	+0x10	4	INFERRED	NewNumSimultaneousRenderTargets
 SetRenderTargets	payload	+0x18	0xC0	VERIFIED	NewRenderTargetsRHI[8], stride 0x18
-SetRenderTargets	payload	+0xD8	0x18	VERIFIED	NewDepthStencilTarget
+SetRenderTargets	payload	+0xD8	0x10	VERIFIED	NewDepthStencilTarget (two pointers, ends at +0xE8)
 SetRenderTargets	payload	+0xE8	4	INFERRED	NewNumUAVs
-SetRenderTargets	payload	+0xF0	0x38	VERIFIED	UAVs[]
+SetRenderTargets	payload	+0xF0	0x40	VERIFIED	UAVs[8], 8-byte pointers, ends at allocation 0x130
 SetViewport	payload	+0x00	8	VERIFIED	vptr
 SetViewport	payload	+0x08	8	VERIFIED	Next
 SetViewport	payload	+0x10	4	INFERRED	MinX

@@ -9,6 +9,7 @@ Usage:
 
 Exit code 0 means every check passed.
 """
+import hashlib
 import json
 import struct
 import sys
@@ -18,6 +19,13 @@ PT_LOAD = 1
 PT_SCE_RELRO = 0x61000010
 FILE_BACKED = (PT_LOAD, PT_SCE_RELRO)
 CODE_END = 0x3E86D30
+
+# Approved images. Addresses are only meaningful for these exact bytes.
+APPROVED_IMAGES = {
+    "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0": "1.00",
+    "8da8e46ac5fdc48e4e9b59e459920a266039993dc13a2d92740f8803e46fdf75": "01.01",
+}
+APPROVED_SIZE = 81506767
 
 
 class Self:
@@ -97,6 +105,20 @@ def check(name, condition, detail=""):
 def main():
     path = sys.argv[1]
     as_json = "--json" in sys.argv
+
+    # Identity first: the addresses below are only meaningful for the approved bytes.
+    raw = open(path, "rb").read()
+    digest = hashlib.sha256(raw).hexdigest()
+    size = len(raw)
+    check("image: size is the approved 81,506,767 bytes",
+          size == APPROVED_SIZE, f"got {size}")
+    check("image: SHA-256 is an approved 1.00 or 01.01 build",
+          digest in APPROVED_IMAGES, f"got {digest}")
+    if digest not in APPROVED_IMAGES or size != APPROVED_SIZE:
+        print(f"refusing to interpret {path}: not an approved image", file=sys.stderr)
+        print(f"  size={size} sha256={digest}", file=sys.stderr)
+        return 2
+
     self_ = Self(path)
 
     # --- command vtables: slot 0 is Execute, slot 1 is a trivial destructor ---
@@ -151,6 +173,30 @@ def main():
     check("SetRenderTargets: takes &UAV[0] at +0xF0",
           rt_execute is not None and b"\x4c\x8d\x8f\xf0\x00\x00\x00" in rt_execute,
           "leaq 0xf0(%rdi),%r9")
+
+    # --- SetRenderTargets constructor: exact field extents ---
+    # The depth view is a two-pointer pair at +0xD8/+0xE0, so it ends at +0xE8 where
+    # the UAV count begins. The UAV array runs from +0xF0 to the 0x130 allocation end.
+    rt_ctor = self_.read_va(0x13D6A9E, 0x30)
+    check("SetRenderTargets ctor: depth view is 16 bytes at +0xD8",
+          rt_ctor is not None and b"\x4c\x89\xb8\xd8\x00\x00\x00" in rt_ctor and
+          b"\x48\x89\x90\xe0\x00\x00\x00" in rt_ctor,
+          "movq %r15,0xd8; movq %rdx,0xe0")
+    check("SetRenderTargets ctor: UAV count at +0xE8 does not overlap depth",
+          rt_ctor is not None and b"\xc7\x80\xe8\x00\x00\x00\x00\x00\x00\x00" in rt_ctor,
+          "movl $0x0,0xe8(%rax)")
+    check("SetRenderTargets ctor: allocation is 0x130 bytes",
+          self_.read_va(0x13D6987, 5) == b"\xbe\x38\x01\x00\x00",
+          "movl $0x138,%esi (0x130 payload + 8 header)")
+
+    # --- SetRenderTargets receiver: UAV array is 8-byte pointers ---
+    rt_recv = self_.read_va(0xCC2B20, 0x10)
+    check("SetRenderTargets receiver: UAV array indexed as 8-byte entries",
+          rt_recv is not None and b"\x4e\x8b\x2c\xf8" in rt_recv,
+          "movq (%rax,%r15,8),%r13")
+    check("SetRenderTargets receiver: UAV loop bounded by the count",
+          self_.read_va(0xCC2C3D, 5) == b"\x4c\x39\x7c\x24\x10",
+          "cmpq %r15,0x10(%rsp)")
 
     # --- SetViewport payload offsets ---
     vp_execute = self_.read_va(0x13A6BB0, 0x30)
