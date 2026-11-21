@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "A-010 verified original SELF direct context attachment callsite committed on research branch; draft PR #1 open; main unchanged",
+  "github_write_status": "A-011 verified original SELF resource batch metadata and paired arrays committed on research branch; draft PR #1 open; main unchanged",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -241,10 +241,38 @@
       "runtime_observed": false,
       "report": "reports/atlas_context_attachment_a010.md",
       "verifier": "tools/atlas/verify_context_attachment_a010.py"
+    },
+    {
+      "id": "A-011-RESOURCE-BATCH-REGISTRATION",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "block_elf_va": "0x0CC2ADE–0x0CC2C48",
+      "metadata_source_global_elf_va": "0x04496748",
+      "entry_offsets": [
+        "+0x18",
+        "+0x20",
+        "+0x28",
+        "+0x34",
+        "+0x38",
+        "+0x3C"
+      ],
+      "context_array_offsets": [
+        "+0x428",
+        "+0x438"
+      ],
+      "record_stride_bytes": 16,
+      "growth_targets_elf_va": [
+        "0x0CC8CE0",
+        "0x0CC8780"
+      ],
+      "confidence": "high for byte-verified metadata paths, two arrays and arithmetic; exact ownership and semantics unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_resource_batch_a011.md",
+      "verifier": "tools/atlas/verify_resource_batch_a011.py"
     }
   ],
   "known_false": [],
-  "next_action": "Trace global indexed resource producer and writer of 0x04496748; test dimension fields +0x58/+0x5C and resource ownership.",
+  "next_action": "Trace consumers of context +0x428 and +0x438 resource batch arrays and producer of global 0x04496748; distinguish resource object types.",
   "draft_pr_url": "https://github.com/s-ilent/DeracinePCVR/pull/1",
   "draft_pr_number": 1,
   "recheck": {
