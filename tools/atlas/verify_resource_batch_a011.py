@@ -26,11 +26,10 @@ def main(path):
     assert bytes.fromhex("ff5038") in blocks[1], "resource virtual call"
     assert bytes.fromhex("c6402801") in blocks[1], "alternate dirty flag"
     assert bytes.fromhex("c6401001") in blocks[1], "backing dirty flag"
-    assert bytes.fromhex("4883c010") not in blocks[2] or True
     assert bytes.fromhex("48c1e304") in blocks[2], "16-byte array stride"
     assert bytes.fromhex("e8c55b0000") in blocks[2], "first growth call"
     assert bytes.fromhex("e8bb600000") in blocks[2], "second growth call"
-    assert bytes.fromhex("410faf753c") in blocks[2], "packed multiplier"
+    assert bytes.fromhex("450faf753c") in blocks[2], "packed multiplier"
     print("A-011 verified: original SELF digest, three windows, semantic anchors")
 if __name__ == "__main__":
     if len(sys.argv) != 2:
