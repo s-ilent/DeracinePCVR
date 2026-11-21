@@ -1,4 +1,7 @@
-# Evidence provenance / triage (no original bytes uploaded)
+# Evidence provenance / triage — initial bootstrap only
+
+> **Historical bootstrap record:** The entries below describe the earlier metadata-only run, before the original SELF and DSH ZIP were directly attached. They are not the current research status. The inputs have since been independently SHA-256 verified, all archive member CRCs passed, and the first accepted original-target finding is [A-002 indexed-indirect RHI emitter](../../reports/atlas_indirect_indexed_draw_a002.md). Current state: [state.json](state.json); new source/event provenance: [session-provenance-20261121.md](session-provenance-20261121.md).
+
 
 | ID | Classification | Evidence source at inspected revision | Address domain | Validation status | Next |
 |---|---|---|---|---|---|
