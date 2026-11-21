@@ -10,9 +10,12 @@ items:
   - id: A-006-ATTACHMENT-RESOURCE-OWNERSHIP
     track: A
     priority: 1
-    status: READY_STATIC
-    target: "Decode 0x0CC7E00, resource virtual slot +0x38 and context mask +0x510/+0x514/+0x518 to recover render-target/depth attachment resource lifetime"
-    acceptance: "Independently verified ELF instructions, FDEs, producer and resource layout; exact method names remain hypotheses until corroborated"
+    status: PARTIAL_VERIFIED_STATIC
+    finding: "Original SELF: 0x0CC7E00 calls resource virtual +0x38, reads backing +0x3C, calls 0x0CC9240 which emits 12-byte graphics-state words through context writer +0x460"
+    report: "reports/atlas_attachment_backing_a006.md"
+    verifier: "tools/atlas/verify_attachment_backing_a006.py"
+    target: "Resolve virtual +0x38 implementation and backing ownership, packet semantics and context masks +0x510/+0x514/+0x518"
+    acceptance: "FDE/vtable producer, backing layout and ownership with multiple original-byte corroborations"
   - id: A-003-INDIRECT-CALLER-OWNERSHIP
     track: A
     priority: 1
