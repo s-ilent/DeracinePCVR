@@ -1,5 +1,13 @@
 # Research tasks must be promoted only after actual original-target-byte verification.
 items:
+  - id: A-012-RESOURCE-SCALAR-CACHE-EMISSION
+    track: A
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "Original SELF 0x0CC2766..0x0CC27F9 checks resource +0x1C, compares float +0x20 with converted context cache +0x51C, conditionally emits a 12-byte command through writer +0x460"
+    report: "reports/atlas_resource_scalar_a012.md"
+    verifier: "tools/atlas/verify_resource_scalar_a012.py"
+    next: "Trace resource +0x20 producer and adjacent 0x03090310 context operation; do not guess GPU register meaning"
   - id: A-011-RESOURCE-BATCH-REGISTRATION
     track: A
     priority: 1
