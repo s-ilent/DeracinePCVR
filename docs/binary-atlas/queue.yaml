@@ -1,5 +1,13 @@
 # Research tasks must be promoted only after actual original-target-byte verification.
 items:
+  - id: A-009-ATTACHMENT-BACKING-METADATA
+    track: A
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "Original SELF: attachment binding helper 0x0CC7E00 reads backing +0x3C for graphics-state emission and conditionally initializes +0x08, sets +0x10, and stamps +0x0C from global 0x04496748"
+    report: "reports/atlas_attachment_metadata_a009.md"
+    verifier: "tools/atlas/verify_attachment_metadata_a009.py"
+    next: "Trace 0x04496748 writer and backing +0x3C producer; determine metadata meaning and lifetime without assuming a frame counter"
   - id: A-005-DEFERRED-ATTACHMENT-COMMAND
     track: A
     priority: 1
