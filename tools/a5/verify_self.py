@@ -338,6 +338,35 @@ def main():
           self_.read_va(0x14B9F, 4) == b"\x48\x8b\x07\xff",
           "movq (%rdi),%rax; callq *(%rax) with no rsi setup")
 
+    # --- A9: ownership, threading, lifetime ---
+    check("executor: gates on thread identity via scePthreadGetthreadid",
+          self_.read_va(0x1376510, 5) == b"\xe8\x5b\x02\x05\x02" and
+          self_.read_va(0x137652B, 5) == b"\xe8\x40\x02\x05\x02",
+          "two callq 0x33c6770 sites")
+    check("executor: compares against two recorded thread ids",
+          self_.read_va(0x137651C, 3) == b"\x3b\x41\x44" and
+          self_.read_va(0x1376530, 6) == b"\x3b\x05\xe2\x3b\x16\x03",
+          "cmpl 0x44(%rcx),%eax; cmpl 0x44da118,%eax")
+    check("executor: reads the primary list global",
+          self_.read_va(0x1376593, 7) == b"\x48\x8b\x3d\x36\xa2\x44\x03",
+          "movq 0x47c07d0,%rdi")
+    check("executor: resets the allocator without running destructors",
+          self_.read_va(0x1376969, 5) == b"\xe8\x62\x89\xac\xff" and
+          self_.read_va(0x1376976, 7) == b"\x49\xc7\x07\x00\x00\x00\x00",
+          "callq 0xe3f2d0; movq $0x0,(%r15)")
+    check("flush gate: refcount and busy bit",
+          self_.read_va(0x1376131, 4) == b"\x48\x8b\x47\x10" and
+          self_.read_va(0x1376135, 6) == b"\xa9\x00\x00\x00\x04\x74",
+          "movq 0x10(%rdi),%rax; testl $0x4000000,%eax")
+    check("0x14810 is a different container: installs vtable 0x3E88280",
+          self_.read_va(0x1481E, 7) == b"\x48\x8d\x05\x4b\x3a\xe7\x03" and
+          self_.read_va(0x1482C, 3) == b"\x49\x89\x07",
+          "leaq 0x3e88270(%rip),%rax; movq %rax,(%r15)")
+    check("0x14810 walks an array at +0x08 with a count at +0x10",
+          self_.read_va(0x1482F, 4) == b"\x45\x8b\x77\x10" and
+          self_.read_va(0x14838, 4) == b"\x49\x8b\x5f\x08",
+          "movl 0x10(%r15),%r14d; movq 0x8(%r15),%rbx")
+
     passed = sum(1 for c in CHECKS if c["passed"])
     total = len(CHECKS)
 

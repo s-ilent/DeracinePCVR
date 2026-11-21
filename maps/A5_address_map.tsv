@@ -1,4 +1,4 @@
-# A5 address map
+# A5/A6/A7/A8/A9 address map
 #
 # Machine-readable. Tab-separated. '#' starts a comment line.
 # All addresses are inner-ELF virtual addresses from the pinned 1.00 image.
@@ -8,7 +8,12 @@
 #             INFERRED   = field name mapped from the pinned public UE4.18.3 header
 #             UNRESOLVED = candidate only
 #
-# kind: vtable | execute | dtor | receiver | constructor | payload | loop | import
+# kind: vtable | execute | dtor | receiver | constructor | payload | loop | import | field
+#
+# SUPERSEDED ENTRIES HAVE BEEN REMOVED, not merely annotated. The A7 rows that
+# classified 0x14B00 as the command executor, 0x14810 as RHI command teardown, and
+# 0x030003C0 as VGPRS/priority/float-mode are gone. See the A9 section at the end
+# for the corrected replacements. History lives in the reports, not in this map.
 #
 # name	kind	address	size	confidence	evidence
 SetViewport	vtable	0x03F26A08	16	VERIFIED	slot0=Execute slot1=trivial dtor
@@ -19,11 +24,11 @@ SetRenderTargets	vtable	0x03F26A28	16	VERIFIED	slot0=Execute slot1=trivial dtor
 SetRenderTargets	execute	0x13A6A30	0x40	VERIFIED	FDE [0x13A6A30,0x13A6A70)
 SetRenderTargets	dtor	0x13A6A70	0x20	VERIFIED	push rbp; mov rsp,rbp; pop rbp; ret
 SetRenderTargets	receiver	0x0CC2420	0x860	VERIFIED	FDE [0x0CC2420,0x0CC2C80)
-SetRenderTargets	constructor	0x13D69C2	0x120	VERIFIED	allocates 0x130 bytes
+SetRenderTargets	constructor	0x13D69C2	0x120	VERIFIED	allocates 0x130 payload
 SetStreamSource	vtable	0x03F26A48	16	VERIFIED	slot0=Execute slot1=trivial dtor
 SetStreamSource	execute	0x13A6930	0xF0	VERIFIED	FDE [0x13A6930,0x13A6A20)
 SetStreamSource	dtor	0x13A6A20	0x20	VERIFIED	push rbp; mov rsp,rbp; pop rbp; ret
-SetStreamSource	constructor	0x141009F	0x60	VERIFIED	allocates 0x28 bytes
+SetStreamSource	constructor	0x141009F	0x60	VERIFIED	allocates 0x28 payload
 DrawPrimitive	vtable	0x03F26A68	16	VERIFIED	slot0=Execute slot1=trivial dtor
 DrawPrimitive	execute	0x13A6900	0x20	VERIFIED	FDE [0x13A6900,0x13A6920)
 DrawPrimitive	dtor	0x13A6920	0x20	VERIFIED	push rbp; mov rsp,rbp; pop rbp; ret
@@ -34,8 +39,6 @@ DrawIndexedPrimitive	rhi_method	0x0CBB9C0	0x525	VERIFIED	FDE [0x0CBB9C0,0x0CBBEE
 DrawIndexedPrimitive	call_site	0x13A68E3	5	VERIFIED	E8 rel32 -> 0x0CBB9C0
 CommandHeader	vptr_store	0x1410190	3	VERIFIED	movq %rsi,(%rax) with rsi=0x3F26A88
 CommandHeader	next_store	0x1410188	8	VERIFIED	movq $0x0,0x8(%rax)
-ExecuteLoop	dispatch	0x14BA2	2	VERIFIED	callq *(%rax) where rax=obj->vptr
-TeardownLoop	dispatch	0x1484B	3	VERIFIED	callq *0x8(%rax) where rax=obj->vptr
 #
 # Payload field maps. offset is relative to the command object base.
 #
@@ -46,6 +49,8 @@ SetRenderTargets	payload	+0x18	0xC0	VERIFIED	NewRenderTargetsRHI[8], stride 0x18
 SetRenderTargets	payload	+0xD8	0x10	VERIFIED	NewDepthStencilTarget (two pointers, ends at +0xE8)
 SetRenderTargets	payload	+0xE8	4	INFERRED	NewNumUAVs
 SetRenderTargets	payload	+0xF0	0x40	VERIFIED	UAVs[8], 8-byte pointers, ends at allocation 0x130
+SetRenderTargets	payload_size	0x130	-	VERIFIED	caller requirement
+SetRenderTargets	growth_request	0x138	-	VERIFIED	allocator hint, 0x130 + 8 slack
 SetViewport	payload	+0x00	8	VERIFIED	vptr
 SetViewport	payload	+0x08	8	VERIFIED	Next
 SetViewport	payload	+0x10	4	INFERRED	MinX
@@ -70,7 +75,7 @@ DrawIndexedPrimitive	payload	+0x28	4	INFERRED	StartIndex
 DrawIndexedPrimitive	payload	+0x2C	4	INFERRED	NumPrimitives
 DrawIndexedPrimitive	payload	+0x30	4	INFERRED	NumInstances
 #
-# Context-side state written by the receivers. Offsets are relative to the context object.
+# Context-side state written by the receivers.
 #
 SetRenderTargets	context	+0x474	4	VERIFIED	render target count
 SetRenderTargets	context	+0x510	4	VERIFIED	cached RT bitmask
@@ -89,15 +94,15 @@ SetStreamSource	context	+0xAD4	1	VERIFIED	dirty flag
 # GNM imports reached by the recovered commands.
 #
 sceGnmDrawIndex	import	0x033C81A0	-	VERIFIED	NID HlTPoZ-oY7Y
-sceGnmSetVsShader	import	0x033C81B0	-	VERIFIED	NID (see A4 correction)
-sceGnmSetEmbeddedVsShader	import	0x033C81D0	-	VERIFIED	NID (see A4 correction)
-sceGnmDrawIndexAuto	import	0x033C8270	-	VERIFIED	NID (see A4 correction)
-sceGnmInsertPopMarker	import	0x033C82C0	-	VERIFIED	NID (see A4 correction)
-sceGnmSetPsShader350	import	0x033C8340	-	VERIFIED	NID (see A4 correction)
-sceGnmInsertPushMarker	import	0x033C8380	-	VERIFIED	NID (see A4 correction)
-scePthreadGetthreadid	import	0x033C6770	-	VERIFIED	used by the SetStreamSource debug branch
+sceGnmSetVsShader	import	0x033C81B0	-	VERIFIED	via tools/ps4elf.mjs imports
+sceGnmSetEmbeddedVsShader	import	0x033C81D0	-	VERIFIED	via tools/ps4elf.mjs imports
+sceGnmDrawIndexAuto	import	0x033C8270	-	VERIFIED	via tools/ps4elf.mjs imports
+sceGnmInsertPopMarker	import	0x033C82C0	-	VERIFIED	via tools/ps4elf.mjs imports
+sceGnmSetPsShader350	import	0x033C8340	-	VERIFIED	via tools/ps4elf.mjs imports
+sceGnmInsertPushMarker	import	0x033C8380	-	VERIFIED	via tools/ps4elf.mjs imports
+scePthreadGetthreadid	import	0x033C6770	-	VERIFIED	used by the executor's thread gate
 #
-# A6 additions: shader binding path. There is no SetBoundShaderState command.
+# Shader binding path. There is no SetBoundShaderState command in the searched regions.
 #
 ShaderBinding	recorder	0x0CB5130	0x3530	VERIFIED	FDE [0x0CB5130,0x0CB8660); vtable slot +0x340 of 0x03EDFCA0
 ShaderBinding	receiver	0x0CCC2F0	0x1190	VERIFIED	FDE [0x0CCC2F0,0x0CCD480); called only from 0x0CB5130
@@ -109,70 +114,65 @@ ShaderBinding	vs_setter_variant	0x0CCD201	5	VERIFIED	callq sceGnmSetVsShader wit
 ShaderBinding	ps_setter	0x0CCD0C0	5	VERIFIED	callq sceGnmSetPsShader350 with a null array
 ShaderBinding	field	context+0x468	8	VERIFIED	shader-state object
 ShaderBinding	field	shader_state+0x200	8	VERIFIED	shader resource
-ShaderBinding	field	shader_state+0x1C0	4	VERIFIED	passed as the GNM flags argument
+ShaderBinding	field	shader_state+0x1C0	4	VERIFIED	shader_modifier, masked into SPI_SHADER_PGM_RSRC1_VS
 ShaderBinding	field	shader_resource+0x1D8	8	VERIFIED	program data
 ShaderBinding	field	program_data+0x3	1	VERIFIED	register-array selector byte
 ShaderBinding	field	program_data+0x40	-	VERIFIED	register array base, indexed by the selector
 ShaderBinding	field	program_data+0x5E	-	VERIFIED	per-index flag byte, stride 4
+ShaderBinding	null_branch	0x0CCD045	5	VERIFIED	testq %rax,%rax; je 0xccd08c
+ShaderBinding	nonnull_array	0x0CCD07E	4	VERIFIED	addq $0x8,%r12 -> program_data+8
+ShaderBinding	selector_stride	0x0CCD12C	5	VERIFIED	leaq 0x40(%r12,%rbx,4),%rdx; size fixed 0x1D
+ShaderBinding	flag_table	0x0CCD14C	4	VERIFIED	movb 0x5e(%r12,%rax,4),%al; bit 1 = variant
 #
-# A6 negative results.
+# RSRC1 field decode. The allowed modifier mask is SGPRS plus the vertex-component bits.
 #
-SetBoundShaderState	absent	-	-	VERIFIED	no command object carries FBoundShaderStateRHIParamRef
-BeginRenderPass	absent	-	-	UNRESOLVED	not found in the command vtable cluster
-EndRenderPass	absent	-	-	UNRESOLVED	not found in the command vtable cluster
+ShaderBinding	modifier_bits	0x030003c0	4	VERIFIED	SGPRS (bits 6-9) + bits 24-25
+ShaderBinding	rsrc1_vgprs	0x0000003f	4	VERIFIED	bits 0-5, NOT in the allowed mask
+ShaderBinding	rsrc1_sgprs	0x000003c0	4	VERIFIED	bits 6-9, in the allowed mask
+ShaderBinding	rsrc1_priority	0x00001c00	4	VERIFIED	bits 10-12, NOT in the allowed mask
+ShaderBinding	rsrc1_float_mode	0x00002000	4	VERIFIED	bit 13, NOT in the allowed mask
 #
-# A7 additions: command production, executor shape, shader semantics.
+# Command list: append, executor, ownership, lifetime.
 #
 CommandList	field	+0x00	8	VERIFIED	head (Root)
 CommandList	field	+0x08	8	VERIFIED	tail slot (CommandLink)
-CommandList	field	+0x14	4	VERIFIED	command count
+CommandList	field	+0x10	1	VERIFIED	bExecuting, set 1 before the walk and 0 after
+CommandList	field	+0x14	4	VERIFIED	NumCommands, zeroed on reset
 CommandList	field	+0x30	8	VERIFIED	bump allocator cursor
 CommandList	field	+0x38	8	VERIFIED	bump allocator end
+CommandList	field	+0x50	4	VERIFIED	reference count, decremented on release
 CommandList	append	0x13D6906	0x14	VERIFIED	*tail=cmd; tail=&cmd->Next; Next=0; vptr=table
 CommandList	allocator	0x13D67E0	-	VERIFIED	shared command allocator, ~130 callers
-CommandList	executor	0x14B00	0x100	VERIFIED	FDE [0x14B00,0x14C00); array walk at +0x18/+0x20
-CommandList	teardown	0x14810	0x2F0	VERIFIED	FDE [0x14810,0x14B00); slot walk, vtable[1]
-CommandList	executor_array	+0x18	8	VERIFIED	array base
-CommandList	executor_count	+0x20	4	VERIFIED	array count
-CommandList	sort_key	cmd+0x48	4	UNRESOLVED	per-command key read by the executor
-#
-# A7 shader semantics.
-#
-ShaderBinding	null_branch	0x0CCD045	5	VERIFIED	testq %rax,%rax; je 0xccd08c
-ShaderBinding	nonnull_array	0x0CCD07E	4	VERIFIED	addq ,%r12 -> program_data+8
-ShaderBinding	selector_stride	0x0CCD12C	5	VERIFIED	leaq 0x40(%r12,%rbx,4),%rdx; size fixed 0x1D
-ShaderBinding	flag_table	0x0CCD14C	4	VERIFIED	movb 0x5e(%r12,%rax,4),%al; bit 1 = variant
-ShaderBinding	modifier_arg	shader_state+0x1C0	4	VERIFIED	shader_modifier, masked into SPI_SHADER_PGM_RSRC1_VS
-ShaderBinding	modifier_valid_bits	0x030003c0	4	VERIFIED	VGPRS, SGPRS, priority/float-mode fields
-#
-# A7 corrections to earlier claims.
-#
-SetRenderTargets	payload_size	0x130	-	VERIFIED	caller requirement
-SetRenderTargets	growth_request	0x138	-	VERIFIED	allocator hint, 0x130 + 8 slack
-SetBoundShaderState	scoped_absent	-	-	UNRESOLVED	absent from the searched cluster only, not globally
-#
-# A8 corrections: the real executor. SUPERSEDES the A7 executor rows above.
-#
 CommandList	executor	0x13764D0	0x1190	VERIFIED	FDE [0x13764D0,0x1377660); walks Next from head
 CommandList	dispatch	0x1376954	2	VERIFIED	callq *(%rax) with rdi=cmd, rsi=list, rdx=scratch
 CommandList	executor_head	0x1376934	3	VERIFIED	movq (%r15),%rdi
 CommandList	executor_next	0x1376940	4	VERIFIED	movq 0x8(%rdi),%rbx
 CommandList	executor_rsi	0x137694B	3	VERIFIED	movq %r15,%rsi
-CommandList	executor_reset	0x137696E	0x12	VERIFIED	NumCommands=0; head=null; tail=&head
-CommandList	bExecuting	+0x10	1	VERIFIED	set 1 before the walk, 0 after
-CommandList	NumCommands	+0x14	4	VERIFIED	zeroed on reset
+CommandList	executor_reset	0x137696E	0x12	VERIFIED	NumCommands=0; head=null; tail=&head; NO destructors
+CommandList	thread_gate	0x13764FA	0x26	VERIFIED	two scePthreadGetthreadid comparisons
+CommandList	mode_global	0x47B438A	1	VERIFIED	selects the bypass path
+CommandList	global_primary	0x47C07D0	8	VERIFIED	primary command-list global, cleared after use
+CommandList	global_secondary	0x47C07D8	8	VERIFIED	secondary command-list global, cleared after use
+CommandList	flush_gate	0x1376110	0xB4	VERIFIED	FDE [0x1376110,0x13761D0); refcount + busy bit
 #
-# A8: 0x14B00 is NOT the executor. It is a task/job dispatcher.
+# NOT the command executor. Kept so the misidentification is not repeated.
 #
 NotExecutor	function	0x14B00	0x100	VERIFIED	receives object+0x38, reads +0x18/+0x20 of that
 NotExecutor	caller	0x1485E	4	VERIFIED	leaq 0x38(%r15),%rdi
 NotExecutor	key_read	0x14B4F	3	VERIFIED	movl 0x48(%rdi),%eax on each element
 NotExecutor	no_rsi	0x14B9F	4	VERIFIED	dispatch with no rsi setup
+NotExecutor	object_type	-	-	UNRESOLVED	task/job dispatcher, owner not identified
 #
-# A8: RSRC1 field correction. Supersedes the A7 modifier_valid_bits row.
+# NOT RHI command teardown. A different container type with its own vtable.
 #
-ShaderBinding	modifier_bits	0x030003c0	4	VERIFIED	SGPRS (bits 6-9) + bits 24-25, NOT VGPRS/priority/float-mode
-ShaderBinding	rsrc1_vgprs	0x0000003f	4	VERIFIED	bits 0-5, not in the allowed mask
-ShaderBinding	rsrc1_sgprs	0x000003c0	4	VERIFIED	bits 6-9, in the allowed mask
-ShaderBinding	rsrc1_priority	0x00001c00	4	VERIFIED	bits 10-12, not in the allowed mask
-ShaderBinding	rsrc1_float_mode	0x00002000	4	VERIFIED	bit 13, not in the allowed mask
+OtherContainer	dtor	0x14810	0x2F0	VERIFIED	FDE [0x14810,0x14B00); installs vtable 0x3E88280
+OtherContainer	vtable	0x3E88280	-	VERIFIED	installed at object+0x00 by 0x14810
+OtherContainer	array	+0x08	8	VERIFIED	element array
+OtherContainer	count	+0x10	4	VERIFIED	element count
+OtherContainer	per_element	0x1484B	3	VERIFIED	callq *0x8(%rax) = element vtable[1]
+#
+# Scoped negatives. Absent from the searched regions and paths, not from the binary.
+#
+SetBoundShaderState	scoped_absent	-	-	UNRESOLVED	absent from the searched cluster and the draw path only
+BeginRenderPass	scoped_absent	-	-	UNRESOLVED	not found in the command vtable cluster
+EndRenderPass	scoped_absent	-	-	UNRESOLVED	not found in the command vtable cluster
