@@ -16,6 +16,14 @@ items:
     verifier: "tools/atlas/verify_attachment_backing_a006.py"
     target: "Resolve virtual +0x38 implementation and backing ownership, packet semantics and context masks +0x510/+0x514/+0x518"
     acceptance: "FDE/vtable producer, backing layout and ownership with multiple original-byte corroborations"
+  - id: A-007-ATTACHMENT-STATE-TEMPLATES
+    track: A
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "Original SELF: 0x02F5D0F0 selects one of four graphics-state templates for backing values 1..4 and emits 22-DWORD pair plus separate 3-DWORD command via writer"
+    report: "reports/atlas_attachment_template_a007.md"
+    verifier: "tools/atlas/verify_attachment_template_a007.py"
+    next: "Resolve data table relocations and resource ownership; do not assign GPU packet register names without independent evidence"
   - id: A-003-INDIRECT-CALLER-OWNERSHIP
     track: A
     priority: 1
