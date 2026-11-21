@@ -1,0 +1,98 @@
+# A5 address map
+#
+# Machine-readable. Tab-separated. '#' starts a comment line.
+# All addresses are inner-ELF virtual addresses from the pinned 1.00 image.
+# Runtime VA = module_base + RVA, with module_base = 0x800000000 in the observed session.
+#
+# confidence: VERIFIED   = read directly from the original bytes
+#             INFERRED   = field name mapped from the pinned public UE4.18.3 header
+#             UNRESOLVED = candidate only
+#
+# kind: vtable | execute | dtor | receiver | constructor | payload | loop | import
+#
+# name	kind	address	size	confidence	evidence
+SetViewport	vtable	0x03F26A08	16	VERIFIED	slot0=Execute slot1=trivial dtor
+SetViewport	execute	0x13A6BB0	0x30	VERIFIED	FDE [0x13A6BB0,0x13A6BE0)
+SetViewport	dtor	0x13A6BE0	0x20	VERIFIED	push rbp; mov rsp,rbp; pop rbp; ret
+SetViewport	receiver	0x0CB8AE0	0x670	VERIFIED	FDE [0x0CB8AE0,0x0CB9150)
+SetRenderTargets	vtable	0x03F26A28	16	VERIFIED	slot0=Execute slot1=trivial dtor
+SetRenderTargets	execute	0x13A6A30	0x40	VERIFIED	FDE [0x13A6A30,0x13A6A70)
+SetRenderTargets	dtor	0x13A6A70	0x20	VERIFIED	push rbp; mov rsp,rbp; pop rbp; ret
+SetRenderTargets	receiver	0x0CC2420	0x860	VERIFIED	FDE [0x0CC2420,0x0CC2C80)
+SetRenderTargets	constructor	0x13D69C2	0x120	VERIFIED	allocates 0x130 bytes
+SetStreamSource	vtable	0x03F26A48	16	VERIFIED	slot0=Execute slot1=trivial dtor
+SetStreamSource	execute	0x13A6930	0xF0	VERIFIED	FDE [0x13A6930,0x13A6A20)
+SetStreamSource	dtor	0x13A6A20	0x20	VERIFIED	push rbp; mov rsp,rbp; pop rbp; ret
+SetStreamSource	constructor	0x141009F	0x60	VERIFIED	allocates 0x28 bytes
+DrawPrimitive	vtable	0x03F26A68	16	VERIFIED	slot0=Execute slot1=trivial dtor
+DrawPrimitive	execute	0x13A6900	0x20	VERIFIED	FDE [0x13A6900,0x13A6920)
+DrawPrimitive	dtor	0x13A6920	0x20	VERIFIED	push rbp; mov rsp,rbp; pop rbp; ret
+DrawIndexedPrimitive	vtable	0x03F26A88	16	VERIFIED	slot0=Execute slot1=trivial dtor
+DrawIndexedPrimitive	execute	0x13A68B0	0x40	VERIFIED	FDE [0x13A68B0,0x13A68F0)
+DrawIndexedPrimitive	dtor	0x13A68F0	0x20	VERIFIED	push rbp; mov rsp,rbp; pop rbp; ret
+DrawIndexedPrimitive	rhi_method	0x0CBB9C0	0x525	VERIFIED	FDE [0x0CBB9C0,0x0CBBEE5); calls sceGnmDrawIndex
+DrawIndexedPrimitive	call_site	0x13A68E3	5	VERIFIED	E8 rel32 -> 0x0CBB9C0
+CommandHeader	vptr_store	0x1410190	3	VERIFIED	movq %rsi,(%rax) with rsi=0x3F26A88
+CommandHeader	next_store	0x1410188	8	VERIFIED	movq $0x0,0x8(%rax)
+ExecuteLoop	dispatch	0x14BA2	2	VERIFIED	callq *(%rax) where rax=obj->vptr
+TeardownLoop	dispatch	0x1484B	3	VERIFIED	callq *0x8(%rax) where rax=obj->vptr
+#
+# Payload field maps. offset is relative to the command object base.
+#
+SetRenderTargets	payload	+0x00	8	VERIFIED	vptr
+SetRenderTargets	payload	+0x08	8	VERIFIED	Next
+SetRenderTargets	payload	+0x10	4	INFERRED	NewNumSimultaneousRenderTargets
+SetRenderTargets	payload	+0x18	0xC0	VERIFIED	NewRenderTargetsRHI[8], stride 0x18
+SetRenderTargets	payload	+0xD8	0x18	VERIFIED	NewDepthStencilTarget
+SetRenderTargets	payload	+0xE8	4	INFERRED	NewNumUAVs
+SetRenderTargets	payload	+0xF0	0x38	VERIFIED	UAVs[]
+SetViewport	payload	+0x00	8	VERIFIED	vptr
+SetViewport	payload	+0x08	8	VERIFIED	Next
+SetViewport	payload	+0x10	4	INFERRED	MinX
+SetViewport	payload	+0x14	4	INFERRED	MinY
+SetViewport	payload	+0x18	4	VERIFIED	MinZ (float)
+SetViewport	payload	+0x1C	4	INFERRED	MaxX
+SetViewport	payload	+0x20	4	INFERRED	MaxY
+SetViewport	payload	+0x24	4	VERIFIED	MaxZ (float)
+SetStreamSource	payload	+0x00	8	VERIFIED	vptr
+SetStreamSource	payload	+0x08	8	VERIFIED	Next
+SetStreamSource	payload	+0x10	4	INFERRED	StreamIndex
+SetStreamSource	payload	+0x18	8	VERIFIED	VertexBuffer
+SetStreamSource	payload	+0x20	4	INFERRED	Offset
+DrawIndexedPrimitive	payload	+0x00	8	VERIFIED	vptr
+DrawIndexedPrimitive	payload	+0x08	8	VERIFIED	Next
+DrawIndexedPrimitive	payload	+0x10	8	INFERRED	IndexBuffer
+DrawIndexedPrimitive	payload	+0x18	4	INFERRED	PrimitiveType
+DrawIndexedPrimitive	payload	+0x1C	4	INFERRED	BaseVertexIndex
+DrawIndexedPrimitive	payload	+0x20	4	INFERRED	FirstInstance
+DrawIndexedPrimitive	payload	+0x24	4	INFERRED	NumVertices
+DrawIndexedPrimitive	payload	+0x28	4	INFERRED	StartIndex
+DrawIndexedPrimitive	payload	+0x2C	4	INFERRED	NumPrimitives
+DrawIndexedPrimitive	payload	+0x30	4	INFERRED	NumInstances
+#
+# Context-side state written by the receivers. Offsets are relative to the context object.
+#
+SetRenderTargets	context	+0x474	4	VERIFIED	render target count
+SetRenderTargets	context	+0x510	4	VERIFIED	cached RT bitmask
+SetRenderTargets	context	+0x514	4	VERIFIED	RT bitmask mask
+SetRenderTargets	context	+0x518	4	VERIFIED	current RT bitmask
+SetViewport	context	+0x80	4	VERIFIED	cached MinX (float)
+SetViewport	context	+0x84	4	VERIFIED	cached MinY (float)
+SetViewport	context	+0x88	4	VERIFIED	cached MinZ (float)
+SetViewport	context	+0x8C	4	VERIFIED	cached MaxX (float)
+SetViewport	context	+0xA0	4	VERIFIED	cached MaxY (float)
+SetViewport	context	+0xA4	4	VERIFIED	cached MaxZ (float)
+SetStreamSource	context	+0x948	24	VERIFIED	per-stream record, index*24
+SetStreamSource	context	+0xA8	2	VERIFIED	per-stream stride, index*2
+SetStreamSource	context	+0xAD4	1	VERIFIED	dirty flag
+#
+# GNM imports reached by the recovered commands.
+#
+sceGnmDrawIndex	import	0x033C81A0	-	VERIFIED	NID HlTPoZ-oY7Y
+sceGnmSetVsShader	import	0x033C81B0	-	VERIFIED	NID (see A4 correction)
+sceGnmSetEmbeddedVsShader	import	0x033C81D0	-	VERIFIED	NID (see A4 correction)
+sceGnmDrawIndexAuto	import	0x033C8270	-	VERIFIED	NID (see A4 correction)
+sceGnmInsertPopMarker	import	0x033C82C0	-	VERIFIED	NID (see A4 correction)
+sceGnmSetPsShader350	import	0x033C8340	-	VERIFIED	NID (see A4 correction)
+sceGnmInsertPushMarker	import	0x033C8380	-	VERIFIED	NID (see A4 correction)
+scePthreadGetthreadid	import	0x033C6770	-	VERIFIED	used by the SetStreamSource debug branch
