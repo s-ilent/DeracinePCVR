@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "A-009 verified original SELF backing metadata mutation committed on research branch; draft PR #1 open; main unchanged",
+  "github_write_status": "A-010 verified original SELF direct context attachment callsite committed on research branch; draft PR #1 open; main unchanged",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -216,10 +216,35 @@
       "runtime_observed": false,
       "report": "reports/atlas_attachment_metadata_a009.md",
       "verifier": "tools/atlas/verify_attachment_metadata_a009.py"
+    },
+    {
+      "id": "A-010-DIRECT-CONTEXT-ATTACHMENT",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "function_entry_elf_va": "0x0D049F0",
+      "direct_callsite_elf_va": "0x0D04DBE",
+      "direct_callee_elf_va": "0x0CC2420",
+      "context_writer_offset": "+0x460",
+      "global_resource_table_elf_va": "0x044962C8",
+      "global_index_elf_va": "0x044965FC",
+      "resource_dimension_offsets": [
+        "+0x58",
+        "+0x5C"
+      ],
+      "resource_metadata_offsets": [
+        "+0x68",
+        "+0x6C",
+        "+0x70"
+      ],
+      "metadata_source_global_elf_va": "0x04496748",
+      "confidence": "high for original-byte call and field accesses; dimensions, C++ identity and runtime reachability unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_context_attachment_a010.md",
+      "verifier": "tools/atlas/verify_context_attachment_a010.py"
     }
   ],
   "known_false": [],
-  "next_action": "Trace 0x04496748 global writer or backing +0x3C producer; identify +0x38 resource virtual implementation and backing lifetime.",
+  "next_action": "Trace global indexed resource producer and writer of 0x04496748; test dimension fields +0x58/+0x5C and resource ownership.",
   "draft_pr_url": "https://github.com/s-ilent/DeracinePCVR/pull/1",
   "draft_pr_number": 1,
   "recheck": {
