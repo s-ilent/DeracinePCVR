@@ -594,6 +594,9 @@ void Linker::Execute(const std::vector<std::string>& args) {
         // Run the game's entry function
         params.entry_addr = module->GetEntryAddress();
         RunMainEntry(&params);
+
+        // The guest has returned, so the capture can be exported outside the hot path.
+        RhiCommandCapture::ExportCapturedCommands();
     });
 }
 

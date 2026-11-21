@@ -114,4 +114,46 @@ inline constexpr VAddr CommandVtableStride = 0x20;
     }
 }
 
+/// The command list's RHI context is at +0x20. The shader-state chain below it is statically
+/// supported by A6/A7 but its validity at the draw-wrapper entry is what SC-02 measures.
+inline constexpr u32 CommandListContextOffset = 0x20;
+inline constexpr u32 ContextShaderStateOffset = 0x468;
+inline constexpr u32 ShaderStateResourceOffset = 0x200;
+inline constexpr u32 ShaderStateAlternateResourceOffset = 0x1E0;
+inline constexpr u32 ShaderStateModifierOffset = 0x1C0;
+inline constexpr u32 ShaderResourceProgramDataOffset = 0x1D8;
+
+/// Render-target array geometry, verified in A5/A9.
+inline constexpr u32 RenderTargetCountOffset = 0x10;
+inline constexpr u32 RenderTargetArrayOffset = 0x18;
+inline constexpr u32 RenderTargetStride = 0x18;
+inline constexpr u32 MaxRenderTargets = 8;
+inline constexpr u32 DepthTargetOffset = 0xD8;
+inline constexpr u32 UavCountOffset = 0xE8;
+inline constexpr u32 UavArrayOffset = 0xF0;
+inline constexpr u32 MaxUavs = 8;
+
+/// A shader snapshot is only recorded when the whole pointer chain validates. The status field
+/// records which link failed, so an unavailable chain is evidence rather than a silent zero.
+///
+/// The shader-state object holds TWO resource slots. The receiver at 0x0CCC2F0 reads +0x200 and,
+/// when that is null, falls back to +0x1E0. Both then read resource+0x1D8 as the program data.
+/// A snapshot that only reads +0x200 will report null on every draw that uses the alternate slot.
+enum class ShaderSnapshotStatus : u8 {
+    NotAttempted = 0,
+    Valid = 1,
+    ContextUnreadable = 2,
+    ShaderStateNull = 3,
+    ShaderStateUnreadable = 4,
+    ShaderResourceNull = 5,
+    ProgramDataNull = 6,
+    ProgramDataUnreadable = 7,
+    ValidViaAlternate = 8,
+};
+
+[[nodiscard]] inline bool IsShaderSnapshotValid(ShaderSnapshotStatus status) noexcept {
+    return status == ShaderSnapshotStatus::Valid ||
+           status == ShaderSnapshotStatus::ValidViaAlternate;
+}
+
 } // namespace Core::RhiCommandCapture

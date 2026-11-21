@@ -43,6 +43,7 @@
 #include "core/libraries/np/np_trophy.h"
 #include "core/libraries/save_data/save_backup.h"
 #include "core/linker.h"
+#include "core/rhi_command_capture.h"
 #include "core/memory.h"
 #include "core/user_settings.h"
 #ifdef ENABLE_OPENXR_HOST
@@ -95,6 +96,8 @@ void Emulator::Shutdown() {
     // Stop the scripted-input replay before the VR runtime and the controllers are taken down:
     // it reads and drives both, and a detached thread would outlive them.
     Input::StopScriptedInput();
+    // Export the command capture before the log is flushed, so a clean quit still reports it.
+    Core::RhiCommandCapture::ExportCapturedCommands();
     Common::Log::Flush();
     if (controllers) {
         controllers->ResetLightbarColors();

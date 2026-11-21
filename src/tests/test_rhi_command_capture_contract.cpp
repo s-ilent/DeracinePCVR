@@ -21,10 +21,14 @@ using Core::RhiCommandCapture::CommandUnknown;
 using Core::RhiCommandCapture::EbootV100Sha256;
 using Core::RhiCommandCapture::EbootV101Sha256;
 using Core::RhiCommandCapture::IsOptedIn;
+using Core::RhiCommandCapture::IsShaderSnapshotValid;
 using Core::RhiCommandCapture::IsTargetBuild;
 using Core::RhiCommandCapture::MatchesCommandPrologue;
 using Core::RhiCommandCapture::MaxCapturedCommands;
+using Core::RhiCommandCapture::MaxRenderTargets;
+using Core::RhiCommandCapture::MaxUavs;
 using Core::RhiCommandCapture::ModuleName;
+using Core::RhiCommandCapture::ShaderSnapshotStatus;
 using Core::RhiCommandCapture::TitleId;
 
 TEST(RhiCommandCaptureContract, OptInRequiresExactlyOne) {
@@ -54,10 +58,10 @@ TEST(RhiCommandCaptureContract, VtableClassifiesTheFiveRecoveredCommands) {
 
 TEST(RhiCommandCaptureContract, UnknownVtablesAreReportedAsUnknown) {
     EXPECT_EQ(ClassifyCommandVtable(0), CommandUnknown);
-    EXPECT_EQ(ClassifyCommandVtable(0x03F26A00), CommandUnknown); // before the cluster
-    EXPECT_EQ(ClassifyCommandVtable(0x03F26A90), CommandUnknown); // past the last entry
-    EXPECT_EQ(ClassifyCommandVtable(0x03F26A10), CommandUnknown); // not on the 0x20 stride
-    EXPECT_EQ(ClassifyCommandVtable(0x0CBB9C0), CommandUnknown);  // a method, not a vtable
+    EXPECT_EQ(ClassifyCommandVtable(0x03F26A00), CommandUnknown);
+    EXPECT_EQ(ClassifyCommandVtable(0x03F26A90), CommandUnknown);
+    EXPECT_EQ(ClassifyCommandVtable(0x03F26A10), CommandUnknown);
+    EXPECT_EQ(ClassifyCommandVtable(0x0CBB9C0), CommandUnknown);
 }
 
 TEST(RhiCommandCaptureContract, EveryEntryHasADistinctCommandIdAndPrologue) {
@@ -85,7 +89,6 @@ TEST(RhiCommandCaptureContract, PrologueMatchRequiresTheExactBytes) {
 }
 
 TEST(RhiCommandCaptureContract, PrologueMatchIsScopedToTheCommandId) {
-    // A prologue that belongs to one command must not match another command's id.
     const auto& draw = CommandEntries[0];
     for (size_t i = 1; i < CommandEntries.size(); ++i) {
         if (CommandEntries[i].prologue == draw.prologue)
@@ -95,9 +98,44 @@ TEST(RhiCommandCaptureContract, PrologueMatchIsScopedToTheCommandId) {
 }
 
 TEST(RhiCommandCaptureContract, CaptureIsBounded) {
-    // The record count is a compile-time bound, so the capture never allocates or grows.
     EXPECT_GT(MaxCapturedCommands, 0u);
     EXPECT_LE(MaxCapturedCommands, 4096u);
+}
+
+TEST(RhiCommandCaptureContract, RenderTargetAndUavBoundsAreClamped) {
+    // The capture clamps the guest count to these capacities, so a corrupt count cannot read past
+    // the payload. The public header's MaxSimultaneousRenderTargets is 8.
+    EXPECT_EQ(MaxRenderTargets, 8u);
+    EXPECT_GT(MaxUavs, 0u);
+    EXPECT_LE(MaxUavs, 8u);
+}
+
+TEST(RhiCommandCaptureContract, OnlyTheValidShaderStatusCountsAsAvailable) {
+    EXPECT_TRUE(IsShaderSnapshotValid(ShaderSnapshotStatus::Valid));
+    EXPECT_TRUE(IsShaderSnapshotValid(ShaderSnapshotStatus::ValidViaAlternate));
+    EXPECT_FALSE(IsShaderSnapshotValid(ShaderSnapshotStatus::NotAttempted));
+    EXPECT_FALSE(IsShaderSnapshotValid(ShaderSnapshotStatus::ContextUnreadable));
+    EXPECT_FALSE(IsShaderSnapshotValid(ShaderSnapshotStatus::ShaderStateNull));
+    EXPECT_FALSE(IsShaderSnapshotValid(ShaderSnapshotStatus::ShaderStateUnreadable));
+    EXPECT_FALSE(IsShaderSnapshotValid(ShaderSnapshotStatus::ShaderResourceNull));
+    EXPECT_FALSE(IsShaderSnapshotValid(ShaderSnapshotStatus::ProgramDataNull));
+    EXPECT_FALSE(IsShaderSnapshotValid(ShaderSnapshotStatus::ProgramDataUnreadable));
+}
+
+TEST(RhiCommandCaptureContract, ShaderStatusValuesAreDistinctAndBounded) {
+    // The export indexes a fixed-size status histogram, so every status must fit it.
+    constexpr std::array<ShaderSnapshotStatus, 9> all{
+        ShaderSnapshotStatus::NotAttempted,       ShaderSnapshotStatus::Valid,
+        ShaderSnapshotStatus::ContextUnreadable,  ShaderSnapshotStatus::ShaderStateNull,
+        ShaderSnapshotStatus::ShaderStateUnreadable, ShaderSnapshotStatus::ShaderResourceNull,
+        ShaderSnapshotStatus::ProgramDataNull,    ShaderSnapshotStatus::ProgramDataUnreadable,
+        ShaderSnapshotStatus::ValidViaAlternate,
+    };
+    for (size_t i = 0; i < all.size(); ++i) {
+        EXPECT_LT(static_cast<u8>(all[i]), all.size());
+        for (size_t j = i + 1; j < all.size(); ++j)
+            EXPECT_NE(all[i], all[j]);
+    }
 }
 
 } // namespace
