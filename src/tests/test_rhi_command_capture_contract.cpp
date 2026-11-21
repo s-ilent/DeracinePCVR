@@ -20,13 +20,16 @@ using Core::RhiCommandCapture::CommandSetViewport;
 using Core::RhiCommandCapture::CommandUnknown;
 using Core::RhiCommandCapture::EbootV100Sha256;
 using Core::RhiCommandCapture::EbootV101Sha256;
+using Core::RhiCommandCapture::EnableEnvironmentVariable;
 using Core::RhiCommandCapture::IsOptedIn;
 using Core::RhiCommandCapture::IsShaderSnapshotValid;
 using Core::RhiCommandCapture::IsTargetBuild;
 using Core::RhiCommandCapture::MatchesCommandPrologue;
 using Core::RhiCommandCapture::MaxCapturedCommands;
 using Core::RhiCommandCapture::MaxRenderTargets;
+using Core::RhiCommandCapture::MaxStartDelaySeconds;
 using Core::RhiCommandCapture::MaxUavs;
+using Core::RhiCommandCapture::StartDelayEnvironmentVariable;
 using Core::RhiCommandCapture::ModuleName;
 using Core::RhiCommandCapture::ShaderSnapshotStatus;
 using Core::RhiCommandCapture::TitleId;
@@ -100,6 +103,15 @@ TEST(RhiCommandCaptureContract, PrologueMatchIsScopedToTheCommandId) {
 TEST(RhiCommandCaptureContract, CaptureIsBounded) {
     EXPECT_GT(MaxCapturedCommands, 0u);
     EXPECT_LE(MaxCapturedCommands, 4096u);
+}
+
+TEST(RhiCommandCaptureContract, StartDelayIsBounded) {
+    // A start delay lets a capture target a later scene. It must be bounded, and a value above the
+    // bound is refused rather than clamped, so a typo cannot silently capture nothing.
+    EXPECT_GT(MaxStartDelaySeconds, 0u);
+    EXPECT_LE(MaxStartDelaySeconds, 3600u);
+    EXPECT_FALSE(StartDelayEnvironmentVariable.empty());
+    EXPECT_NE(StartDelayEnvironmentVariable, EnableEnvironmentVariable);
 }
 
 TEST(RhiCommandCaptureContract, RenderTargetAndUavBoundsAreClamped) {

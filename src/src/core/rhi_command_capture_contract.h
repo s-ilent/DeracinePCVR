@@ -21,6 +21,15 @@ inline constexpr std::string_view EbootV101Sha256 =
 /// Opt-in; only the exact value "1" enables the capture.
 inline constexpr std::string_view EnableEnvironmentVariable = "SHADPS4_DERACINE_CMD_CAPTURE";
 
+/// Optional bounded start delay in seconds, so a capture can target a later scene instead of the
+/// first one. Absent or non-positive means capture from the first command.
+inline constexpr std::string_view StartDelayEnvironmentVariable =
+    "SHADPS4_DERACINE_CMD_CAPTURE_AFTER";
+
+/// Upper bound on the accepted start delay. A larger value is refused rather than clamped, so a
+/// typo cannot silently capture nothing.
+inline constexpr u32 MaxStartDelaySeconds = 600;
+
 /// Bounded record count. The capture never allocates and never grows.
 inline constexpr size_t MaxCapturedCommands = 512;
 

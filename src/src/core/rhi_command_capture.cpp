@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -72,6 +73,8 @@ struct CaptureState {
     std::atomic<u32> dropped_count{};
     std::atomic<bool> limit_logged{};
     std::atomic<bool> installed{};
+    /// Absolute time before which commands are ignored. Zero means capture immediately.
+    std::atomic<u64> start_after_ns{};
     std::array<CapturedCommand, MaxCapturedCommands> commands{};
 };
 
@@ -121,10 +124,13 @@ CaptureState g_capture_state{};
     return sha256::SHA256::Hex(hasher.final());
 }
 
-/// Read one guest word, but only after proving the address is in a readable mapping. This is the
-/// only guest read the capture performs, and it is bounded to the command object's own payload.
-[[nodiscard]] bool ReadGuestWord(MemoryManager& memory, VAddr address, u64& value) noexcept {
-    if (address == 0 || address > (std::numeric_limits<VAddr>::max)() - sizeof(u64))
+/// Prove that a whole guest span is readable, once, so the payload copy does not re-query the
+/// mapping for every word. The capture reads at most this many bytes from one command object.
+inline constexpr VAddr MaxPayloadSpan = 0x130;
+
+[[nodiscard]] bool IsGuestSpanReadable(MemoryManager& memory, VAddr address,
+                                       VAddr length) noexcept {
+    if (address == 0 || length == 0 || address > (std::numeric_limits<VAddr>::max)() - length)
         return false;
 
     void* mapped_start{};
@@ -136,10 +142,22 @@ CaptureState g_capture_state{};
     }
     const VAddr region_start = reinterpret_cast<VAddr>(mapped_start);
     const VAddr region_end = reinterpret_cast<VAddr>(mapped_end);
-    if (region_start > address || region_end < address + sizeof(u64))
-        return false;
+    return region_start <= address && region_end >= address + length;
+}
 
+/// Read one guest word from an already-validated span. No mapping query.
+[[nodiscard]] u64 ReadValidatedWord(VAddr address) noexcept {
+    u64 value{};
     std::memcpy(&value, reinterpret_cast<const void*>(address), sizeof(u64));
+    return value;
+}
+
+/// Read one guest word, but only after proving the address is in a readable mapping. Used for the
+/// pointer-chain links, which are not inside the command payload span.
+[[nodiscard]] bool ReadGuestWord(MemoryManager& memory, VAddr address, u64& value) noexcept {
+    if (!IsGuestSpanReadable(memory, address, sizeof(u64)))
+        return false;
+    value = ReadValidatedWord(address);
     return true;
 }
 
@@ -208,7 +226,6 @@ CaptureState g_capture_state{};
     }
     return count;
 }
-
 /// Copy the complete render-target and UAV arrays within the verified bounds. The count fields are
 /// clamped to the array capacity, so a corrupt count cannot read past the payload.
 void CaptureRenderTargets(MemoryManager& memory, VAddr command, CapturedCommand& captured) noexcept {
@@ -306,6 +323,18 @@ static void CaptureCommandImpl(const GuestEntryRegisterFrame* frame, void* user_
     auto* state = static_cast<CaptureState*>(user_data);
     if (frame == nullptr || state == nullptr || state->memory == nullptr)
         return;
+
+    // A bounded start delay lets a capture target a later scene. The clock read is cheap and only
+    // happens while the delay is still pending.
+    const u64 start_after = state->start_after_ns.load(std::memory_order_relaxed);
+    if (start_after != 0) {
+        const auto now = static_cast<u64>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch())
+                .count());
+        if (now < start_after)
+            return;
+    }
 
     // The command object is the first argument and the command list is the second.
     const VAddr command = frame->rdi;
@@ -486,11 +515,39 @@ void TryInstallBeforeGuestThread(Module& module, std::string_view title_id,
     }
     g_capture_state.installed.store(true, std::memory_order_relaxed);
 
+    // Optional bounded start delay, so a capture can target a later scene.
+    u32 start_delay_seconds{};
+    if (const char* delay = std::getenv(StartDelayEnvironmentVariable.data());
+        delay != nullptr && *delay != '\0') {
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(delay, &end, 10);
+        if (end == delay || *end != '\0' || parsed > MaxStartDelaySeconds) {
+            LOG_WARNING(Core_Linker,
+                        "RHI command capture refused: {} must be a whole number of seconds up to "
+                        "{}",
+                        StartDelayEnvironmentVariable, MaxStartDelaySeconds);
+            RollbackInstalled(module, installed);
+            g_capture_state.installed.store(false, std::memory_order_relaxed);
+            g_capture_state.memory = nullptr;
+            return;
+        }
+        start_delay_seconds = static_cast<u32>(parsed);
+    }
+    if (start_delay_seconds != 0) {
+        const auto now = std::chrono::steady_clock::now();
+        const auto deadline = now + std::chrono::seconds{start_delay_seconds};
+        g_capture_state.start_after_ns.store(
+            static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                 deadline.time_since_epoch())
+                                 .count()),
+            std::memory_order_relaxed);
+    }
+
     LOG_INFO(Core_Linker,
              "DERACINE_CMD_CAPTURE_INSTALL title_id={} app_version={} image_sha256={} "
-             "module_name={} module_base={:#x} installed={} command_limit={}",
+             "module_name={} module_base={:#x} installed={} command_limit={} start_delay_s={}",
              title_id, app_version, *image_hash, ModuleName, module.base_virtual_addr, installed,
-             MaxCapturedCommands);
+             MaxCapturedCommands, start_delay_seconds);
 #endif
 }
 
