@@ -112,12 +112,25 @@ def _first_deny(path: str, resolved: str, roots: list[str]) -> str | None:
     return None
 
 
+def _roots(config: dict, key: str) -> list[str]:
+    """Resolve one root list, rejecting non-string entries instead of raising TypeError."""
+    value = config.get(key, [])
+    if not isinstance(value, list):
+        raise GuardError(f"config '{key}' is not a list")
+    roots: list[str] = []
+    for entry in value:
+        if not isinstance(entry, str):
+            raise GuardError(f"config '{key}' contains a non-string entry: {entry!r}")
+        roots.append(os.path.realpath(entry))
+    return roots
+
+
 def check(path: str, op: str, config: dict) -> dict:
     target = normalise(path)
     resolved = os.path.realpath(target)
-    allow_write = [os.path.realpath(p) for p in config.get("allow_write", [])]
-    allow_read = [os.path.realpath(p) for p in config.get("allow_read", [])]
-    deny = [os.path.realpath(p) for p in config.get("deny", [])]
+    allow_write = _roots(config, "allow_write")
+    allow_read = _roots(config, "allow_read")
+    deny = _roots(config, "deny")
     # The protected-path policy covers mutations only: reading the active install is legitimate
     # (preflight hashes it), writing or deleting it never is.
     policy_deny = protected_deny() if op in MUTATING_OPS else []

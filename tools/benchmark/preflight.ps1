@@ -14,6 +14,10 @@
 #   -ShadowManifest <file>  the declaration itself; may be given instead of -ShadowRoot
 #                           (the root is then its parent). It must be named benchmark-shadow.json
 #                           and sit directly in the root.
+#   -AdditionalSharedGame <dir> repeats the shared-game file hashes for another protected source.
+#   -ProtectedTree <dir[]>  recursively hashes files and records directories/reparse points without
+#                           following links; pass every resolved junction target as its own tree.
+#   -ProtectedTreeJson <json> transports the same string[] through a native PowerShell child process.
 #   -Python <exe>           interpreter for game_shadow.py (standard library only; default python).
 # When neither shadow parameter is given the preflight behaves exactly as before. When either is
 # given, an invalid shadow is a terminating error (non-zero exit): the session must not write
@@ -29,13 +33,27 @@ param(
     [string]$SharedLab = 'M:\Development\Deracine-work\lab\pc-vr-quality',
     [string]$Game = 'D:\Temp\Deracine\CUSA11919-guardrails-2026-11-17',
     [string]$SharedGame = 'D:\Temp\Deracine\CUSA11919-qual',
+    [string[]]$AdditionalSharedGame = @(),
+    [string[]]$ProtectedTree = @(),
+    [string]$ProtectedTreeJson = '',
     [string]$ShadowRoot = '',
     [string]$ShadowManifest = '',
     [string]$Python = 'python'
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not [string]::IsNullOrWhiteSpace($ProtectedTreeJson)) {
+    if (@($ProtectedTree).Count -gt 0) { throw 'pass either ProtectedTree or ProtectedTreeJson, not both' }
+    try { $decodedProtectedTrees = @(ConvertFrom-Json -InputObject $ProtectedTreeJson -ErrorAction Stop) }
+    catch { throw "ProtectedTreeJson must be a JSON array of paths: $($_.Exception.Message)" }
+    if ($decodedProtectedTrees.Count -eq 0 -or
+        @($decodedProtectedTrees | Where-Object { $_ -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$_) }).Count -gt 0) {
+        throw 'ProtectedTreeJson must contain one or more non-empty string paths'
+    }
+    $ProtectedTree = @($decodedProtectedTrees)
+}
 $inv = [System.Globalization.CultureInfo]::InvariantCulture
+. (Join-Path $PSScriptRoot 'protected_tree_snapshot.ps1')
 
 function Write-JsonFile([string]$Path, $Object) {
     $json = $Object | ConvertTo-Json -Depth 20
@@ -190,8 +208,23 @@ foreach ($relative in @('bench.ps1', 'README.md', 'bin\baseline.json')) {
 foreach ($relative in @('settings.txt', 'launch.ps1', 'shadps4.exe')) {
     $immutablePaths[(Join-Path $SharedLab $relative)] = Get-FileRecord (Join-Path $SharedLab $relative)
 }
-foreach ($relative in @('eboot.bin', 'title.json', 'gameproject\saved\config\ps4\engine.ini')) {
-    $immutablePaths[(Join-Path $SharedGame $relative)] = Get-FileRecord (Join-Path $SharedGame $relative)
+$sharedGameRoots = @($SharedGame) + @($AdditionalSharedGame)
+foreach ($sharedRoot in $sharedGameRoots) {
+    foreach ($relative in @('eboot.bin', 'title.json', 'gameproject\saved\config\ps4\engine.ini')) {
+        $path = Join-Path $sharedRoot $relative
+        $immutablePaths[$path] = Get-FileRecord $path
+    }
+}
+$protectedTreeRecords = [System.Collections.Generic.List[object]]::new()
+$protectedTreeRoots = [System.Collections.Generic.List[string]]::new()
+$seenProtectedTreeRoots = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+foreach ($treePath in $ProtectedTree) {
+    $snapshot = Get-ProtectedTreeSnapshot -Path $treePath
+    if (-not $seenProtectedTreeRoots.Add([string]$snapshot.root)) {
+        throw "duplicate protected tree root: $($snapshot.root)"
+    }
+    $protectedTreeRecords.Add($snapshot)
+    $protectedTreeRoots.Add([string]$snapshot.root)
 }
 $immutablePaths[[string](Join-Path $Game 'eboot.bin')] = Get-FileRecord (Join-Path $Game 'eboot.bin')
 # The private shadow's engine.ini is this harness's own input, rewritten per session; hashing it
@@ -231,6 +264,9 @@ $protected = [ordered]@{
     recovery = [IO.Path]::GetFullPath($Recovery)
     shared_bench = [IO.Path]::GetFullPath($SharedBench)
     shared_lab = [IO.Path]::GetFullPath($SharedLab)
+    shared_game = [IO.Path]::GetFullPath($SharedGame)
+    shared_game_additional = @($AdditionalSharedGame | ForEach-Object { [IO.Path]::GetFullPath($_) })
+    protected_tree_roots = @($protectedTreeRoots)
     game     = [IO.Path]::GetFullPath($Game)
 }
 
@@ -253,6 +289,8 @@ $guard = [ordered]@{
         [IO.Path]::GetFullPath($SharedLab),
         'C:\Program Files\RenderDoc'
     )
+    # Concatenate the variable-length groups instead of nesting them: an array literal keeps a
+    # nested empty array as a literal element, which path_guard.py then rejects as a non-string.
     deny = @(
         (Join-Path $repoFull 'pc-vr'),
         [IO.Path]::GetFullPath($Recovery),
@@ -263,7 +301,8 @@ $guard = [ordered]@{
         [IO.Path]::GetFullPath('D:\Temp\Deracine\CUSA11919-1.01'),
         [IO.Path]::GetFullPath('D:\Temp\Deracine\CUSA11919-color'),
         [IO.Path]::GetFullPath('D:\Temp\Deracine\Update')
-    ) + @($worktrees | Where-Object {
+    ) + @($AdditionalSharedGame | ForEach-Object { [IO.Path]::GetFullPath($_) }) +
+        @($protectedTreeRoots) + @($worktrees | Where-Object {
         $_.present -and (Normalize-Path $_.path) -ne $worktreeFull
     } | ForEach-Object { $_.path })
 }
@@ -275,11 +314,14 @@ $manifest = [ordered]@{
     own            = (Get-GitState $worktreeFull)
     worktrees      = $worktrees
     immutable      = $immutablePaths
+    protected_trees = @($protectedTreeRecords.ToArray())
     volatile       = $volatile
     guard          = $guard
     shadow         = $shadow
 }
 
 Write-JsonFile $outFull $manifest
-Write-Output "preflight: $($immutablePaths.Count) protected files, $($worktrees.Count) worktrees -> $outFull"
+$treeFileCount = [long]0
+foreach ($treeRecord in $protectedTreeRecords) { $treeFileCount += [long]$treeRecord.file_count }
+Write-Output "preflight: $($immutablePaths.Count) protected files, $($protectedTreeRecords.Count) protected trees/$treeFileCount tree files, $($worktrees.Count) worktrees -> $outFull"
 exit 0

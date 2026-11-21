@@ -12,6 +12,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'protected_tree_snapshot.ps1')
 
 function Write-JsonFile([string]$Path, $Object) {
     $json = $Object | ConvertTo-Json -Depth 20
@@ -66,6 +67,7 @@ $beforeDoc = Get-Content -LiteralPath $Before -Raw | ConvertFrom-Json
 
 $unexpected = New-Object System.Collections.Generic.List[string]
 $observed = New-Object System.Collections.Generic.List[string]
+$treeResults = [System.Collections.Generic.List[object]]::new()
 
 $immutable = $beforeDoc.immutable
 foreach ($property in $immutable.PSObject.Properties) {
@@ -76,6 +78,32 @@ foreach ($property in $immutable.PSObject.Properties) {
         $unexpected.Add("existence changed: $path")
     } elseif ($old.exists -and ($old.sha256 -ne $now.sha256 -or $old.bytes -ne $now.bytes)) {
         $unexpected.Add("content changed: $path")
+    }
+}
+
+if ($beforeDoc.PSObject.Properties.Name -contains 'protected_trees') {
+    foreach ($oldTree in @($beforeDoc.protected_trees)) {
+        try {
+            $nowTree = Get-ProtectedTreeSnapshot -Path ([string]$oldTree.root)
+            $comparison = Compare-ProtectedTreeSnapshot -Before $oldTree -After $nowTree
+            $treeResults.Add($comparison)
+            if (-not $comparison.unchanged) {
+                $unexpected.Add("protected tree changed: $($oldTree.root) " +
+                    "files +$(@($comparison.added_files).Count)/-$(@($comparison.removed_files).Count)/changed $(@($comparison.changed_files).Count), " +
+                    "directories +$(@($comparison.added_directories).Count)/-$(@($comparison.removed_directories).Count), " +
+                    "reparse +$(@($comparison.added_reparse_points).Count)/-$(@($comparison.removed_reparse_points).Count)/changed $(@($comparison.changed_reparse_points).Count)")
+            }
+        } catch {
+            $message = "protected tree could not be verified: $($oldTree.root) ($($_.Exception.Message))"
+            $unexpected.Add($message)
+            $treeResults.Add([ordered]@{
+                root = [string]$oldTree.root
+                unchanged = $false
+                error = $_.Exception.Message
+                before_tree_sha256 = [string]$oldTree.tree_sha256
+                after_tree_sha256 = $null
+            })
+        }
     }
 }
 
@@ -119,6 +147,7 @@ $result = [ordered]@{
     protected_unchanged = ($unexpected.Count -eq 0)
     unexpected         = @($unexpected)
     observed           = @($observed)
+    protected_trees    = @($treeResults.ToArray())
     own_after          = $ownNow
     worktrees_after    = $worktreesNow
 }
@@ -129,5 +158,5 @@ if ($unexpected.Count -gt 0) {
     $unexpected | ForEach-Object { Write-Output "  - $_" }
     exit 1
 }
-Write-Output "postflight: OK - protected files unchanged ($($observed.Count) recorded observations)"
+Write-Output "postflight: OK - protected files and $($treeResults.Count) protected trees unchanged ($($observed.Count) recorded observations)"
 exit 0
