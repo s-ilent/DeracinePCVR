@@ -26,6 +26,7 @@
 #include "core/libraries/kernel/threads.h"
 #include "core/libraries/sysmodule/sysmodule.h"
 #include "core/linker.h"
+#include "core/rhi_command_capture.h"
 #include "core/rhi_entry_probe.h"
 #include "core/memory.h"
 #include "core/tls.h"
@@ -531,6 +532,9 @@ void Linker::Execute(const std::vector<std::string>& args) {
     // The title-specific observer is opt-in and verifies the selected Eboot identity before
     // changing guest code. Install after relocations and memory setup, before any guest thread runs.
     RhiEntryProbe::TryInstallBeforeGuestThread(
+        *module, Common::ElfInfo::Instance().GameSerial(), Common::ElfInfo::Instance().AppVer());
+    // The command capture is a separate opt-in and installs on the five command Execute wrappers.
+    RhiCommandCapture::TryInstallBeforeGuestThread(
         *module, Common::ElfInfo::Instance().GameSerial(), Common::ElfInfo::Instance().AppVer());
 
     main_thread.Run([this, module, &args](std::stop_token) {
