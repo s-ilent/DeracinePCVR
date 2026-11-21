@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "A-007 original SELF four-way attachment template writer committed on research branch; draft PR #1 open; main unchanged",
+  "github_write_status": "A-008 original SELF four-profile table contents verified and committed on research branch; draft PR #1 remains open; main unchanged",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -164,10 +164,40 @@
       "runtime_observed": false,
       "report": "reports/atlas_attachment_template_a007.md",
       "verifier": "tools/atlas/verify_attachment_template_a007.py"
+    },
+    {
+      "id": "A-008-ATTACHMENT-PROFILE-CONTENTS",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "selector_elf_va": "0x02F5D101",
+      "table_elf_vas": [
+        "0x035AF340",
+        "0x035AF350",
+        "0x035AF360",
+        "0x035AF370",
+        "0x035AF380",
+        "0x035C3940"
+      ],
+      "profile_values": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "packed_final_dwords": [
+        "0x00108001",
+        "0x0020C002",
+        "0x0030E003",
+        "0x00410004"
+      ],
+      "confidence": "high for exact scalar table contents and instruction-boundary-confirmed loads; GPU register meanings and resource ownership unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_attachment_profiles_a008.md",
+      "verifier": "tools/atlas/verify_attachment_profiles_a008.py"
     }
   ],
   "known_false": [],
-  "next_action": "Recover data-segment mapping and relocation-resolved four-way attachment template values; identify backing resource construction/ownership and packet meaning.",
+  "next_action": "Trace attachment backing field +0x3C producers/allowed value assignments, then map four profiles to concrete resource types; GPU register meaning unresolved.",
   "draft_pr_url": "https://github.com/s-ilent/DeracinePCVR/pull/1",
   "draft_pr_number": 1,
   "recheck": {

@@ -24,6 +24,14 @@ items:
     report: "reports/atlas_attachment_template_a007.md"
     verifier: "tools/atlas/verify_attachment_template_a007.py"
     next: "Resolve data table relocations and resource ownership; do not assign GPU packet register names without independent evidence"
+  - id: A-008-ATTACHMENT-PROFILE-CONTENTS
+    track: A
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "Original SELF six scalar tables yield four progressive graphics-state profiles and final packed words 0x00108001, 0x0020C002, 0x0030E003, 0x00410004"
+    report: "reports/atlas_attachment_profiles_a008.md"
+    verifier: "tools/atlas/verify_attachment_profiles_a008.py"
+    next: "Identify attachment backing field +0x3C producer and semantics; exact PS4 GPU register names remain unresolved"
   - id: A-003-INDIRECT-CALLER-OWNERSHIP
     track: A
     priority: 1
