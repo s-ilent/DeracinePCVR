@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "A-005 original SELF analysis committed on dedicated research branch; draft PR #1 remains open; main unchanged",
+  "github_write_status": "A-006 original SELF analysis and byte verifier committed on dedicated branch; draft PR #1 open; main unchanged",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -120,10 +120,28 @@
       "report": "reports/atlas_render_target_command_a005.md",
       "map": "maps/atlas_attachment_command_a005.tsv",
       "verifier": "tools/atlas/verify_render_target_command.py"
+    },
+    {
+      "id": "A-006-ATTACHMENT-BACKING-STATE",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "helper_elf_va": "0x0CC7E00",
+      "state_writer_elf_va": "0x0CC9240",
+      "resource_virtual_offset": "+0x38",
+      "backing_field_offset": "+0x3C",
+      "context_writer_offset": "+0x460",
+      "context_state_offsets": [
+        "+0x480",
+        "+0x484"
+      ],
+      "confidence": "high for backing-state dispatch and command writer; exact packet semantics and resource ownership unknown",
+      "runtime_observed": false,
+      "report": "reports/atlas_attachment_backing_a006.md",
+      "verifier": "tools/atlas/verify_attachment_backing_a006.py"
     }
   ],
   "known_false": [],
-  "next_action": "Decode 0x0CC7E00 resource-binding helper and virtual slot +0x38 to identify attachment lifetime and depth/resolve semantics; independently corroborate FDEs and exact class attribution.",
+  "next_action": "Resolve attachment resource vtable producer and +0x38 implementation, then identify backing object type and state packet meanings; verify FDE boundaries.",
   "draft_pr_url": "https://github.com/s-ilent/DeracinePCVR/pull/1",
   "draft_pr_number": 1,
   "recheck": {
