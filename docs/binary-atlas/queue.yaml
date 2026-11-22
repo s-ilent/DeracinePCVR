@@ -1,5 +1,12 @@
 # Research tasks must be promoted only after actual original-target-byte verification.
 items:
+  - id: A-016-VIEWPORT-INPUT-AND-OWNER-CACHE
+    track: A
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "Original SELF 0x1400A40 takes two packed coordinate qwords from incoming RCX, writes owner +0x30..+0x3C and enqueues viewport payload; earlier 0x1400A98 calls arena helper 0x13D67E0 with zero flags"
+    report: "reports/atlas_viewport_source_a016.md"
+    next: "Find readers of owner +0x30..+0x3C and callsites passing 16-byte coordinate pair; no per-eye inference"
   - id: A-015-DEFERRED-VIEWPORT-PRODUCER
     track: A
     priority: 1
