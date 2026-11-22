@@ -25,11 +25,14 @@ using Core::MatchesOriginalEntryPatch;
 using Core::RestoreEntryPatchIfMatches;
 using Core::RhiEntryProbe::EbootV100Sha256;
 using Core::RhiEntryProbe::EbootV101Sha256;
+using Core::RhiEntryProbe::EnableEnvironmentVariable;
 using Core::RhiEntryProbe::IsExecutableLoadRange;
 using Core::RhiEntryProbe::IsOptedIn;
 using Core::RhiEntryProbe::IsTargetBuild;
 using Core::RhiEntryProbe::MatchesTargetPrologue;
+using Core::RhiEntryProbe::MaxStartDelaySeconds;
 using Core::RhiEntryProbe::ModuleName;
+using Core::RhiEntryProbe::StartDelayEnvironmentVariable;
 using Core::RhiEntryProbe::TargetPrologue;
 using Core::RhiEntryProbe::TitleId;
 
@@ -48,6 +51,15 @@ TEST(RhiEntryProbeContract, OptInRequiresExactlyOne) {
     EXPECT_FALSE(IsOptedIn("01"));
     EXPECT_FALSE(IsOptedIn("1 "));
     EXPECT_TRUE(IsOptedIn("1"));
+}
+
+TEST(RhiEntryProbeContract, StartDelayIsBoundedAndSeparateFromOptIn) {
+    // A start delay lets the probe observe the same interval as the command capture. It must be
+    // bounded, and a value above the bound is refused rather than clamped.
+    EXPECT_GT(MaxStartDelaySeconds, 0u);
+    EXPECT_LE(MaxStartDelaySeconds, 3600u);
+    EXPECT_FALSE(StartDelayEnvironmentVariable.empty());
+    EXPECT_NE(StartDelayEnvironmentVariable, EnableEnvironmentVariable);
 }
 
 TEST(RhiEntryProbeContract, OnlyApprovedFullImageIdentitiesAreAccepted) {

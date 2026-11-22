@@ -19,6 +19,16 @@ inline constexpr std::string_view EbootV100Sha256 =
 inline constexpr std::string_view EbootV101Sha256 =
     "8da8e46ac5fdc48e4e9b59e459920a266039993dc13a2d92740f8803e46fdf75";
 inline constexpr std::string_view EnableEnvironmentVariable = "SHADPS4_DERACINE_RHI_PROBE";
+
+/// Optional bounded start delay in seconds, so the probe can observe the same interval as the
+/// command capture instead of the first 128 draws after boot. Absent or zero means observe from
+/// the first entry.
+inline constexpr std::string_view StartDelayEnvironmentVariable =
+    "SHADPS4_DERACINE_RHI_PROBE_AFTER";
+
+/// Upper bound on the accepted start delay. A larger value is refused rather than clamped.
+inline constexpr u32 MaxStartDelaySeconds = 600;
+
 inline constexpr VAddr TargetRva = 0x0CBB9C0;
 
 // The exact 17-byte entry sequence in both approved executable images. The displacements are

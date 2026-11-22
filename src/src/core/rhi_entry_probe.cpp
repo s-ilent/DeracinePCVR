@@ -65,6 +65,8 @@ struct ProbeState {
     std::atomic<u32> captured_gnm_count{};
     std::atomic<u32> captured_pm4_count{};
     std::atomic<bool> limit_logged{};
+    /// Absolute time before which entries are ignored. Zero means observe immediately.
+    std::atomic<u64> start_after_ns{};
     std::array<ProbeEvent, MaxCapturedEvents> events{};
 };
 
@@ -187,6 +189,16 @@ static void CaptureEntryImpl(const GuestEntryRegisterFrame* frame, void* user_da
     auto* state = static_cast<ProbeState*>(user_data);
     if (frame == nullptr || state == nullptr)
         return;
+
+    // A bounded start delay lets the probe observe the same interval as the command capture.
+    const u64 start_after = state->start_after_ns.load(std::memory_order_relaxed);
+    if (start_after != 0) {
+        const auto now = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                              std::chrono::steady_clock::now().time_since_epoch())
+                                              .count());
+        if (now < start_after)
+            return;
+    }
 
     u32 index{};
     if (!ReserveEventSlot(*state, index))
@@ -349,6 +361,31 @@ void TryInstallBeforeGuestThread(Module& module, std::string_view title_id,
     g_probe_state.memory = module.memory;
     g_probe_state.module_base = module.base_virtual_addr;
     g_probe_state.target = target;
+
+    // Optional bounded start delay, so the probe can observe the same interval as the capture.
+    u32 start_delay_seconds{};
+    if (const char* delay = std::getenv(StartDelayEnvironmentVariable.data());
+        delay != nullptr && *delay != '\0') {
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(delay, &end, 10);
+        if (end == delay || *end != '\0' || parsed > MaxStartDelaySeconds) {
+            LOG_WARNING(Core_Linker,
+                        "RHI entry probe refused: {} must be a whole number of seconds up to {}",
+                        StartDelayEnvironmentVariable, MaxStartDelaySeconds);
+            return;
+        }
+        start_delay_seconds = static_cast<u32>(parsed);
+    }
+    if (start_delay_seconds != 0) {
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds{start_delay_seconds};
+        g_probe_state.start_after_ns.store(
+            static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                 deadline.time_since_epoch())
+                                 .count()),
+            std::memory_order_relaxed);
+    }
+
     if (!InstallGuestEntryObserver(*module.memory, target, CaptureEntry, &g_probe_state,
                                    g_probe_state.handle)) {
         LOG_ERROR(Core_Linker, "RHI entry probe failed to install at {:#x}", target);
@@ -358,9 +395,10 @@ void TryInstallBeforeGuestThread(Module& module, std::string_view title_id,
              "DERACINE_RHI_PROBE_INSTALL title_id={} app_version={} image_sha256={} "
              "module_name={} module_base={:#x} target_rva={:#x} target={:#x} "
              "exec_pt_load_rva={:#x} exec_pt_load_filesz={:#x} exec_pt_load_memsz={:#x} "
-             "event_limit={}",
+             "event_limit={} start_delay_s={}",
              title_id, app_version, *image_hash, ModuleName, module.base_virtual_addr, TargetRva,
-             target, segment_rva, segment_file_size, segment_memory_size, MaxCapturedEvents);
+             target, segment_rva, segment_file_size, segment_memory_size, MaxCapturedEvents,
+             start_delay_seconds);
 #endif
 }
 
@@ -411,6 +449,18 @@ void CapturePm4DrawIndex2(std::uint32_t max_size, std::uint32_t index_base_lo,
     try {
         if (!g_probe_state.handle.active)
             return;
+
+        // The GPU thread decodes packets submitted from boot, so it needs the same start gate as
+        // the RHI entries; otherwise the two layers observe different intervals.
+        const u64 start_after = g_probe_state.start_after_ns.load(std::memory_order_relaxed);
+        if (start_after != 0) {
+            const auto now = static_cast<u64>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch())
+                    .count());
+            if (now < start_after)
+                return;
+        }
 
         if (g_probe_state.captured_pm4_count.load(std::memory_order_relaxed) >= MaxCapturedEvents)
             return;
