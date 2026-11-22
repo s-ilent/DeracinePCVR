@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "C-008 report/verifier/state/queue committed to draft research branch",
+  "github_write_status": "C-009 report/verifier/state/queue committed to draft research branch",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -656,6 +656,28 @@
       "runtime_observed": false,
       "report": "reports/atlas_resource_layout_c008.md",
       "verifier": "tools/atlas/verify_resource_layout_c008.py"
+    },
+    {
+      "id": "C-009-CPU-RESOURCE-TRANSFER-CONSUMERS",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "wrapper_elf_vas": [
+        "0x6190",
+        "0x6F40"
+      ],
+      "shared_helper_elf_va": "0x5B90",
+      "shared_classifier_elf_va": "0x2EC0",
+      "verified_edges": [
+        "0x636C -> 0x5B90",
+        "0x6380 -> 0x2EC0",
+        "0x711C -> 0x5B90",
+        "0x7130 -> 0x2EC0",
+        "0x5BE9 -> 0x4090"
+      ],
+      "confidence": "high for shared call graph and CPU load/store transfer; ownership/GPU semantics unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_resource_transfer_c009.md",
+      "verifier": "tools/atlas/verify_resource_transfer_c009.py"
     }
   ],
   "known_false": [],
