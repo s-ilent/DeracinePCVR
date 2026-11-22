@@ -1,5 +1,13 @@
 # User-directed priority: C shader resources, then resource ownership, then FD4; A attachment/viewport deferred.
 items:
+  - id: C-006-SHADER-MASK-SELECTOR
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "Sign of descriptor +0x10 selects 0x3220 (table bits 6-7, shift 3) or 0x3450 (bits 12-13, shift 4); common 0x240 resolver and table 0x33CA910 feed cleared mask"
+    report: "reports/atlas_shader_mask_selector_c006.md"
+    verifier: "tools/atlas/verify_shader_mask_c006.py"
+    next: "Resolve 0x240 success-path index and 0x33CA910 table bounds/producer; preserve failure-status caveat"
   - id: C-005-DESCRIPTOR-FORMAT-CLASSIFIER
     track: C
     priority: 1
