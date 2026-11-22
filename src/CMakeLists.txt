@@ -1027,6 +1027,11 @@ set(CORE src/core/aerolib/stubs.cpp
           src/core/rhi_command_capture.h
           src/core/rhi_entry_probe.cpp
     src/core/shader_param_capture.cpp
+    src/core/gnm_binding_capture.cpp
+    src/core/gnm_binding_capture.h
+    src/core/gnm_shader_metadata.cpp
+    src/core/gnm_shader_metadata.h
+    src/core/gnm_shader_metadata_parse.h
     src/core/vertex_input_capture.cpp
           src/core/rhi_entry_probe.h
          src/core/memory.cpp

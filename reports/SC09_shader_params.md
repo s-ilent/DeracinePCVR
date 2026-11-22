@@ -46,7 +46,7 @@ actually supplied to Vulkan, not a parallel reconstruction.
 
 ## Draw-time user data
 
-Draw 1, vertex stage (`pgm=0x82C730EBC710047E`):
+Draw 1, pixel stage (`pgm=0x82C730EBC710047E`):
 
 ```
 ud=[20280000,1c400000,7329d67f,94000204,02dfe000,00000000,00000000,00000000,
@@ -54,7 +54,7 @@ ud=[20280000,1c400000,7329d67f,94000204,02dfe000,00000000,00000000,00000000,
 push=[42800000,42800000,42800000,c2800000,0,0,0,0,0,0,0,0,0,0,0,0]
 ```
 
-Draw 1, pixel stage (`pgm=0x82C730EB4A0404ED`):
+Draw 1, vertex stage (`pgm=0x82C730EB4A0404ED`):
 
 ```
 ud=[06cf0cc0,00000020,00030000,00000020,2580e800,00100020,000000b2,20077fac,
