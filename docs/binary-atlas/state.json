@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "C-005 report/verifier committed to draft PR #1",
+  "github_write_status": "C-006 report/verifier committed to draft PR #1",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -588,6 +588,29 @@
       "runtime_observed": false,
       "report": "reports/atlas_shader_format_classifier_c005.md",
       "verifier": "tools/atlas/verify_shader_format_c005.py"
+    },
+    {
+      "id": "C-006-SHADER-MASK-SELECTOR",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "positive_decoder_elf_va": "0x00003220",
+      "negative_decoder_elf_va": "0x00003450",
+      "common_resolver_elf_va": "0x00000240",
+      "metadata_table_elf_va": "0x033CA910",
+      "caller_elf_va": "0x03091BF0",
+      "mask_site_elf_va": "0x03091CFD",
+      "bit_extract_controls": [
+        "0x206",
+        "0x20C"
+      ],
+      "mask_start_bits": [
+        3,
+        4
+      ],
+      "confidence": "high for original-byte sign-selected output extraction and mask; resolver validity and GPU semantics unknown",
+      "runtime_observed": false,
+      "report": "reports/atlas_shader_mask_selector_c006.md",
+      "verifier": "tools/atlas/verify_shader_mask_c006.py"
     }
   ],
   "known_false": [],
