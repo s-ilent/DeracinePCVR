@@ -30,8 +30,11 @@ using Core::RhiEntryProbe::IsExecutableLoadRange;
 using Core::RhiEntryProbe::IsOptedIn;
 using Core::RhiEntryProbe::IsTargetBuild;
 using Core::RhiEntryProbe::MatchesTargetPrologue;
+using Core::RhiEntryProbe::MaxProvenanceAgeUs;
+using Core::RhiEntryProbe::MaxProvenanceRecords;
 using Core::RhiEntryProbe::MaxStartDelaySeconds;
 using Core::RhiEntryProbe::ModuleName;
+using Core::RhiEntryProbe::ProvenanceEnvironmentVariable;
 using Core::RhiEntryProbe::StartDelayEnvironmentVariable;
 using Core::RhiEntryProbe::TargetPrologue;
 using Core::RhiEntryProbe::TitleId;
@@ -60,6 +63,18 @@ TEST(RhiEntryProbeContract, StartDelayIsBoundedAndSeparateFromOptIn) {
     EXPECT_LE(MaxStartDelaySeconds, 3600u);
     EXPECT_FALSE(StartDelayEnvironmentVariable.empty());
     EXPECT_NE(StartDelayEnvironmentVariable, EnableEnvironmentVariable);
+}
+
+TEST(RhiEntryProbeContract, ProvenanceIsSeparatelyOptedInAndBounded) {
+    // The end-to-end provenance trace is its own opt-in, so the existing bounded observation keeps
+    // its behaviour and cost. Its record bound is deliberately small: a verified sample is worth
+    // more than a large speculative one.
+    EXPECT_FALSE(ProvenanceEnvironmentVariable.empty());
+    EXPECT_NE(ProvenanceEnvironmentVariable, EnableEnvironmentVariable);
+    EXPECT_NE(ProvenanceEnvironmentVariable, StartDelayEnvironmentVariable);
+    EXPECT_GT(MaxProvenanceRecords, 0u);
+    EXPECT_LE(MaxProvenanceRecords, 4096u);
+    EXPECT_GT(MaxProvenanceAgeUs, 0u);
 }
 
 TEST(RhiEntryProbeContract, OnlyApprovedFullImageIdentitiesAreAccepted) {

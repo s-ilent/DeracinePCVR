@@ -29,6 +29,20 @@ inline constexpr std::string_view StartDelayEnvironmentVariable =
 /// Upper bound on the accepted start delay. A larger value is refused rather than clamped.
 inline constexpr u32 MaxStartDelaySeconds = 600;
 
+/// Opt-in for the end-to-end draw provenance trace. Separate from the RHI entry probe so the
+/// existing bounded observation keeps its current behaviour and cost.
+inline constexpr std::string_view ProvenanceEnvironmentVariable =
+    "SHADPS4_DERACINE_DRAW_PROVENANCE";
+
+/// Bounded number of provenance records. Each record follows one guest draw from the deferred
+/// command wrapper through packet construction to the Vulkan draw, so the bound is deliberately
+/// small: a verified sample is worth more than a large speculative one.
+inline constexpr size_t MaxProvenanceRecords = 256;
+
+/// A provenance record is only useful while its packet can still be observed. Records older than
+/// this are reported as expired rather than silently dropped.
+inline constexpr u64 MaxProvenanceAgeUs = 5'000'000;
+
 inline constexpr VAddr TargetRva = 0x0CBB9C0;
 
 // The exact 17-byte entry sequence in both approved executable images. The displacements are

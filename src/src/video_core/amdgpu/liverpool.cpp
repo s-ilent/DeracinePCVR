@@ -550,6 +550,10 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 Core::RhiEntryProbe::CapturePm4DrawIndex2(
                     draw_index->max_size, draw_index->index_base_lo, draw_index->index_base_hi,
                     draw_index->index_count, draw_index->draw_initiator);
+                Core::RhiEntryProbe::CapturePm4DrawIndex2At(
+                    draw_index->max_size, draw_index->index_base_lo, draw_index->index_base_hi,
+                    draw_index->index_count, draw_index->draw_initiator,
+                    reinterpret_cast<std::uintptr_t>(header), base_addr);
                 regs.max_index_size = draw_index->max_size;
                 regs.index_base_address.base_addr_lo = draw_index->index_base_lo;
                 regs.index_base_address.base_addr_hi = draw_index->index_base_hi;
@@ -1511,9 +1515,15 @@ void Liverpool::SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb) {
     Vulkan::FrameStats::GuestSubmit();
     auto& queue = mapped_queues[GfxQueueId];
 
-    if (EmulatorSettings.IsCopyGpuBuffers()) {
+    const auto original_dcb = reinterpret_cast<std::uintptr_t>(dcb.data());
+    const bool copied = EmulatorSettings.IsCopyGpuBuffers();
+    if (copied) {
         std::tie(dcb, ccb) = CopyCmdBuffers(dcb, ccb);
     }
+
+    // Record the submission so packet provenance is generation-aware, and so a copied DCB is
+    // matched against the guest buffer the packet was actually written into.
+    Core::RhiEntryProbe::NoteSubmission(dcb.data(), dcb.size(), original_dcb, copied);
 
     auto task = ProcessGraphics(dcb, ccb);
     {

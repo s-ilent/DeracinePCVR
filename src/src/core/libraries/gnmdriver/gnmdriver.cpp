@@ -475,6 +475,9 @@ s32 PS4_SYSV_ABI sceGnmDrawIndex(u32* cmdbuf, u32 size, u32 index_count, uintptr
         draw_index->draw_initiator = sceKernelIsNeoMode() ? flags & 0xe0000000u : 0;
 
         WriteTrailingNop<3>(cmdbuf + 6);
+        // Only now does a packet exist, so only now can it carry provenance.
+        Core::RhiEntryProbe::RegisterConstructedPacket(reinterpret_cast<std::uintptr_t>(cmdbuf),
+                                                       index_count, index_addr);
         return ORBIS_OK;
     }
     return -1;

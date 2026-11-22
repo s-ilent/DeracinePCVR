@@ -5,6 +5,7 @@
 #include "core/emulator_settings.h"
 #include "core/known_title.h"
 #include "core/memory.h"
+#include "core/rhi_entry_probe.h"
 #include "shader_recompiler/runtime_info.h"
 #include "video_core/amdgpu/liverpool.h"
 #include "common/alignment.h"
@@ -395,7 +396,29 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
                  static_cast<u32>(regs.depth_buffer.z_info.format));
     }
     if (!pipeline) {
+        // A decoded packet that reaches the rasterizer without a pipeline produced no draw.
+        Core::RhiEntryProbe::NoteDrawSkipped(Core::RhiEntryProbe::CurrentDrawProvenanceId(),
+                                             "pipeline_unavailable");
         return;
+    }
+
+    // Report the actual pipeline state against the provenance record for this packet. This is the
+    // draw-time state, not an earlier shader setter.
+    if (const u64 provenance_id = Core::RhiEntryProbe::CurrentDrawProvenanceId();
+        provenance_id != 0) {
+        const auto& provenance_key = pipeline->GetGraphicsKey();
+        Core::RhiEntryProbe::NoteDrawRecorded(
+            provenance_id,
+            provenance_key.stage_hashes[static_cast<u32>(Shader::LogicalStage::Vertex)],
+            provenance_key.stage_hashes[static_cast<u32>(Shader::LogicalStage::Fragment)],
+            std::hash<GraphicsPipelineKey>{}(provenance_key), regs.num_indices,
+            regs.num_instances.NumInstances(),
+            static_cast<u32>(regs.primitive_type),
+            (static_cast<u64>(regs.index_base_address.base_addr_hi) << 32) |
+                regs.index_base_address.base_addr_lo,
+            regs.color_target_mask.raw, regs.depth_buffer.DepthAddress(),
+            static_cast<bool>(regs.depth_control.depth_enable),
+            static_cast<bool>(regs.depth_control.depth_write_enable));
     }
 
     {

@@ -22,10 +22,45 @@ void CaptureGnmDrawIndex(std::uintptr_t cmdbuf, std::uint32_t size, std::uint32_
                          std::uintptr_t index_addr, std::uint32_t flags,
                          std::uint32_t type) noexcept;
 
+/// Registers a successfully constructed DrawIndex2 packet against the provenance record that
+/// produced it. Called only after the packet was actually written, so a rejected GNM call cannot
+/// create a packet association. `cmdbuf` is the guest buffer the packet was written into.
+void RegisterConstructedPacket(std::uintptr_t cmdbuf, std::uint32_t index_count,
+                               std::uintptr_t index_addr) noexcept;
+
+/// Records the submission that carries a DCB, so packet provenance is generation-aware. `dcb_data`
+/// is the submitted span after any copy, and `copied` says whether the copy path was taken.
+void NoteSubmission(const void* dcb_data, std::size_t dcb_words, std::uintptr_t original_dcb,
+                    bool copied) noexcept;
+
 /// Captures a decoded PM4 DrawIndex2 packet, when installed. Runs on the GPU thread.
 void CapturePm4DrawIndex2(std::uint32_t max_size, std::uint32_t index_base_lo,
                           std::uint32_t index_base_hi, std::uint32_t index_count,
                           std::uint32_t draw_initiator) noexcept;
+
+/// Captures a decoded PM4 DrawIndex2 packet together with its position in the submitted DCB, so
+/// the packet can be matched to the record that constructed it.
+void CapturePm4DrawIndex2At(std::uint32_t max_size, std::uint32_t index_base_lo,
+                            std::uint32_t index_base_hi, std::uint32_t index_count,
+                            std::uint32_t draw_initiator, std::uintptr_t packet_address,
+                            std::uintptr_t dcb_base) noexcept;
+
+/// Records that the rasterizer processed a draw for the given provenance record, with the actual
+/// pipeline state observed at draw time.
+void NoteDrawRecorded(std::uint64_t record_id, std::uint64_t vs_hash, std::uint64_t ps_hash,
+                      std::uint64_t pipeline_hash, std::uint32_t index_count,
+                      std::uint32_t instance_count, std::uint32_t primitive_type,
+                      std::uint64_t index_addr, std::uint32_t color_mask,
+                      std::uint64_t depth_address, bool depth_test, bool depth_write) noexcept;
+
+/// Records that a decoded packet produced no rasterizer draw, with the reason.
+void NoteDrawSkipped(std::uint64_t record_id, const char* reason) noexcept;
+
+/// Returns the provenance record id currently associated with the draw being processed, or 0.
+[[nodiscard]] std::uint64_t CurrentDrawProvenanceId() noexcept;
+
+/// Writes the provenance summary and per-record lines. Runs after the guest has stopped.
+void ExportProvenance() noexcept;
 
 } // namespace RhiEntryProbe
 } // namespace Core
