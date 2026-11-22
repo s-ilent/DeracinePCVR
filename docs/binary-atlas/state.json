@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "A-012 original SELF scalar-cache command emission verified; report and checker committed; PR #1 draft open",
+  "github_write_status": "A-013 original SELF conditional 6/24-DWORD graphics state bundle verified; report and checker committed; PR #1 draft open",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -289,10 +289,38 @@
       "runtime_observed": false,
       "report": "reports/atlas_resource_scalar_a012.md",
       "verifier": "tools/atlas/verify_resource_scalar_a012.py"
+    },
+    {
+      "id": "A-013-CONDITIONAL-GRAPHICS-STATE-BUNDLE",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "entry_elf_va": "0x03090310",
+      "caller_elf_va": "0x0CC28E9",
+      "predicate_elf_vas": [
+        "0x0308FE70",
+        "0x03090090"
+      ],
+      "descriptor_offsets": [
+        "+0x00..+0x1F",
+        "+0x20",
+        "+0x24",
+        "+0x28",
+        "+0x2C",
+        "+0x30"
+      ],
+      "writer_offset": "+0x460",
+      "emission_bytes": [
+        24,
+        96
+      ],
+      "confidence": "high for verified original-byte predicate/call/capacity/command construction; register meaning and C++ ownership unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_state_bundle_a013.md",
+      "verifier": "tools/atlas/verify_state_bundle_a013.py"
     }
   ],
   "known_false": [],
-  "next_action": "Trace producer of resource +0x20 float or independently decode adjacent 0x03090310 context writer; continue A-011 array consumers and global stamp producer.",
+  "next_action": "Trace producer and ownership of 0x03090310 descriptor fields +0x00..+0x30 and resolve predicate semantics; preserve distinction from PS4 GPU register names.",
   "draft_pr_url": "https://github.com/s-ilent/DeracinePCVR/pull/1",
   "draft_pr_number": 1,
   "recheck": {
