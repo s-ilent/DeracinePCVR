@@ -211,4 +211,167 @@ TEST(GuestEntryDetour, RejectsOutOfRangeBufferAndInvalidPatchSize) {
     EXPECT_FALSE(ApplyEntryPatch(code, invalid_plan));
 }
 
+// --- Provenance matcher ------------------------------------------------------------------------
+//
+// These exercise MatchDecodedPacket, which is the function the live capture path calls. A test
+// that only checked configuration would not establish that the matcher is correct.
+
+namespace {
+
+using Core::RhiEntryProbe::MatchDecodedPacket;
+using Core::RhiEntryProbe::MatchOutcome;
+using Core::RhiEntryProbe::PacketKey;
+
+/// A small fixture that keeps the three parallel arrays the matcher consumes in step.
+struct MatcherFixture {
+    std::array<PacketKey, 8> keys{};
+    std::array<u32, 8> counts{};
+    std::array<u64, 8> addrs{};
+
+    void Set(std::size_t i, u64 submission, VAddr buffer, u64 offset, u32 count, u64 addr,
+             bool consumed = false) {
+        keys[i] = PacketKey{submission, buffer, offset, consumed};
+        counts[i] = count;
+        addrs[i] = addr;
+    }
+
+    [[nodiscard]] MatchOutcome Match(u64 submission, VAddr buffer, u64 offset, u32 count,
+                                     u64 addr, std::size_t& index) const {
+        return MatchDecodedPacket(keys, submission, buffer, offset, count, addr, counts, addrs,
+                                  index);
+    }
+};
+
+} // namespace
+
+TEST(ProvenanceMatcher, IdenticalParametersInDifferentSubmissionsSelectTheRightOne) {
+    MatcherFixture f;
+    f.Set(0, 7, 0x30000F0AE0, 0xAE0, 6, 0x2000042800);
+    f.Set(1, 8, 0x30000F0AE0, 0xAE0, 6, 0x2000042800);
+
+    std::size_t index = 0;
+    EXPECT_EQ(f.Match(8, 0x30000F0AE0, 0xAE0, 6, 0x2000042800, index), MatchOutcome::Matched);
+    EXPECT_EQ(index, 1u);
+    EXPECT_EQ(f.Match(7, 0x30000F0AE0, 0xAE0, 6, 0x2000042800, index), MatchOutcome::Matched);
+    EXPECT_EQ(index, 0u);
+}
+
+TEST(ProvenanceMatcher, IdenticalOffsetsInDifferentBuffersSelectTheRightOne) {
+    MatcherFixture f;
+    f.Set(0, 7, 0x30000F0AE0, 0xAE0, 6, 0x2000042800);
+    f.Set(1, 7, 0x30000F1000, 0xAE0, 6, 0x2000042800);
+
+    std::size_t index = 0;
+    EXPECT_EQ(f.Match(7, 0x30000F1000, 0xAE0, 6, 0x2000042800, index), MatchOutcome::Matched);
+    EXPECT_EQ(index, 1u);
+}
+
+TEST(ProvenanceMatcher, SameBufferReusedAcrossGenerationsCannotClaimTheNewPacket) {
+    MatcherFixture f;
+    // Generation 7 registered a packet at this buffer and offset; generation 9 did not.
+    f.Set(0, 7, 0x30000F0AE0, 0xAE0, 6, 0x2000042800);
+
+    std::size_t index = 0;
+    EXPECT_EQ(f.Match(9, 0x30000F0AE0, 0xAE0, 6, 0x2000042800, index),
+              MatchOutcome::NoCandidate);
+}
+
+TEST(ProvenanceMatcher, OffsetZeroIsAValidIdentity) {
+    MatcherFixture f;
+    f.Set(0, 7, 0x30000F0AE0, 0, 6, 0x2000042800);
+
+    std::size_t index = 0;
+    EXPECT_EQ(f.Match(7, 0x30000F0AE0, 0, 6, 0x2000042800, index), MatchOutcome::Matched);
+    EXPECT_EQ(index, 0u);
+}
+
+TEST(ProvenanceMatcher, MissingSubmissionIdentityNeverMatches) {
+    MatcherFixture f;
+    f.Set(0, 7, 0x30000F0AE0, 0xAE0, 6, 0x2000042800);
+
+    std::size_t index = 0;
+    EXPECT_EQ(f.Match(0, 0x30000F0AE0, 0xAE0, 6, 0x2000042800, index),
+              MatchOutcome::NoSubmissionIdentity);
+}
+
+TEST(ProvenanceMatcher, UnsubmittedPacketIsNotEligible) {
+    MatcherFixture f;
+    // submission_id 0 means the packet was constructed but never submitted.
+    f.Set(0, 0, 0x30000F0AE0, 0xAE0, 6, 0x2000042800);
+
+    std::size_t index = 0;
+    EXPECT_EQ(f.Match(7, 0x30000F0AE0, 0xAE0, 6, 0x2000042800, index),
+              MatchOutcome::NoCandidate);
+}
+
+TEST(ProvenanceMatcher, NoParameterFallbackWhenIdentityDoesNotMatch) {
+    MatcherFixture f;
+    // Same index count and address, different offset. Identity must win over parameters.
+    f.Set(0, 7, 0x30000F0AE0, 0xAE0, 6, 0x2000042800);
+
+    std::size_t index = 0;
+    EXPECT_EQ(f.Match(7, 0x30000F0AE0, 0x1000, 6, 0x2000042800, index),
+              MatchOutcome::NoCandidate);
+}
+
+TEST(ProvenanceMatcher, DuplicateCandidatesAreRejectedAsAmbiguous) {
+    MatcherFixture f;
+    f.Set(0, 7, 0x30000F0AE0, 0xAE0, 6, 0x2000042800);
+    f.Set(1, 7, 0x30000F0AE0, 0xAE0, 6, 0x2000042800);
+
+    std::size_t index = 0;
+    EXPECT_EQ(f.Match(7, 0x30000F0AE0, 0xAE0, 6, 0x2000042800, index),
+              MatchOutcome::Ambiguous);
+}
+
+TEST(ProvenanceMatcher, ConsumedRecordCannotMatchAgain) {
+    MatcherFixture f;
+    f.Set(0, 7, 0x30000F0AE0, 0xAE0, 6, 0x2000042800, /*consumed=*/true);
+
+    std::size_t index = 0;
+    EXPECT_EQ(f.Match(7, 0x30000F0AE0, 0xAE0, 6, 0x2000042800, index),
+              MatchOutcome::AlreadyConsumed);
+}
+
+TEST(ProvenanceMatcher, InconsistentPacketFieldsAreRejected) {
+    MatcherFixture f;
+    // Identity matches but the decoded index count disagrees with the constructed packet.
+    f.Set(0, 7, 0x30000F0AE0, 0xAE0, 6, 0x2000042800);
+
+    std::size_t index = 0;
+    EXPECT_EQ(f.Match(7, 0x30000F0AE0, 0xAE0, 48, 0x2000042800, index),
+              MatchOutcome::Inconsistent);
+}
+
+TEST(ProvenanceMatcher, CopiedBufferKeepsTheOriginalIdentity) {
+    MatcherFixture f;
+    // The packet was written into the guest buffer; the submission copied it elsewhere. The key
+    // carries the guest buffer, so the decode must be resolved against that, not the copy.
+    f.Set(0, 7, 0x30000F0AE0, 0xAE0, 6, 0x2000042800);
+
+    std::size_t index = 0;
+    EXPECT_EQ(f.Match(7, 0x30000F0AE0, 0xAE0, 6, 0x2000042800, index), MatchOutcome::Matched);
+    EXPECT_EQ(index, 0u);
+}
+
+TEST(ProvenanceMatcher, OutOfOrderDecodingStillResolvesByIdentity) {
+    MatcherFixture f;
+    f.Set(0, 7, 0x30000F0AE0, 0xAE0, 6, 0x2000042800);
+    f.Set(1, 9, 0x30000F1000, 0x1000, 48, 0x20000C0000);
+
+    std::size_t index = 0;
+    // Decode the later submission first.
+    EXPECT_EQ(f.Match(9, 0x30000F1000, 0x1000, 48, 0x20000C0000, index), MatchOutcome::Matched);
+    EXPECT_EQ(index, 1u);
+    EXPECT_EQ(f.Match(7, 0x30000F0AE0, 0xAE0, 6, 0x2000042800, index), MatchOutcome::Matched);
+    EXPECT_EQ(index, 0u);
+}
+
+TEST(ProvenanceMatcher, EmptyTableReportsNoCandidate) {
+    MatcherFixture f;
+    std::size_t index = 0;
+    EXPECT_EQ(f.Match(7, 0x30000F0AE0, 0xAE0, 6, 0x2000042800, index),
+              MatchOutcome::NoCandidate);
+}
+
 } // namespace

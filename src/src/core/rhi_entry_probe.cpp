@@ -25,6 +25,7 @@
 #include "core/loader/elf.h"
 #include "core/memory.h"
 #include "core/module.h"
+#include "core/rhi_command_capture.h"
 #include "core/rhi_entry_probe_contract.h"
 
 #ifdef _WIN32
@@ -92,6 +93,12 @@ struct ProvenanceRecord {
     u64 rhi_sequence{};
     u64 native_thread_id{};
     u64 guest_thread_id{};
+    /// Deferred-command identity, when this RHI invocation came from a captured wrapper command.
+    /// Zero means the invocation bypassed the recovered deferred wrapper.
+    u64 command_capture_id{};
+    u8 command_type{};
+    u64 command_list{};
+    u64 rhi_context{};
     /// Guest command-buffer pointer the packet was constructed into.
     VAddr cmdbuf{};
     /// Byte offset of the packet within the submitted DCB, once known.
@@ -103,31 +110,30 @@ struct ProvenanceRecord {
     u32 index_count{};
     u32 instance_count{};
     u64 index_addr{};
-    u32 primitive_type{};
+    /// GNM draw `type` argument. Not the UE4 primitive topology; kept separate on purpose.
+    u32 gnm_type{};
+    /// GNM draw `flags` argument.
+    u32 gnm_flags{};
+    /// UE4 EPrimitiveType from the captured command payload, when available.
+    u32 ue4_primitive_type{};
     u32 rhi_index_resource_lo{};
     u32 rhi_index_resource_hi{};
     std::chrono::steady_clock::time_point captured_at{};
-    /// Set once packet construction succeeded.
-    bool packet_constructed{};
-    /// Set once the packet was decoded on the GPU thread.
-    bool packet_decoded{};
-    /// Set once the rasterizer recorded the draw.
-    bool draw_recorded{};
-    /// Set when the draw was decoded but produced no rasterizer draw.
-    bool draw_skipped{};
+    ProvenanceState state{ProvenanceState::Selected};
+    /// Number of Vulkan draws this one guest packet produced.
+    u32 child_draws{};
 };
 
 /// A packet registered at construction time, waiting to be matched at decode time.
 struct PendingPacket {
     u64 record_id{};
-    VAddr cmdbuf{};
+    PacketKey key{};
     u32 index_count{};
     u64 index_addr{};
-    u64 submission_id{};
     std::chrono::steady_clock::time_point registered_at{};
 };
 
-struct ProvenanceState {
+struct ProvenanceTable {
     std::atomic<bool> enabled{};
     std::atomic<u32> next_record_id{};
     std::atomic<u32> record_count{};
@@ -137,13 +143,17 @@ struct ProvenanceState {
     std::atomic<u32> skipped_count{};
     std::atomic<u32> expired_count{};
     std::atomic<u32> unmatched_packet_count{};
+    std::atomic<u32> ambiguous_count{};
+    std::atomic<u32> inconsistent_count{};
+    std::atomic<u32> consumed_count{};
+    std::atomic<u32> no_submission_count{};
     std::atomic<u64> next_submission_id{};
     std::mutex mutex;
     std::array<ProvenanceRecord, MaxProvenanceRecords> records{};
     std::array<PendingPacket, MaxProvenanceRecords> packets{};
 };
 
-ProvenanceState g_provenance{};
+ProvenanceTable g_provenance{};
 thread_local u64 g_pending_provenance_id{};
 /// Set on the GPU thread while a decoded packet's draw is being processed, so the rasterizer can
 /// report the actual pipeline state against the right record.
@@ -317,6 +327,22 @@ static void CaptureEntryImpl(const GuestEntryRegisterFrame* frame, void* user_da
             // The index-buffer resource is the entry's second argument.
             record.rhi_index_resource_lo = static_cast<u32>(event.integer_arguments[1]);
             record.rhi_index_resource_hi = static_cast<u32>(event.integer_arguments[1] >> 32);
+
+            // Connect this invocation to the deferred UE4 command that issued it, when there is
+            // one. A direct RHI call that bypassed the recovered wrapper leaves these zero, which
+            // is reported explicitly rather than invented.
+            RhiCommandCapture::CurrentCommand command{};
+            if (RhiCommandCapture::CurrentDeferredCommand(command)) {
+                record.command_capture_id = command.capture_id;
+                record.command_type = command.command_type;
+                record.command_list = command.command_list;
+                record.rhi_context = command.rhi_context;
+                record.ue4_primitive_type = command.ue4_primitive_type;
+                // One RHI invocation per deferred command: consume it so a second call cannot
+                // inherit the same identity.
+                RhiCommandCapture::ConsumeDeferredCommand();
+            }
+
             {
                 std::scoped_lock lock{g_provenance.mutex};
                 g_provenance.records[slot] = record;
@@ -553,7 +579,10 @@ void CaptureGnmDrawIndex(std::uintptr_t cmdbuf, std::uint32_t size, std::uint32_
                 record.cmdbuf = cmdbuf;
                 record.index_count = index_count;
                 record.index_addr = index_addr;
-                record.primitive_type = type;
+                // The GNM `type` and `flags` arguments are their own fields. They are not the UE4
+                // primitive topology and must not be reported as it.
+                record.gnm_type = type;
+                record.gnm_flags = flags;
             }
         }
 
@@ -629,7 +658,10 @@ void RegisterConstructedPacket(std::uintptr_t cmdbuf, std::uint32_t index_count,
 
         PendingPacket packet{};
         packet.record_id = record_id;
-        packet.cmdbuf = cmdbuf;
+        packet.key.source_buffer = cmdbuf;
+        packet.key.packet_offset = 0;
+        packet.key.submission_id = 0;
+        packet.key.consumed = false;
         packet.index_count = index_count;
         packet.index_addr = index_addr;
         packet.registered_at = std::chrono::steady_clock::now();
@@ -639,7 +671,7 @@ void RegisterConstructedPacket(std::uintptr_t cmdbuf, std::uint32_t index_count,
         if (record_id <= MaxProvenanceRecords) {
             auto& record = g_provenance.records[record_id - 1];
             if (record.id == record_id) {
-                record.packet_constructed = true;
+                record.state = ProvenanceState::Constructed;
             }
         }
     } catch (...) {
@@ -647,13 +679,13 @@ void RegisterConstructedPacket(std::uintptr_t cmdbuf, std::uint32_t index_count,
     }
 }
 
-void NoteSubmission(const void* dcb_data, std::size_t dcb_words, std::uintptr_t original_dcb,
-                    bool copied) noexcept {
+std::uint64_t NoteSubmission(const void* dcb_data, std::size_t dcb_words,
+                             std::uintptr_t original_dcb, bool copied) noexcept {
     try {
         if (!g_provenance.enabled.load(std::memory_order_relaxed))
-            return;
+            return 0;
         if (dcb_data == nullptr || dcb_words == 0)
-            return;
+            return 0;
 
         const u64 submission_id = g_provenance.next_submission_id.fetch_add(1) + 1;
         const auto dcb_base = reinterpret_cast<std::uintptr_t>(dcb_data);
@@ -661,74 +693,123 @@ void NoteSubmission(const void* dcb_data, std::size_t dcb_words, std::uintptr_t 
 
         std::scoped_lock lock{g_provenance.mutex};
         for (auto& packet : g_provenance.packets) {
-            if (packet.record_id == 0 || packet.submission_id != 0)
+            if (packet.record_id == 0 || packet.key.submission_id != 0)
                 continue;
             // A packet belongs to this submission when its guest buffer lies inside the submitted
             // span. With the copy path the guest buffer is not inside the copied span, so the
             // original pointer is matched instead and the copy is recorded explicitly.
-            const bool inside_copied = packet.cmdbuf >= dcb_base && packet.cmdbuf < dcb_end;
+            const bool inside_copied = packet.key.source_buffer >= dcb_base &&
+                                       packet.key.source_buffer < dcb_end;
             const bool inside_original =
-                copied && original_dcb != 0 && packet.cmdbuf >= original_dcb &&
-                packet.cmdbuf < original_dcb + dcb_words * sizeof(u32);
+                copied && original_dcb != 0 && packet.key.source_buffer >= original_dcb &&
+                packet.key.source_buffer < original_dcb + dcb_words * sizeof(u32);
             if (!inside_copied && !inside_original)
                 continue;
 
-            packet.submission_id = submission_id;
+            packet.key.submission_id = submission_id;
+            // The key identifies the buffer, not the packet address inside it. The offset is
+            // relative to the buffer the packet was written into, which is the original guest
+            // buffer even when the submission copied it.
+            const auto buffer_base = copied ? original_dcb : dcb_base;
+            packet.key.packet_offset = packet.key.source_buffer - buffer_base;
+            packet.key.source_buffer = buffer_base;
             if (packet.record_id <= MaxProvenanceRecords) {
                 auto& record = g_provenance.records[packet.record_id - 1];
                 if (record.id == packet.record_id) {
                     record.submission_id = submission_id;
                     record.copied_dcb = copied ? dcb_base : 0;
-                    record.packet_offset = packet.cmdbuf - (copied ? original_dcb : dcb_base);
+                    record.packet_offset = packet.key.packet_offset;
+                    if (record.state == ProvenanceState::Constructed) {
+                        record.state = ProvenanceState::Submitted;
+                    }
                 }
             }
         }
+        return submission_id;
     } catch (...) {
         // Provenance must never affect submission.
+        return 0;
     }
 }
 
 void CapturePm4DrawIndex2At(std::uint32_t max_size, std::uint32_t index_base_lo,
                             std::uint32_t index_base_hi, std::uint32_t index_count,
                             std::uint32_t draw_initiator, std::uintptr_t packet_address,
-                            std::uintptr_t dcb_base) noexcept {
+                            std::uintptr_t dcb_base, std::uint64_t submission_id,
+                            std::uintptr_t source_buffer) noexcept {
     try {
         if (!g_provenance.enabled.load(std::memory_order_relaxed))
             return;
 
         const u64 index_addr = (static_cast<u64>(index_base_hi) << 32) | index_base_lo;
+        // The packet offset is relative to the buffer the packet was written into. When the
+        // submission copied the DCB, the decoded address is inside the copy, so the offset must
+        // be taken from the copy's base and the key's buffer is the original guest buffer.
         const u64 offset = packet_address >= dcb_base ? packet_address - dcb_base : 0;
 
         u64 matched_id = 0;
+        MatchOutcome outcome = MatchOutcome::NoCandidate;
         {
             std::scoped_lock lock{g_provenance.mutex};
-            for (auto& packet : g_provenance.packets) {
-                if (packet.record_id == 0)
-                    continue;
-                if (packet.index_count != index_count || packet.index_addr != index_addr)
-                    continue;
-                // Prefer a packet whose recorded offset matches the decoded position; fall back to
-                // the parameter match only when the offset is unknown.
-                const auto& record = packet.record_id <= MaxProvenanceRecords
-                                         ? g_provenance.records[packet.record_id - 1]
-                                         : g_provenance.records[0];
-                const bool offset_known = record.id == packet.record_id && record.packet_offset != 0;
-                if (offset_known && record.packet_offset != offset)
-                    continue;
+
+            // Build the key and consistency arrays the shared matcher consumes, so the live path
+            // and the tests exercise the same implementation.
+            std::array<PacketKey, MaxProvenanceRecords> keys{};
+            std::array<u32, MaxProvenanceRecords> counts{};
+            std::array<u64, MaxProvenanceRecords> addrs{};
+            for (std::size_t i = 0; i < MaxProvenanceRecords; ++i) {
+                keys[i] = g_provenance.packets[i].key;
+                counts[i] = g_provenance.packets[i].index_count;
+                addrs[i] = g_provenance.packets[i].index_addr;
+            }
+
+            std::size_t matched_index = 0;
+            outcome = MatchDecodedPacket(keys, submission_id, source_buffer, offset, index_count,
+                                         index_addr, counts, addrs, matched_index);
+            if (outcome == MatchOutcome::Matched) {
+                auto& packet = g_provenance.packets[matched_index];
+                // Consume the packet so a second decode cannot claim it.
+                packet.key.consumed = true;
                 matched_id = packet.record_id;
-                if (record.id == packet.record_id) {
-                    g_provenance.records[packet.record_id - 1].packet_decoded = true;
+                if (matched_id != 0 && matched_id <= MaxProvenanceRecords) {
+                    auto& record = g_provenance.records[matched_id - 1];
+                    if (record.id == matched_id) {
+                        record.state = ProvenanceState::Decoded;
+                    }
                 }
-                break;
             }
         }
 
-        if (matched_id == 0) {
-            g_provenance.unmatched_packet_count.fetch_add(1, std::memory_order_relaxed);
-        } else {
+        switch (outcome) {
+        case MatchOutcome::Matched:
             g_provenance.decoded_count.fetch_add(1, std::memory_order_relaxed);
+            g_provenance.consumed_count.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case MatchOutcome::Ambiguous:
+            g_provenance.ambiguous_count.fetch_add(1, std::memory_order_relaxed);
+            g_provenance.unmatched_packet_count.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case MatchOutcome::Inconsistent:
+            g_provenance.inconsistent_count.fetch_add(1, std::memory_order_relaxed);
+            g_provenance.unmatched_packet_count.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case MatchOutcome::AlreadyConsumed:
+            g_provenance.consumed_count.fetch_add(1, std::memory_order_relaxed);
+            g_provenance.unmatched_packet_count.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case MatchOutcome::NoSubmissionIdentity:
+            g_provenance.no_submission_count.fetch_add(1, std::memory_order_relaxed);
+            g_provenance.unmatched_packet_count.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case MatchOutcome::NoCandidate:
+        default:
+            g_provenance.unmatched_packet_count.fetch_add(1, std::memory_order_relaxed);
+            break;
         }
+
         // The rasterizer runs later on this same thread for this packet, so carry the identity.
+        // It is cleared by the rasterizer when the draw is reported, so a later unrelated draw
+        // cannot inherit it.
         g_current_draw_provenance_id = matched_id;
 
         // Only matched packets are logged. Unmatched ones are counted, because the GPU thread
@@ -736,9 +817,10 @@ void CapturePm4DrawIndex2At(std::uint32_t max_size, std::uint32_t index_base_lo,
         // exhaust the log budget before the summary is written.
         if (matched_id != 0) {
             LOG_INFO(Core_Linker,
-                     "DERACINE_PM4_PROVENANCE provenance_id={} packet_offset={:#x} "
-                     "index_base={:#x} index_count={} draw_initiator={:#x}",
-                     matched_id, offset, index_addr, index_count, draw_initiator);
+                     "DERACINE_PM4_PROVENANCE provenance_id={} submission={} buffer={:#x} "
+                     "packet_offset={:#x} index_base={:#x} index_count={} draw_initiator={:#x}",
+                     matched_id, submission_id, source_buffer, offset, index_addr, index_count,
+                     draw_initiator);
         }
     } catch (...) {
         // Provenance must never affect packet decoding.
@@ -760,15 +842,19 @@ void NoteDrawRecorded(std::uint64_t record_id, std::uint64_t vs_hash, std::uint6
         auto& record = g_provenance.records[record_id - 1];
         if (record.id != record_id)
             return;
-        record.draw_recorded = true;
+        // A record can produce more than one Vulkan draw when the renderer expands it. Count the
+        // children rather than treating a repeat as a duplicate correlation.
+        ++record.child_draws;
+        record.state = ProvenanceState::Recorded;
         g_provenance.recorded_count.fetch_add(1, std::memory_order_relaxed);
 
         LOG_INFO(Core_Linker,
-                 "DERACINE_DRAW_PROVENANCE provenance_id={} vs={:#x} ps={:#x} pipeline={:#x} "
-                 "index_count={} instances={} prim={} index_addr={:#x} mask={:#x} db={:#x} "
-                 "z_en={} z_wr={}",
-                 record_id, vs_hash, ps_hash, pipeline_hash, index_count, instance_count,
-                 primitive_type, index_addr, color_mask, depth_address, depth_test, depth_write);
+                 "DERACINE_DRAW_PROVENANCE provenance_id={} child={} vs={:#x} ps={:#x} "
+                 "pipeline={:#x} index_count={} instances={} gpu_prim={} index_addr={:#x} "
+                 "mask={:#x} db={:#x} z_en={} z_wr={}",
+                 record_id, record.child_draws, vs_hash, ps_hash, pipeline_hash, index_count,
+                 instance_count, primitive_type, index_addr, color_mask, depth_address, depth_test,
+                 depth_write);
     } catch (...) {
         // Provenance must never affect draw processing.
     }
@@ -785,7 +871,7 @@ void NoteDrawSkipped(std::uint64_t record_id, const char* reason) noexcept {
         auto& record = g_provenance.records[record_id - 1];
         if (record.id != record_id)
             return;
-        record.draw_skipped = true;
+        record.state = ProvenanceState::Skipped;
         g_provenance.skipped_count.fetch_add(1, std::memory_order_relaxed);
 
         LOG_INFO(Core_Linker, "DERACINE_DRAW_SKIPPED provenance_id={} reason={}", record_id,
@@ -799,6 +885,10 @@ std::uint64_t CurrentDrawProvenanceId() noexcept {
     return g_current_draw_provenance_id;
 }
 
+void ClearCurrentDrawProvenance() noexcept {
+    g_current_draw_provenance_id = 0;
+}
+
 void ExportProvenance() noexcept {
     try {
         if (!g_provenance.enabled.load(std::memory_order_relaxed))
@@ -806,44 +896,87 @@ void ExportProvenance() noexcept {
 
         const u32 records = g_provenance.record_count.load(std::memory_order_relaxed);
         const u32 packets = g_provenance.packet_count.load(std::memory_order_relaxed);
-        const u32 decoded = g_provenance.decoded_count.load(std::memory_order_relaxed);
-        const u32 recorded = g_provenance.recorded_count.load(std::memory_order_relaxed);
-        const u32 skipped = g_provenance.skipped_count.load(std::memory_order_relaxed);
+        const u32 decoded_events = g_provenance.decoded_count.load(std::memory_order_relaxed);
+        const u32 recorded_events = g_provenance.recorded_count.load(std::memory_order_relaxed);
+        const u32 skipped_events = g_provenance.skipped_count.load(std::memory_order_relaxed);
         const u32 unmatched = g_provenance.unmatched_packet_count.load(std::memory_order_relaxed);
+        const u32 ambiguous = g_provenance.ambiguous_count.load(std::memory_order_relaxed);
+        const u32 inconsistent = g_provenance.inconsistent_count.load(std::memory_order_relaxed);
+        const u32 no_submission = g_provenance.no_submission_count.load(std::memory_order_relaxed);
 
+        // Unique-record counts, distinct from the event counts above. A record can be decoded once
+        // and produce several Vulkan draws, so events and unique records legitimately differ.
         u32 constructed = 0;
         u32 submitted = 0;
+        u32 decoded_records = 0;
+        u32 recorded_records = 0;
+        u32 skipped_records = 0;
+        u32 failed_records = 0;
+        u32 rejected_records = 0;
         u32 pending = 0;
         u32 expired = 0;
+        u32 with_command = 0;
+        u32 without_command = 0;
+        u32 child_draws = 0;
         {
             std::scoped_lock lock{g_provenance.mutex};
             const auto now = std::chrono::steady_clock::now();
             for (u32 i = 0; i < MaxProvenanceRecords && i < records; ++i) {
-                const auto& record = g_provenance.records[i];
+                auto& record = g_provenance.records[i];
                 if (record.id == 0)
                     continue;
-                if (record.packet_constructed)
+                if (record.command_capture_id != 0)
+                    ++with_command;
+                else
+                    ++without_command;
+                if (record.state >= ProvenanceState::Constructed)
                     ++constructed;
                 if (record.submission_id != 0)
                     ++submitted;
-                if (!record.packet_decoded) {
+                if (record.state >= ProvenanceState::Decoded)
+                    ++decoded_records;
+                switch (record.state) {
+                case ProvenanceState::Recorded:
+                    ++recorded_records;
+                    child_draws += record.child_draws;
+                    break;
+                case ProvenanceState::Skipped:
+                    ++skipped_records;
+                    break;
+                case ProvenanceState::Failed:
+                    ++failed_records;
+                    break;
+                case ProvenanceState::Rejected:
+                    ++rejected_records;
+                    break;
+                default:
+                    break;
+                }
+                if (!IsTerminalProvenanceState(record.state)) {
                     const auto age = std::chrono::duration_cast<std::chrono::microseconds>(
                                          now - record.captured_at)
                                          .count();
-                    if (age > static_cast<std::int64_t>(MaxProvenanceAgeUs))
+                    if (age > static_cast<std::int64_t>(MaxProvenanceAgeUs)) {
+                        record.state = ProvenanceState::Expired;
                         ++expired;
-                    else
+                    } else {
                         ++pending;
+                    }
                 }
             }
         }
 
         LOG_INFO(Core_Linker,
                  "DERACINE_DRAW_PROVENANCE_SUMMARY records={} packets={} constructed={} "
-                 "submitted={} decoded={} recorded={} skipped={} pending={} expired={} "
-                 "unmatched_packets={} limit={}",
-                 records, packets, constructed, submitted, decoded, recorded, skipped, pending,
-                 expired, unmatched, MaxProvenanceRecords);
+                 "submitted={} decoded_records={} recorded_records={} skipped_records={} "
+                 "failed_records={} rejected_records={} pending={} expired={} "
+                 "with_command={} without_command={} child_draws={} decoded_events={} "
+                 "recorded_events={} skipped_events={} unmatched_packets={} ambiguous={} "
+                 "inconsistent={} no_submission={} limit={}",
+                 records, packets, constructed, submitted, decoded_records, recorded_records,
+                 skipped_records, failed_records, rejected_records, pending, expired, with_command,
+                 without_command, child_draws, decoded_events, recorded_events, skipped_events,
+                 unmatched, ambiguous, inconsistent, no_submission, MaxProvenanceRecords);
 
         std::scoped_lock lock{g_provenance.mutex};
         for (u32 i = 0; i < MaxProvenanceRecords && i < records; ++i) {
@@ -851,18 +984,20 @@ void ExportProvenance() noexcept {
             if (record.id == 0)
                 continue;
             LOG_INFO(Core_Linker,
-                     "DERACINE_DRAW_PROVENANCE_RECORD id={} rhi_sequence={} thread={} "
+                     "DERACINE_DRAW_PROVENANCE_RECORD id={} rhi_sequence={} command_id={} "
+                     "command_type={} command_list={:#x} rhi_context={:#x} thread={} "
                      "guest_thread={} cmdbuf={:#x} packet_offset={:#x} submission={} "
-                     "copied_dcb={:#x} index_count={} index_addr={:#x} prim={} "
-                     "rhi_index_resource={:#x} constructed={} decoded={} recorded={} skipped={}",
-                     record.id, record.rhi_sequence, record.native_thread_id,
-                     record.guest_thread_id, record.cmdbuf, record.packet_offset,
-                     record.submission_id, record.copied_dcb, record.index_count,
-                     record.index_addr, record.primitive_type,
+                     "copied_dcb={:#x} index_count={} index_addr={:#x} gnm_type={} gnm_flags={:#x} "
+                     "ue4_prim={} rhi_index_resource={:#x} state={} child_draws={}",
+                     record.id, record.rhi_sequence, record.command_capture_id,
+                     record.command_type, record.command_list, record.rhi_context,
+                     record.native_thread_id, record.guest_thread_id, record.cmdbuf,
+                     record.packet_offset, record.submission_id, record.copied_dcb,
+                     record.index_count, record.index_addr, record.gnm_type, record.gnm_flags,
+                     record.ue4_primitive_type,
                      (static_cast<u64>(record.rhi_index_resource_hi) << 32) |
                          record.rhi_index_resource_lo,
-                     record.packet_constructed, record.packet_decoded, record.draw_recorded,
-                     record.draw_skipped);
+                     static_cast<u32>(record.state), record.child_draws);
         }
     } catch (...) {
         // Export must never throw during shutdown.

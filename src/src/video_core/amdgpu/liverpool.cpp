@@ -309,7 +309,9 @@ Liverpool::Task Liverpool::ProcessCeUpdate(std::span<const u32> ccb) {
     FIBER_EXIT;
 }
 
-Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<const u32> ccb) {
+Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<const u32> ccb,
+                                           std::uint64_t provenance_submission,
+                                           std::uintptr_t provenance_source_buffer) {
     FIBER_ENTER(dcb_task_name);
 
     cblock.Reset();
@@ -553,7 +555,8 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 Core::RhiEntryProbe::CapturePm4DrawIndex2At(
                     draw_index->max_size, draw_index->index_base_lo, draw_index->index_base_hi,
                     draw_index->index_count, draw_index->draw_initiator,
-                    reinterpret_cast<std::uintptr_t>(header), base_addr);
+                    reinterpret_cast<std::uintptr_t>(header), base_addr, provenance_submission,
+                    provenance_source_buffer);
                 regs.max_index_size = draw_index->max_size;
                 regs.index_base_address.base_addr_lo = draw_index->index_base_lo;
                 regs.index_base_address.base_addr_hi = draw_index->index_base_hi;
@@ -1522,10 +1525,12 @@ void Liverpool::SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb) {
     }
 
     // Record the submission so packet provenance is generation-aware, and so a copied DCB is
-    // matched against the guest buffer the packet was actually written into.
-    Core::RhiEntryProbe::NoteSubmission(dcb.data(), dcb.size(), original_dcb, copied);
+    // matched against the guest buffer the packet was actually written into. The identity travels
+    // with the queued graphics task, not through a timestamp or an independent ordinal.
+    const std::uint64_t provenance_submission = Core::RhiEntryProbe::NoteSubmission(
+        dcb.data(), dcb.size(), original_dcb, copied);
 
-    auto task = ProcessGraphics(dcb, ccb);
+    auto task = ProcessGraphics(dcb, ccb, provenance_submission, original_dcb);
     {
         std::scoped_lock lock{queue.m_access};
         queue.submits.emplace(task.handle);

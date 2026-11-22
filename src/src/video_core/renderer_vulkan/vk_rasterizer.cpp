@@ -402,25 +402,6 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
         return;
     }
 
-    // Report the actual pipeline state against the provenance record for this packet. This is the
-    // draw-time state, not an earlier shader setter.
-    if (const u64 provenance_id = Core::RhiEntryProbe::CurrentDrawProvenanceId();
-        provenance_id != 0) {
-        const auto& provenance_key = pipeline->GetGraphicsKey();
-        Core::RhiEntryProbe::NoteDrawRecorded(
-            provenance_id,
-            provenance_key.stage_hashes[static_cast<u32>(Shader::LogicalStage::Vertex)],
-            provenance_key.stage_hashes[static_cast<u32>(Shader::LogicalStage::Fragment)],
-            std::hash<GraphicsPipelineKey>{}(provenance_key), regs.num_indices,
-            regs.num_instances.NumInstances(),
-            static_cast<u32>(regs.primitive_type),
-            (static_cast<u64>(regs.index_base_address.base_addr_hi) << 32) |
-                regs.index_base_address.base_addr_lo,
-            regs.color_target_mask.raw, regs.depth_buffer.DepthAddress(),
-            static_cast<bool>(regs.depth_control.depth_enable),
-            static_cast<bool>(regs.depth_control.depth_write_enable));
-    }
-
     {
         const FrameStats::CallTimer timer{FrameStats::Call::PrepareState};
         PrepareRenderState(pipeline);
@@ -515,6 +496,27 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     }
     if (timed) {
         gpu_profile->After();
+    }
+
+    // Report the draw only now, after the Vulkan draw command was actually emitted. A resolved
+    // pipeline is not a recorded draw: the paths above can still filter or shrink the operation,
+    // and this is the first point where the draw is real. The identity is consumed here so a
+    // later unrelated draw cannot inherit it.
+    if (const u64 provenance_id = Core::RhiEntryProbe::CurrentDrawProvenanceId();
+        provenance_id != 0) {
+        const auto& provenance_key = pipeline->GetGraphicsKey();
+        Core::RhiEntryProbe::NoteDrawRecorded(
+            provenance_id,
+            provenance_key.stage_hashes[static_cast<u32>(Shader::LogicalStage::Vertex)],
+            provenance_key.stage_hashes[static_cast<u32>(Shader::LogicalStage::Fragment)],
+            std::hash<GraphicsPipelineKey>{}(provenance_key), num_vertices, num_instances,
+            static_cast<u32>(regs.primitive_type),
+            (static_cast<u64>(regs.index_base_address.base_addr_hi) << 32) |
+                regs.index_base_address.base_addr_lo,
+            regs.color_target_mask.raw, regs.depth_buffer.DepthAddress(),
+            static_cast<bool>(regs.depth_control.depth_enable),
+            static_cast<bool>(regs.depth_control.depth_write_enable));
+        Core::RhiEntryProbe::ClearCurrentDrawProvenance();
     }
 
     ResetBindings();

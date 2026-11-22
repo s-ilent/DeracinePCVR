@@ -21,5 +21,23 @@ void TryInstallBeforeGuestThread(Module& module, std::string_view title_id,
 /// is outside the guest execution hot path. Does nothing when the capture is not installed.
 void ExportCapturedCommands();
 
+/// The deferred command currently executing on this thread, if any. The RHI entry observer uses
+/// it to connect a PS4 RHI invocation to the UE4 command that issued it. Returns false when no
+/// captured command is in scope, which is the normal case for a direct RHI call that bypassed the
+/// recovered deferred wrapper.
+struct CurrentCommand {
+    std::uint64_t capture_id{};
+    std::uint8_t command_type{};
+    std::uint64_t command_list{};
+    std::uint64_t rhi_context{};
+    std::uint32_t ue4_primitive_type{};
+    std::uint64_t index_resource{};
+};
+[[nodiscard]] bool CurrentDeferredCommand(CurrentCommand& out) noexcept;
+
+/// Clears the deferred-command scope for this thread. Called by the RHI entry observer once it has
+/// claimed the identity, so a second invocation cannot inherit the same command.
+void ConsumeDeferredCommand() noexcept;
+
 } // namespace RhiCommandCapture
 } // namespace Core

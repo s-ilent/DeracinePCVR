@@ -59,6 +59,136 @@ inline constexpr std::array<u8, 17> TargetPrologue{
 
 inline constexpr u64 MaxRhiToGnmCorrelationAgeUs = 250'000;
 
+/// Lifecycle of one provenance record. A record advances monotonically; a state never goes
+/// backwards, so a stale or already-consumed record cannot be re-claimed.
+enum class ProvenanceState : u8 {
+    /// Selected at the RHI entry; no packet yet.
+    Selected = 0,
+    /// A packet was constructed into the guest command buffer.
+    Constructed = 1,
+    /// The submission carrying that packet was observed.
+    Submitted = 2,
+    /// The packet was decoded on the GPU thread.
+    Decoded = 3,
+    /// The rasterizer emitted a Vulkan draw for it.
+    Recorded = 4,
+    /// The operation was intentionally omitted.
+    Skipped = 5,
+    /// A prerequisite prevented recording.
+    Failed = 6,
+    /// The packet was never observed within the age bound.
+    Expired = 7,
+    /// The association was rejected as ambiguous or inconsistent.
+    Rejected = 8,
+};
+
+[[nodiscard]] constexpr bool IsTerminalProvenanceState(ProvenanceState state) noexcept {
+    return state == ProvenanceState::Recorded || state == ProvenanceState::Skipped ||
+           state == ProvenanceState::Failed || state == ProvenanceState::Expired ||
+           state == ProvenanceState::Rejected;
+}
+
+/// A packet registered at construction time, waiting to be matched at decode time.
+///
+/// The identity is `submission_id + buffer identity + packet offset`. `submission_id` is zero
+/// until the submission that carries the packet is observed, and a packet with no submission
+/// identity is never matched: an unresolved observation is acceptable, a wrong one is not.
+struct PacketKey {
+    u64 submission_id{};
+    /// Guest command-buffer pointer the packet was constructed into.
+    VAddr source_buffer{};
+    /// Byte offset of the packet within that buffer. Zero is a valid offset.
+    u64 packet_offset{};
+    /// Set once the packet has been claimed by a decode, so it cannot be claimed twice.
+    bool consumed{};
+};
+
+/// Why a decode failed to resolve a packet. Reported so unmatched decodes are explainable.
+enum class MatchOutcome : u8 {
+    Matched = 0,
+    /// No packet shares this submission and offset.
+    NoCandidate = 1,
+    /// More than one packet shares this submission and offset.
+    Ambiguous = 2,
+    /// The only candidate was already consumed by an earlier decode.
+    AlreadyConsumed = 3,
+    /// The candidate's packet fields disagree with the decoded packet.
+    Inconsistent = 4,
+    /// The decode carried no submission identity, so nothing can be resolved exactly.
+    NoSubmissionIdentity = 5,
+};
+
+/// Resolves a decoded packet to exactly one registered packet.
+///
+/// This is the production matcher: the live capture path calls it, and the tests exercise the
+/// same function. Matching is by exact identity only. Index count and index address are
+/// consistency checks applied after identity is established, never a fallback.
+///
+/// `packets` is the registered packet table; entries with `submission_id == 0` are not yet
+/// submitted and are skipped. `out_index` receives the matched table index.
+[[nodiscard]] inline MatchOutcome MatchDecodedPacket(
+    std::span<const PacketKey> packets, u64 submission_id, VAddr source_buffer,
+    u64 packet_offset, u32 index_count, u64 index_addr,
+    std::span<const u32> packet_index_counts, std::span<const u64> packet_index_addrs,
+    std::size_t& out_index) noexcept {
+    out_index = 0;
+    if (submission_id == 0) {
+        return MatchOutcome::NoSubmissionIdentity;
+    }
+
+    std::size_t found = 0;
+    std::size_t found_count = 0;
+    bool saw_consumed = false;
+    bool saw_inconsistent = false;
+
+    for (std::size_t i = 0; i < packets.size(); ++i) {
+        const auto& packet = packets[i];
+        if (packet.submission_id == 0) {
+            continue;
+        }
+        if (packet.submission_id != submission_id) {
+            continue;
+        }
+        if (packet.source_buffer != source_buffer) {
+            continue;
+        }
+        if (packet.packet_offset != packet_offset) {
+            continue;
+        }
+        // Identity is established. The packet fields must then agree, or the association is
+        // rejected rather than accepted on identity alone.
+        if (i >= packet_index_counts.size() || i >= packet_index_addrs.size()) {
+            saw_inconsistent = true;
+            continue;
+        }
+        if (packet_index_counts[i] != index_count || packet_index_addrs[i] != index_addr) {
+            saw_inconsistent = true;
+            continue;
+        }
+        if (packet.consumed) {
+            saw_consumed = true;
+            continue;
+        }
+        found = i;
+        ++found_count;
+    }
+
+    if (found_count == 1) {
+        out_index = found;
+        return MatchOutcome::Matched;
+    }
+    if (found_count > 1) {
+        return MatchOutcome::Ambiguous;
+    }
+    if (saw_consumed) {
+        return MatchOutcome::AlreadyConsumed;
+    }
+    if (saw_inconsistent) {
+        return MatchOutcome::Inconsistent;
+    }
+    return MatchOutcome::NoCandidate;
+}
+
 [[nodiscard]] inline bool IsRhiToGnmCorrelationValid(u64 rhi_sequence, u64 rhi_thread_id,
                                                      u64 gnm_thread_id, u64 age_us) noexcept {
     return rhi_sequence != 0 && rhi_thread_id == gnm_thread_id &&

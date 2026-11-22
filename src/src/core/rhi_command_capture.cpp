@@ -319,10 +319,55 @@ void CaptureShaderSnapshot(MemoryManager& memory, VAddr list, CapturedCommand& c
                                                 : ShaderSnapshotStatus::Valid);
 }
 
+/// The deferred command currently executing on this thread.
+///
+/// The observer fires on entry only, so this is set at wrapper entry and consumed by the first
+/// RHI invocation that runs at a deeper stack pointer. The stack check is what makes the scope
+/// real: a wrapper that returns without calling the RHI method leaves a stale entry, and a later
+/// unrelated RHI call at a shallower or equal stack pointer will not claim it.
+struct DeferredCommandScope {
+    std::uint64_t capture_id{};
+    std::uint8_t command_type{};
+    std::uint64_t command_list{};
+    std::uint64_t rhi_context{};
+    std::uint32_t ue4_primitive_type{};
+    std::uint64_t index_resource{};
+    /// Stack pointer at the wrapper's entry. A nested RHI call has a smaller pointer.
+    std::uint64_t entry_rsp{};
+};
+thread_local DeferredCommandScope g_deferred_scope{};
+/// Monotonic per-thread sequence for deferred draw commands, independent of the capture budget so
+/// the identity exists even when the command is not recorded.
+thread_local std::uint64_t g_deferred_sequence{};
+/// Counts scope claims refused by the stack-depth guard, so a silent rejection is visible.
+thread_local std::uint64_t g_deferred_rejected{};
+
 static void CaptureCommandImpl(const GuestEntryRegisterFrame* frame, void* user_data) {
     auto* state = static_cast<CaptureState*>(user_data);
     if (frame == nullptr || state == nullptr || state->memory == nullptr)
         return;
+
+    // Publish the deferred-command scope first, before any capture budget or start-delay check.
+    // The identity of the command being executed is independent of whether this run is recording
+    // it, and the RHI invocation it issues must be able to claim it either way.
+    //
+    // `frame->rdi` is the command object; its vtable is the first word of that object, so it must
+    // be read from guest memory rather than taken from the register.
+    {
+        const VAddr command_object = frame->rdi;
+        u64 vtable{};
+        if (command_object != 0 && ReadGuestWord(*state->memory, command_object, vtable)) {
+            const VAddr vtable_rva =
+                vtable >= state->module_base ? vtable - state->module_base : 0;
+            const u8 command_id = ClassifyCommandVtable(vtable_rva);
+            if (command_id == CommandDrawIndexedPrimitive || command_id == CommandDrawPrimitive) {
+                g_deferred_scope.capture_id = ++g_deferred_sequence;
+                g_deferred_scope.command_type = command_id;
+                g_deferred_scope.command_list = frame->rsi;
+                g_deferred_scope.entry_rsp = frame->OriginalStackPointer();
+            }
+        }
+    }
 
     // A bounded start delay lets a capture target a later scene. The clock read is cheap and only
     // happens while the delay is still pending.
@@ -379,6 +424,12 @@ static PS4_SYSV_ABI void CaptureCommand(const GuestEntryRegisterFrame* frame,
     }
 }
 
+/// The deferred command currently executing on this thread.
+///
+/// The observer fires on entry only, so this is set at wrapper entry and consumed by the first
+/// RHI invocation that runs at a deeper stack pointer. The stack check is what makes the scope
+/// real: a wrapper that returns without calling the RHI method leaves a stale entry, and a later
+/// unrelated RHI call at a shallower or equal stack pointer will not claim it.
 [[nodiscard]] bool FindExecutableTargetSegment(const Module& module, VAddr rva, size_t size,
                                               u64& segment_rva, u64& file_size, u64& memory_size) {
     for (const auto& header : module.elf.GetProgramHeader()) {
@@ -457,6 +508,38 @@ void RollbackInstalled(Module& module, size_t installed) {
 }
 
 } // namespace
+
+bool CurrentDeferredCommand(CurrentCommand& out) noexcept {
+    const auto& scope = g_deferred_scope;
+    if (scope.capture_id == 0) {
+        return false;
+    }
+    // The RHI invocation runs inside the wrapper, so its stack pointer is below the wrapper's
+    // entry. A call at the same or a shallower pointer is not nested inside this command, which
+    // means the scope is stale: the wrapper returned without issuing the RHI call. Refusing it
+    // keeps a failed or early-returning command from attaching to unrelated work.
+    std::uint64_t current_rsp{};
+#if defined(_MSC_VER)
+    current_rsp = reinterpret_cast<std::uint64_t>(_AddressOfReturnAddress());
+#else
+    current_rsp = reinterpret_cast<std::uint64_t>(__builtin_frame_address(0));
+#endif
+    if (current_rsp >= scope.entry_rsp) {
+        ++g_deferred_rejected;
+        return false;
+    }
+    out.capture_id = scope.capture_id;
+    out.command_type = scope.command_type;
+    out.command_list = scope.command_list;
+    out.rhi_context = scope.rhi_context;
+    out.ue4_primitive_type = scope.ue4_primitive_type;
+    out.index_resource = scope.index_resource;
+    return true;
+}
+
+void ConsumeDeferredCommand() noexcept {
+    g_deferred_scope = {};
+}
 
 void TryInstallBeforeGuestThread(Module& module, std::string_view title_id,
                                  std::string_view app_version) {
