@@ -1,5 +1,12 @@
-# Research tasks must be promoted only after actual original-target-byte verification.
+# A-017 original SELF verified upstream viewport producer; no runtime or stereo attribution.
 items:
+  - id: A-017-PACKED-VIEWPORT-UPSTREAM
+    track: A
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "Original SELF 0x14002A0 scales packed coordinate pairs from +0x70/+0x78 and conditionally calls viewport producer 0x1400A40 or alternate 0x1404710 based on owner +0xD8"
+    report: "reports/atlas_viewport_upstream_a017.md"
+    next: "Decode alternate 0x1404710 and locate writer of owner +0xD8 and packed input ownership; no stereo assumption"
   - id: A-016-VIEWPORT-INPUT-AND-OWNER-CACHE
     track: A
     priority: 1
