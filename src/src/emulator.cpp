@@ -42,6 +42,7 @@
 #include "core/libraries/libs.h"
 #include "core/libraries/np/np_trophy.h"
 #include "core/libraries/save_data/save_backup.h"
+#include "core/gnm_shader_metadata.h"
 #include "core/linker.h"
 #include "core/memory.h"
 #include "core/user_settings.h"
@@ -95,6 +96,9 @@ void Emulator::Shutdown() {
     // Stop the scripted-input replay before the VR runtime and the controllers are taken down:
     // it reads and drives both, and a detached thread would outlive them.
     Input::StopScriptedInput();
+    // Export the GNM shader-metadata observation before the log is flushed, so a clean quit still
+    // reports it. Default OFF: with the variable unset this returns immediately.
+    Core::GnmShaderMetadata::Export();
     Common::Log::Flush();
     if (controllers) {
         controllers->ResetLightbarColors();

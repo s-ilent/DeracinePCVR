@@ -14,6 +14,7 @@
 #include "common/path_util.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
+#include "core/gnm_shader_metadata.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/fma_split_diag.h"
 #include "shader_recompiler/info.h"
@@ -558,6 +559,17 @@ bool PipelineCache::RefreshGraphicsStages() {
         }
 
         const auto params = AmdGpu::GetParams(*pgm);
+        // Research observation point (Atlas A-028R): the trailer the renderer just located, at the
+        // one place both its address and the program address are known. Default OFF, bounded, and
+        // read-only; it never feeds back into compilation.
+        if (Core::GnmShaderMetadata::Enabled()) {
+            const auto* code = pgm->Address<u32*>();
+            if (const auto* trailer = AmdGpu::SearchBinaryInfoPtr(code); trailer != nullptr) {
+                Core::GnmShaderMetadata::Observe(
+                    static_cast<u32>(stage_in), reinterpret_cast<VAddr>(code),
+                    reinterpret_cast<VAddr>(trailer));
+            }
+        }
         const std::optional<Shader::Gcn::FetchShaderData>* fetch_shader_{};
         std::tie(infos[stage_out_idx], modules[stage_out_idx], fetch_shader_,
                  key.stage_hashes[stage_out_idx]) =
@@ -666,6 +678,14 @@ bool PipelineCache::RefreshGraphicsStages() {
 bool PipelineCache::RefreshComputeKey() {
     Shader::Backend::Bindings binding{};
     const auto& cs_pgm = liverpool->GetCsRegs();
+    if (Core::GnmShaderMetadata::Enabled()) {
+        const auto* code = cs_pgm.Address<u32*>();
+        if (const auto* trailer = AmdGpu::SearchBinaryInfoPtr(code); trailer != nullptr) {
+            Core::GnmShaderMetadata::Observe(static_cast<u32>(Shader::Stage::Compute),
+                                             reinterpret_cast<VAddr>(code),
+                                             reinterpret_cast<VAddr>(trailer));
+        }
+    }
     const auto cs_params = AmdGpu::GetParams(cs_pgm);
     std::tie(infos[0], modules[0], std::ignore, compute_key.value) =
         GetProgram(Shader::Stage::Compute, LogicalStage::Compute, cs_params, binding);
