@@ -1,5 +1,12 @@
-# A-020 original SELF verified context resource release and vtable ownership.
+# A-021 verified queued context-family command constructor and reference ownership.
 items:
+  - id: A-021-CONTEXT-NODE-CONSTRUCTION
+    track: A
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "0x197588A installs vtable 0x03EDFCA0 on a 0x30-byte queued node; two nested references incremented at 0x19758C8 and 0x19758D4"
+    report: "reports/atlas_context_node_constructor_a021.md"
+    next: "Recover producer FDE, +0x10/+0x18 payload provenance and command-list Execute/teardown distinction"
   - id: A-020-CONTEXT-RESOURCE-RELEASE
     track: A
     priority: 1
