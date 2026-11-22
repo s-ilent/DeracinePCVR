@@ -12,6 +12,7 @@
 #include "common/scope_exit.h"
 #include "core/emulator_settings.h"
 #include "core/memory.h"
+#include "core/rhi_entry_probe.h"
 #include "core/shader_param_capture.h"
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/amdgpu/pm4_packet.h"
@@ -261,6 +262,63 @@ void BufferCache::BindVertexBuffers(
         }
     }
 
+    // Record each vertex binding with the host allocation it resolved to, at the point production
+    // binds it. The host buffer and offset are the identity; the guest address is a consistency
+    // check.
+    if (Core::RhiEntryProbe::CurrentDrawProvenanceId() != 0) {
+        for (u32 i = 0; i < guest_buffers.size(); ++i) {
+            const auto& buffer = guest_buffers[i];
+            Core::ShaderParamCapture::VertexBindingRecord record{};
+            record.binding = i;
+            record.guest_base = buffer.base_address;
+            record.guest_size = buffer.GetSize();
+            record.stride = buffer.GetStride();
+            if (buffer.GetSize() > 0) {
+                const auto host_info =
+                    std::ranges::find_if(ranges_merged, [&](const BufferRange& range) {
+                        return buffer.base_address >= range.base_address &&
+                               buffer.base_address < range.end_address;
+                    });
+                if (host_info != ranges_merged.cend()) {
+                    record.host_buffer = reinterpret_cast<u64>(static_cast<VkBuffer>(
+                        host_info->vk_buffer));
+                    record.host_offset = host_info->offset + buffer.base_address -
+                                         host_info->base_address;
+                    record.host_size = host_info->GetSize();
+                    Core::ShaderParamCapture::UploadKey key{};
+                    u64 hash = 0;
+                    if (Core::ShaderParamCapture::FindHostUploadForBinding(
+                            record.host_buffer, record.host_offset, buffer.GetSize(),
+                            buffer.base_address, key, hash)) {
+                        record.upload_sequence = key.sequence;
+                        record.content_hash = hash;
+                        u32 pool_offset = 0;
+                        u32 retained = 0;
+                        if (Core::ShaderParamCapture::RetainUploadBytes(key, pool_offset,
+                                                                       retained)) {
+                            record.retained_offset = pool_offset;
+                            record.retained_bytes = retained;
+                            record.status = static_cast<u8>(
+                                retained == buffer.GetSize()
+                                    ? Core::ShaderParamCapture::CaptureStatus::HostContentVerified
+                                    : Core::ShaderParamCapture::CaptureStatus::Partial);
+                        } else {
+                            record.status = static_cast<u8>(
+                                Core::ShaderParamCapture::CaptureStatus::Partial);
+                        }
+                    } else {
+                        record.status = static_cast<u8>(
+                            Core::ShaderParamCapture::CaptureStatus::GuestMemoryObserved);
+                    }
+                }
+            } else {
+                record.status =
+                    static_cast<u8>(Core::ShaderParamCapture::CaptureStatus::MetadataOnly);
+            }
+            Core::ShaderParamCapture::NoteVertexBinding(record);
+        }
+    }
+
     // Bind vertex buffers
     Vulkan::VertexInputs<vk::Buffer> host_buffers;
     Vulkan::VertexInputs<vk::DeviceSize> host_offsets;
@@ -323,6 +381,49 @@ void BufferCache::BindIndexBuffer(
                                              vk::PipelineStageFlagBits2::eIndexInput)) {
         barriers.emplace_back(*barrier);
     }
+    // Record the index binding with the host allocation it resolved to.
+    if (Core::RhiEntryProbe::CurrentDrawProvenanceId() != 0) {
+        Core::ShaderParamCapture::IndexBindingRecord record{};
+        record.host_buffer = reinterpret_cast<u64>(static_cast<VkBuffer>(vk_buffer->Handle()));
+        record.host_offset = offset;
+        record.guest_base = index_address;
+        record.guest_size = index_buffer_size;
+        record.index_size = index_size;
+        record.index_count = regs.num_indices;
+        record.first_index = index_offset;
+        record.base_vertex = regs.index_offset;
+        record.instance_count = regs.num_instances.NumInstances();
+        record.first_instance = 0;
+        record.primitive_type = static_cast<u32>(regs.primitive_type);
+        record.index_type = static_cast<u8>(regs.index_buffer_type.index_type);
+        record.swap_mode = static_cast<u8>(regs.index_buffer_type.swap_mode);
+        Core::ShaderParamCapture::UploadKey key{};
+        u64 hash = 0;
+        if (Core::ShaderParamCapture::FindHostUploadForBinding(
+                record.host_buffer, record.host_offset, index_buffer_size, index_address, key,
+                hash)) {
+            record.upload_sequence = key.sequence;
+            record.content_hash = hash;
+            u32 pool_offset = 0;
+            u32 retained = 0;
+            if (Core::ShaderParamCapture::RetainUploadBytes(key, pool_offset, retained)) {
+                record.retained_offset = pool_offset;
+                record.retained_bytes = retained;
+                record.status = static_cast<u8>(
+                    retained == index_buffer_size
+                        ? Core::ShaderParamCapture::CaptureStatus::HostContentVerified
+                        : Core::ShaderParamCapture::CaptureStatus::Partial);
+            } else {
+                record.status =
+                    static_cast<u8>(Core::ShaderParamCapture::CaptureStatus::Partial);
+            }
+        } else {
+            record.status =
+                static_cast<u8>(Core::ShaderParamCapture::CaptureStatus::GuestMemoryObserved);
+        }
+        Core::ShaderParamCapture::NoteIndexBinding(record);
+    }
+
     const auto cmdbuf = scheduler.CommandBuffer();
     const Vulkan::FrameStats::CallTimer timer{Vulkan::FrameStats::Call::IndexBuffer};
     cmdbuf.bindIndexBuffer(vk_buffer->Handle(), offset, index_type);

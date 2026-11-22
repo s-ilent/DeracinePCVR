@@ -63,3 +63,7 @@ _out/
 build-tests/
 __pycache__/
 *.pyc
+
+# Standalone geometry replay build output
+build-geometry-replay/
+

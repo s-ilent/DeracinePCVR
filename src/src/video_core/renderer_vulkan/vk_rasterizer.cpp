@@ -643,6 +643,7 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
         // The bindings were recorded by the production binding path as it constructed each
         // descriptor, so this only hands them over.
         Core::ShaderParamCapture::EndDrawBindings(snapshot);
+        Core::ShaderParamCapture::EndDrawGeometry(snapshot);
         Core::ShaderParamCapture::NoteDrawParams(snapshot);
     }
 
@@ -1123,6 +1124,7 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
     // descriptor as it constructs it rather than having the relationships reconstructed later.
     Core::ShaderParamCapture::BeginDrawBindings(
         Core::RhiEntryProbe::CurrentDrawProvenanceId());
+    Core::ShaderParamCapture::BeginDrawGeometry();
 
     bool uses_dma = false;
 
@@ -1553,13 +1555,17 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
                     // host-visible buffer, that copy is the authoritative content and the binding
                     // is host-verified. Otherwise only guest memory was observed, which is a
                     // weaker claim and is reported as such.
-                    u64 host_handle = 0;
-                    u64 host_offset = 0;
+                    // Resolve against the host allocation this descriptor was actually built
+                    // from, not against the guest address. Two uploads of the same guest range
+                    // into different allocations are different uploads.
+                    Core::ShaderParamCapture::UploadKey upload_key{};
                     u64 host_hash = 0;
-                    if (Core::ShaderParamCapture::FindHostUpload(
-                            vsharp.base_address, size, host_handle, host_offset, host_hash)) {
+                    if (Core::ShaderParamCapture::FindHostUploadForBinding(
+                            record.vk_buffer_handle, record.vk_offset, size, vsharp.base_address,
+                            upload_key, host_hash)) {
                         record.captured_hash = host_hash;
                         record.captured_bytes = static_cast<u32>(take);
+                        record.upload_sequence = upload_key.sequence;
                         record.capture_status = static_cast<u8>(
                             take == size
                                 ? Core::ShaderParamCapture::CaptureStatus::HostContentVerified
@@ -1569,8 +1575,8 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
                         // content.
                         u32 pool_offset = 0;
                         u32 retained = 0;
-                        if (Core::ShaderParamCapture::RetainHostBytes(
-                                vsharp.base_address, take, pool_offset, retained)) {
+                        if (Core::ShaderParamCapture::RetainUploadBytes(upload_key, pool_offset,
+                                                                       retained)) {
                             record.retained_offset = pool_offset;
                             record.retained_bytes = retained;
                         }

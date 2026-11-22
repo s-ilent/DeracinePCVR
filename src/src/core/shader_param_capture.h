@@ -122,6 +122,8 @@ struct BufferBinding {
     /// content was retained, which is the case when only guest memory was observed.
     u32 retained_offset{};
     u32 retained_bytes{};
+    /// The exact host upload this binding resolved to, or zero when it did not resolve.
+    u64 upload_sequence{};
 };
 
 /// One stage's user-data state at the draw.
@@ -133,6 +135,47 @@ struct StageUserData {
     /// The push-constant block the renderer actually submitted.
     u32 push_data_words{};
     u32 push_data[16]{};
+};
+
+/// One vertex binding as the production path bound it, with the host allocation it resolved to.
+struct VertexBindingRecord {
+    u32 binding{};
+    u64 host_buffer{};
+    u64 host_offset{};
+    u64 host_size{};
+    u64 guest_base{};
+    u64 guest_size{};
+    u32 stride{};
+    u32 input_rate{};
+    u32 divisor{};
+    /// The exact upload this range resolved to, or zero.
+    u64 upload_sequence{};
+    u64 content_hash{};
+    u32 retained_offset{};
+    u32 retained_bytes{};
+    u8 status{};
+};
+
+/// The index binding as the production path bound it.
+struct IndexBindingRecord {
+    u64 host_buffer{};
+    u64 host_offset{};
+    u64 guest_base{};
+    u64 guest_size{};
+    u32 index_size{};
+    u32 index_count{};
+    u32 first_index{};
+    u32 base_vertex{};
+    u32 instance_count{};
+    u32 first_instance{};
+    u32 primitive_type{};
+    u8 index_type{};
+    u8 swap_mode{};
+    u64 upload_sequence{};
+    u64 content_hash{};
+    u32 retained_offset{};
+    u32 retained_bytes{};
+    u8 status{};
 };
 
 struct DrawSnapshot {
@@ -150,6 +193,12 @@ struct DrawSnapshot {
 
     u32 binding_count{};
     BufferBinding bindings[MaxBindingsPerDraw]{};
+
+    /// Geometry: the vertex bindings and index binding this draw actually used.
+    u32 vertex_binding_count{};
+    VertexBindingRecord vertex_bindings[MaxBindingsPerDraw]{};
+    bool has_index_binding{};
+    IndexBindingRecord index_binding{};
 
     u32 total_captured_bytes{};
     u32 partial_resources{};
@@ -172,32 +221,64 @@ bool RecordBinding(const BufferBinding& binding) noexcept;
 /// Ends the observation and hands the collected bindings to the draw snapshot.
 void EndDrawBindings(DrawSnapshot& snapshot) noexcept;
 
-/// Records that a guest range was copied into a host-visible buffer by the production upload
-/// path, so a later binding of that range can be reported as host-verified rather than
-/// guest-observed. `host_bytes` is the destination of the copy, which is the authoritative
-/// content the draw will read.
-void NoteHostUpload(u64 guest_addr, u64 size, const u8* host_bytes, u64 host_buffer_handle,
-                    u64 host_offset) noexcept;
+/// An exact identity for one host upload.
+///
+/// Guest address and size are consistency checks, not identity: two uploads of the same guest
+/// range into different host allocations, or into different offsets of the same allocation, are
+/// different uploads and must not be confused. The identity is the upload sequence plus the host
+/// allocation and range it landed in.
+struct UploadKey {
+    /// Monotonic sequence, unique per observed upload.
+    u64 sequence{};
+    /// Native host buffer identity the bytes were copied into.
+    u64 host_buffer{};
+    /// Byte offset within that host buffer.
+    u64 host_offset{};
+    /// Byte length of the uploaded range.
+    u64 size{};
+    /// Guest source range, kept as a consistency check.
+    u64 guest_addr{};
+};
 
-/// Looks up the most recent host upload covering a guest range. Returns false when the range was
-/// never uploaded through a path this capture observed, in which case a binding of it stays
-/// guest-observed.
-[[nodiscard]] bool FindHostUpload(u64 guest_addr, u64 size, u64& host_buffer_handle,
-                                  u64& host_offset, u64& content_hash) noexcept;
+/// Records that a guest range was copied into a host-visible buffer by the production upload path.
+/// `host_bytes` is the destination of the copy, which is the authoritative content the draw reads.
+/// Returns the key assigned to this upload, or a zero sequence when the capture is off or the
+/// upload could not be recorded.
+[[nodiscard]] UploadKey NoteHostUpload(u64 guest_addr, u64 size, const u8* host_bytes,
+                                       u64 host_buffer_handle, u64 host_offset) noexcept;
 
-/// Copies the retained host bytes for a guest range into `out`. Returns false when the upload was
-/// not observed or the retained prefix is shorter than the request, so a caller never receives a
+/// Resolves the upload that a production descriptor actually used.
+///
+/// The caller supplies the host buffer and offset its descriptor was built from, so the match is
+/// on the host allocation rather than on the guest address. A guest range that was re-uploaded
+/// into a different allocation does not resolve to the earlier one.
+[[nodiscard]] bool FindHostUploadForBinding(u64 host_buffer, u64 host_offset, u64 size,
+                                            u64 guest_addr, UploadKey& key,
+                                            u64& content_hash) noexcept;
+
+/// Copies the retained host bytes for an exact upload into `out`. Returns false when the upload is
+/// unknown or the retained prefix is shorter than the request, so a caller never receives a
 /// partial buffer presented as complete.
-[[nodiscard]] bool CopyHostUploadBytes(u64 guest_addr, u64 size, u8* out, u64& copied) noexcept;
+[[nodiscard]] bool CopyUploadBytes(const UploadKey& key, u8* out, u64& copied) noexcept;
 
-/// Reserves space in the retained-byte pool and copies the host bytes there. Returns the pool
-/// offset and the number of bytes stored, or a zero length when the pool is exhausted. The pool is
-/// separate from the per-binding records so a binding stays small.
-[[nodiscard]] bool RetainHostBytes(u64 guest_addr, u64 size, u32& pool_offset,
-                                   u32& retained) noexcept;
+/// Reserves space in the retained-byte pool and copies an exact upload's host bytes there.
+[[nodiscard]] bool RetainUploadBytes(const UploadKey& key, u32& pool_offset,
+                                     u32& retained) noexcept;
 
 /// Reads retained bytes back out of the pool. Used by the package writer.
 [[nodiscard]] bool ReadRetainedBytes(u32 pool_offset, u32 size, u8* out) noexcept;
+
+/// Records one vertex binding at the point production binds it.
+void NoteVertexBinding(const VertexBindingRecord& record) noexcept;
+
+/// Records the index binding at the point production binds it.
+void NoteIndexBinding(const IndexBindingRecord& record) noexcept;
+
+/// Clears the per-draw geometry records. Called when a new draw begins.
+void BeginDrawGeometry() noexcept;
+
+/// Hands the collected geometry records to the draw snapshot.
+void EndDrawGeometry(DrawSnapshot& snapshot) noexcept;
 
 /// Content hash of a captured byte range. The buffer cache exposes no per-resource generation
 /// counter, so a content hash is the only version identity it can honestly provide.

@@ -153,9 +153,63 @@ bool WritePackage(const Package& package, const std::string& directory) noexcept
         }
         json << "  ],\n";
 
-        json << "  \"capture_status\": {\n";
-        json << "    \"replay_ready\": " << (package.replay_ready ? "true" : "false") << ",\n";
-        json << "    \"not_ready_reason\": \"" << EscapeJson(package.not_ready_reason) << "\"\n";
+        json << "  \"vertex_bindings\": [\n";
+        for (size_t i = 0; i < package.vertex_bindings.size(); ++i) {
+            const auto& vertex = package.vertex_bindings[i];
+            json << "    {\n";
+            json << "      \"binding\": " << vertex.binding << ",\n";
+            json << "      \"host_buffer\": " << vertex.host_buffer << ",\n";
+            json << "      \"host_offset\": " << vertex.host_offset << ",\n";
+            json << "      \"guest_base\": " << vertex.guest_base << ",\n";
+            json << "      \"guest_size\": " << vertex.guest_size << ",\n";
+            json << "      \"stride\": " << vertex.stride << ",\n";
+            json << "      \"input_rate\": " << vertex.input_rate << ",\n";
+            json << "      \"divisor\": " << vertex.divisor << ",\n";
+            json << "      \"upload_sequence\": " << vertex.upload_sequence << ",\n";
+            json << "      \"content_hash\": " << vertex.content_hash << ",\n";
+            json << "      \"resource_ref\": " << vertex.resource_ref << ",\n";
+            json << "      \"status\": \"" << StatusName(vertex.status) << "\"\n";
+            json << "    }" << (i + 1 < package.vertex_bindings.size() ? "," : "") << "\n";
+        }
+        json << "  ],\n";
+
+        if (package.has_index_binding) {
+            const auto& index = package.index_binding;
+            json << "  \"index_binding\": {\n";
+            json << "    \"host_buffer\": " << index.host_buffer << ",\n";
+            json << "    \"host_offset\": " << index.host_offset << ",\n";
+            json << "    \"guest_base\": " << index.guest_base << ",\n";
+            json << "    \"guest_size\": " << index.guest_size << ",\n";
+            json << "    \"index_size\": " << index.index_size << ",\n";
+            json << "    \"index_count\": " << index.index_count << ",\n";
+            json << "    \"first_index\": " << index.first_index << ",\n";
+            json << "    \"base_vertex\": " << index.base_vertex << ",\n";
+            json << "    \"instance_count\": " << index.instance_count << ",\n";
+            json << "    \"first_instance\": " << index.first_instance << ",\n";
+            json << "    \"primitive_type\": " << index.primitive_type << ",\n";
+            json << "    \"index_type\": " << static_cast<u32>(index.index_type) << ",\n";
+            json << "    \"swap_mode\": " << static_cast<u32>(index.swap_mode) << ",\n";
+            json << "    \"upload_sequence\": " << index.upload_sequence << ",\n";
+            json << "    \"content_hash\": " << index.content_hash << ",\n";
+            json << "    \"resource_ref\": " << index.resource_ref << ",\n";
+            json << "    \"status\": \"" << StatusName(index.status) << "\"\n";
+            json << "  },\n";
+        }
+
+        json << "  \"readiness\": {\n";
+        json << "    \"shader_buffers_ready\": "
+             << (package.readiness.shader_buffers_ready ? "true" : "false") << ",\n";
+        json << "    \"geometry_ready\": "
+             << (package.readiness.geometry_ready ? "true" : "false") << ",\n";
+        json << "    \"textures_ready\": "
+             << (package.readiness.textures_ready ? "true" : "false") << ",\n";
+        json << "    \"pipeline_state_ready\": "
+             << (package.readiness.pipeline_state_ready ? "true" : "false") << ",\n";
+        json << "    \"diagnostic_geometry_replay_ready\": "
+             << (package.readiness.diagnostic_geometry_replay_ready ? "true" : "false") << ",\n";
+        json << "    \"full_draw_replay_ready\": "
+             << (package.readiness.full_draw_replay_ready ? "true" : "false") << ",\n";
+        json << "    \"limitation\": \"" << EscapeJson(package.readiness.limitation) << "\"\n";
         json << "  }\n";
         json << "}\n";
 
@@ -169,9 +223,11 @@ bool WritePackage(const Package& package, const std::string& directory) noexcept
 
         LOG_INFO(Core_Linker,
                  "DERACINE_DRAW_PACKAGE_WRITTEN provenance_id={} resources={} bindings={} "
-                 "bytes={} replay_ready={}",
+                 "vertex_bindings={} indexed={} bytes={} geometry_ready={} diagnostic_ready={}",
                  package.provenance_id, package.resources.size(), package.bindings.size(),
-                 blob_offset, package.replay_ready);
+                 package.vertex_bindings.size(), package.has_index_binding, blob_offset,
+                 package.readiness.geometry_ready,
+                 package.readiness.diagnostic_geometry_replay_ready);
         return true;
     } catch (const std::exception& e) {
         LOG_WARNING(Core_Linker, "Draw package write threw: {}", e.what());

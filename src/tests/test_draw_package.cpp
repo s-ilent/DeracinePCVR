@@ -11,6 +11,8 @@
 namespace {
 
 using Core::DrawPackage::Binding;
+using Core::DrawPackage::IndexBinding;
+using Core::DrawPackage::VertexBinding;
 using Core::DrawPackage::Package;
 using Core::DrawPackage::Resource;
 using Core::DrawPackage::SchemaVersion;
@@ -57,8 +59,29 @@ Package MakeValidPackage() {
     binding.status = 1;
     package.bindings.push_back(binding);
 
-    package.replay_ready = true;
+    package.readiness.shader_buffers_ready = true;
     return package;
+}
+
+/// Adds a vertex binding and index binding that reference resource 1, so the geometry checks have
+/// something to validate.
+void AddGeometry(Package& package) {
+    VertexBinding vertex{};
+    vertex.binding = 0;
+    vertex.stride = 8;
+    vertex.guest_size = 16;
+    vertex.resource_ref = 1;
+    vertex.status = 1;
+    package.vertex_bindings.push_back(vertex);
+
+    IndexBinding index{};
+    index.index_size = 2;
+    index.index_count = 6;
+    index.guest_size = 12;
+    index.resource_ref = 1;
+    index.status = 1;
+    package.index_binding = index;
+    package.has_index_binding = true;
 }
 
 TEST(DrawPackageValidator, AcceptsAWellFormedPackage) {
@@ -164,6 +187,79 @@ TEST(DrawPackageValidator, RejectsZeroByteResourceClaimingContent) {
     auto package = MakeValidPackage();
     package.resources.front().clamped_size = 0;
     package.resources.front().bytes.clear();
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+}
+
+TEST(DrawPackageValidator, AcceptsGeometryReadyPackage) {
+    auto package = MakeValidPackage();
+    AddGeometry(package);
+    std::string error;
+    EXPECT_TRUE(ValidatePackage(package, error)) << error;
+}
+
+TEST(DrawPackageValidator, RejectsGeometryReadinessWithoutVertexBindings) {
+    auto package = MakeValidPackage();
+    package.readiness.geometry_ready = true;
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+}
+
+TEST(DrawPackageValidator, RejectsGeometryReadinessWithUnverifiedVertexResource) {
+    auto package = MakeValidPackage();
+    AddGeometry(package);
+    package.resources.front().status = 0; // guest_memory_observed
+    package.resources.front().bytes.clear();
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+}
+
+TEST(DrawPackageValidator, RejectsIndexedGeometryWithoutIndexBinding) {
+    auto package = MakeValidPackage();
+    AddGeometry(package);
+    package.has_index_binding = false;
+    package.readiness.geometry_ready = true;
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+}
+
+TEST(DrawPackageValidator, RejectsBadIndexWidth) {
+    auto package = MakeValidPackage();
+    AddGeometry(package);
+    package.index_binding.index_size = 3;
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+}
+
+TEST(DrawPackageValidator, RejectsIndexCountBeyondCapturedBytes) {
+    auto package = MakeValidPackage();
+    AddGeometry(package);
+    package.index_binding.index_count = 1000;
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+}
+
+TEST(DrawPackageValidator, RejectsDiagnosticReadinessWithoutGeometry) {
+    auto package = MakeValidPackage();
+    package.readiness.geometry_ready = false;
+    package.readiness.diagnostic_geometry_replay_ready = true;
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+}
+
+TEST(DrawPackageValidator, RejectsFullDrawReadinessWithoutTextures) {
+    auto package = MakeValidPackage();
+    AddGeometry(package);
+    package.readiness.full_draw_replay_ready = true;
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+}
+
+TEST(DrawPackageValidator, RejectsSchemaVersionOne) {
+    // A version 1 package's replay_ready meant shader-buffer completeness only, so it must not be
+    // reinterpreted under the version 2 contract.
+    auto package = MakeValidPackage();
+    package.schema_version = 1;
     std::string error;
     EXPECT_FALSE(ValidatePackage(package, error));
 }

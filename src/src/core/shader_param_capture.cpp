@@ -45,22 +45,44 @@ struct PendingBindings {
 };
 thread_local PendingBindings g_pending_bindings{};
 
+/// Per-draw geometry observation, filled by the production vertex and index binding paths.
+struct PendingGeometry {
+    u32 vertex_count{};
+    VertexBindingRecord vertices[MaxBindingsPerDraw]{};
+    bool has_index{};
+    IndexBindingRecord index{};
+};
+thread_local PendingGeometry g_pending_geometry{};
+
 /// One observed host upload: a guest range copied into a host-visible buffer. The bytes are
 /// retained here, at the moment the production path copied them, because that copy is the
 /// authoritative content the draw reads.
+///
+/// The identity is the sequence plus the host allocation and range. Guest address and size are
+/// consistency checks only: two uploads of the same guest range into different allocations, or into
+/// different offsets of one allocation, are different uploads.
 struct HostUpload {
-    u64 guest_addr{};
-    u64 size{};
-    u64 host_buffer_handle{};
-    u64 host_offset{};
+    UploadKey key{};
     u64 content_hash{};
     u32 retained_bytes{};
-    std::array<u8, 4096> retained{};
+    // The retained prefix must cover a real scene mesh's index buffer, which is far larger than
+    // a UI quad's. 256 KB covers the largest draw in the title-screen sample; a resource beyond
+    // that is reported as partial rather than silently truncated.
+    std::array<u8, 256 * 1024> retained{};
 };
 
-inline constexpr size_t MaxHostUploads = 512;
+// The ring is small because each slot retains a large prefix: 64 slots at 256 KB is 16 MB, which
+// is bounded and still covers the uploads a draw's bindings can reference.
+inline constexpr size_t MaxHostUploads = 64;
+
+/// The upload ring is published under a mutex rather than by atomic index alone. A reader that saw
+/// a slot index before the slot was written would observe a partially published record, and a slot
+/// being replaced concurrently would tear. The lock is held only for the copy in and out of a slot,
+/// never across GPU execution.
+std::mutex g_upload_mutex;
 std::array<HostUpload, MaxHostUploads> g_host_uploads{};
-std::atomic<u32> g_host_upload_count{};
+u64 g_host_upload_sequence{};
+u32 g_host_upload_count{};
 
 /// Retained host bytes live in one pool rather than inside each binding record, so a binding stays
 /// small and the memory cost is bounded by the pool size rather than by records times bytes.
@@ -137,49 +159,66 @@ void EndDrawBindings(DrawSnapshot& snapshot) noexcept {
     g_pending_bindings.count = 0;
 }
 
-void NoteHostUpload(u64 guest_addr, u64 size, const u8* host_bytes, u64 host_buffer_handle,
-                    u64 host_offset) noexcept {
+UploadKey NoteHostUpload(u64 guest_addr, u64 size, const u8* host_bytes,
+                           u64 host_buffer_handle, u64 host_offset) noexcept {
     try {
         if (!g_state.enabled.load(std::memory_order_relaxed))
-            return;
+            return {};
         if (host_bytes == nullptr || size == 0)
-            return;
-        const u32 slot = g_host_upload_count.fetch_add(1, std::memory_order_relaxed);
+            return {};
+
         HostUpload upload{};
-        upload.guest_addr = guest_addr;
-        upload.size = size;
-        upload.host_buffer_handle = host_buffer_handle;
-        upload.host_offset = host_offset;
+        upload.key.guest_addr = guest_addr;
+        upload.key.size = size;
+        upload.key.host_buffer = host_buffer_handle;
+        upload.key.host_offset = host_offset;
         // Retain a bounded prefix of the host copy itself, not a later guest read. The hash covers
         // exactly the bytes retained, so the two always agree.
         upload.retained_bytes = static_cast<u32>(std::min<size_t>(size, upload.retained.size()));
         std::memcpy(upload.retained.data(), host_bytes, upload.retained_bytes);
         upload.content_hash = HashCapturedBytes(upload.retained.data(), upload.retained_bytes);
-        g_host_uploads[slot % MaxHostUploads] = upload;
+
+        std::scoped_lock lock{g_upload_mutex};
+        upload.key.sequence = ++g_host_upload_sequence;
+        g_host_uploads[g_host_upload_count % MaxHostUploads] = upload;
+        ++g_host_upload_count;
+        return upload.key;
     } catch (...) {
         // Observation must never affect the upload path.
+        return {};
     }
 }
 
-bool FindHostUpload(u64 guest_addr, u64 size, u64& host_buffer_handle, u64& host_offset,
-                    u64& content_hash) noexcept {
+bool FindHostUploadForBinding(u64 host_buffer, u64 host_offset, u64 size, u64 guest_addr,
+                              UploadKey& key, u64& content_hash) noexcept {
     try {
         if (!g_state.enabled.load(std::memory_order_relaxed))
             return false;
-        const u32 count = std::min<u32>(g_host_upload_count.load(std::memory_order_relaxed),
-                                        static_cast<u32>(MaxHostUploads));
-        // Search newest first, so a reused range resolves to the most recent upload.
+
+        std::scoped_lock lock{g_upload_mutex};
+        const u32 count = std::min<u32>(g_host_upload_count, static_cast<u32>(MaxHostUploads));
+        // Newest first, so a reused stream-buffer offset resolves to the upload that most recently
+        // landed there rather than an obsolete one.
         for (u32 i = 0; i < count; ++i) {
-            const u32 slot = (g_host_upload_count.load(std::memory_order_relaxed) - 1 - i) %
-                             MaxHostUploads;
+            const u32 slot = (g_host_upload_count - 1 - i) % MaxHostUploads;
             const auto& upload = g_host_uploads[slot];
-            if (upload.guest_addr != guest_addr || upload.size < size)
+            if (upload.key.sequence == 0)
+                continue;
+            // The host allocation and offset are the identity. A guest range re-uploaded into a
+            // different allocation must not resolve to the earlier one.
+            if (upload.key.host_buffer != host_buffer)
+                continue;
+            if (upload.key.host_offset != host_offset)
+                continue;
+            if (upload.key.size < size)
+                continue;
+            // The guest range is a consistency check, not the identity.
+            if (upload.key.guest_addr != guest_addr)
                 continue;
             // The hash covers only the retained prefix, so a larger range cannot be claimed.
             if (upload.retained_bytes < size)
                 continue;
-            host_buffer_handle = upload.host_buffer_handle;
-            host_offset = upload.host_offset;
+            key = upload.key;
             content_hash = upload.content_hash;
             return true;
         }
@@ -189,23 +228,25 @@ bool FindHostUpload(u64 guest_addr, u64 size, u64& host_buffer_handle, u64& host
     }
 }
 
-bool CopyHostUploadBytes(u64 guest_addr, u64 size, u8* out, u64& copied) noexcept {
+bool CopyUploadBytes(const UploadKey& key, u8* out, u64& copied) noexcept {
     try {
         copied = 0;
         if (!g_state.enabled.load(std::memory_order_relaxed) || out == nullptr)
             return false;
-        const u32 count = std::min<u32>(g_host_upload_count.load(std::memory_order_relaxed),
-                                        static_cast<u32>(MaxHostUploads));
+        if (key.sequence == 0)
+            return false;
+
+        std::scoped_lock lock{g_upload_mutex};
+        const u32 count = std::min<u32>(g_host_upload_count, static_cast<u32>(MaxHostUploads));
         for (u32 i = 0; i < count; ++i) {
-            const u32 slot = (g_host_upload_count.load(std::memory_order_relaxed) - 1 - i) %
-                             MaxHostUploads;
+            const u32 slot = (g_host_upload_count - 1 - i) % MaxHostUploads;
             const auto& upload = g_host_uploads[slot];
-            if (upload.guest_addr != guest_addr || upload.size < size)
+            if (upload.key.sequence != key.sequence)
                 continue;
-            if (upload.retained_bytes < size)
+            if (upload.retained_bytes < key.size)
                 return false;
-            std::memcpy(out, upload.retained.data(), static_cast<size_t>(size));
-            copied = size;
+            std::memcpy(out, upload.retained.data(), static_cast<size_t>(key.size));
+            copied = key.size;
             return true;
         }
         return false;
@@ -214,20 +255,20 @@ bool CopyHostUploadBytes(u64 guest_addr, u64 size, u8* out, u64& copied) noexcep
     }
 }
 
-bool RetainHostBytes(u64 guest_addr, u64 size, u32& pool_offset, u32& retained) noexcept {
+bool RetainUploadBytes(const UploadKey& key, u32& pool_offset, u32& retained) noexcept {
     try {
         pool_offset = 0;
         retained = 0;
         if (!g_state.enabled.load(std::memory_order_relaxed))
             return false;
-        const u32 want = static_cast<u32>(std::min<u64>(size, MaxBytesPerResource));
+        const u32 want = static_cast<u32>(std::min<u64>(key.size, MaxBytesPerResource));
         if (want == 0)
             return false;
         const u32 offset = g_retained_used.fetch_add(want, std::memory_order_relaxed);
         if (static_cast<size_t>(offset) + want > g_retained_pool.size())
             return false;
         u64 copied = 0;
-        if (!CopyHostUploadBytes(guest_addr, want, g_retained_pool.data() + offset, copied))
+        if (!CopyUploadBytes(key, g_retained_pool.data() + offset, copied))
             return false;
         pool_offset = offset;
         retained = static_cast<u32>(copied);
@@ -248,6 +289,37 @@ bool ReadRetainedBytes(u32 pool_offset, u32 size, u8* out) noexcept {
     } catch (...) {
         return false;
     }
+}
+
+void BeginDrawGeometry() noexcept {
+    g_pending_geometry.vertex_count = 0;
+    g_pending_geometry.has_index = false;
+    g_pending_geometry.index = {};
+}
+
+void NoteVertexBinding(const VertexBindingRecord& record) noexcept {
+    if (!g_state.enabled.load(std::memory_order_relaxed))
+        return;
+    if (g_pending_geometry.vertex_count >= MaxBindingsPerDraw)
+        return;
+    g_pending_geometry.vertices[g_pending_geometry.vertex_count++] = record;
+}
+
+void NoteIndexBinding(const IndexBindingRecord& record) noexcept {
+    if (!g_state.enabled.load(std::memory_order_relaxed))
+        return;
+    g_pending_geometry.has_index = true;
+    g_pending_geometry.index = record;
+}
+
+void EndDrawGeometry(DrawSnapshot& snapshot) noexcept {
+    snapshot.vertex_binding_count = g_pending_geometry.vertex_count;
+    for (u32 i = 0; i < g_pending_geometry.vertex_count && i < MaxBindingsPerDraw; ++i) {
+        snapshot.vertex_bindings[i] = g_pending_geometry.vertices[i];
+    }
+    snapshot.has_index_binding = g_pending_geometry.has_index;
+    snapshot.index_binding = g_pending_geometry.index;
+    BeginDrawGeometry();
 }
 
 void NoteDrawParams(const DrawSnapshot& snapshot) noexcept {
@@ -444,7 +516,42 @@ void WriteFirstPackage(const char* directory) noexcept {
     try {
         std::scoped_lock lock{g_state.mutex};
         const u32 draws = g_state.draw_count.load(std::memory_order_relaxed);
+        // Pick the draw with the most captured geometry, not the first one. The title screen's
+        // early draws are full-screen quads whose first two components are UVs, which would
+        // demonstrate nothing about geometry reconstruction.
+        u32 best_index = MaxCapturedDraws;
+        u64 best_score = 0;
         for (u32 i = 0; i < MaxCapturedDraws && i < draws; ++i) {
+            const auto& candidate = g_state.draws[i];
+            if (candidate.provenance_id == 0 || candidate.vertex_binding_count == 0)
+                continue;
+            if (!candidate.has_index_binding)
+                continue;
+            // Only consider draws whose geometry is fully resolved: a draw with an unresolved
+            // vertex binding cannot produce a valid package, so it is not a candidate.
+            bool complete = candidate.index_binding.retained_bytes != 0;
+            u64 score = candidate.index_binding.retained_bytes;
+            for (u32 v = 0; v < candidate.vertex_binding_count && v < MaxBindingsPerDraw; ++v) {
+                const auto& vertex = candidate.vertex_bindings[v];
+                if (vertex.retained_bytes == 0) {
+                    complete = false;
+                    break;
+                }
+                score += vertex.retained_bytes;
+            }
+            if (!complete)
+                continue;
+            if (score > best_score) {
+                best_score = score;
+                best_index = i;
+            }
+        }
+        if (best_index == MaxCapturedDraws) {
+            LOG_INFO(Core_Linker, "DERACINE_DRAW_PACKAGE_NONE no draw had captured geometry");
+            return;
+        }
+
+        for (u32 i = best_index; i < best_index + 1; ++i) {
             const auto& draw = g_state.draws[i];
             if (draw.provenance_id == 0)
                 continue;
@@ -514,22 +621,132 @@ void WriteFirstPackage(const char* directory) noexcept {
                 package.bindings.push_back(out);
             }
 
-            // Replay readiness is derived, not asserted: every binding must reference a resource
-            // whose content came from the host.
-            package.replay_ready = !package.bindings.empty();
+            // Geometry: one resource entry per distinct host allocation and range, shared between
+            // bindings that genuinely refer to the same version.
+            std::map<std::tuple<u64, u64, u64>, u32> geometry_by_content;
+            auto add_geometry_resource = [&](u64 host_buffer, u64 host_offset, u64 guest_base,
+                                             u64 guest_size, u64 upload_sequence, u64 content_hash,
+                                             u32 retained_offset, u32 retained_bytes,
+                                             u8 status) -> u32 {
+                if (retained_bytes == 0)
+                    return 0;
+                const auto key = std::make_tuple(host_buffer, host_offset, upload_sequence);
+                if (const auto it = geometry_by_content.find(key);
+                    it != geometry_by_content.end()) {
+                    return it->second;
+                }
+                DrawPackage::Resource resource{};
+                resource.id = next_id++;
+                resource.requested_base = guest_base;
+                resource.requested_size = guest_size;
+                resource.clamped_base = guest_base;
+                resource.clamped_size = guest_size;
+                resource.content_hash = content_hash;
+                resource.status = status;
+                resource.bytes.resize(retained_bytes);
+                if (!ReadRetainedBytes(retained_offset, retained_bytes, resource.bytes.data())) {
+                    resource.bytes.clear();
+                    return 0;
+                }
+                retained += resource.bytes.size();
+                geometry_by_content[key] = resource.id;
+                package.resources.push_back(std::move(resource));
+                return geometry_by_content[key];
+            };
+
+            for (u32 v = 0; v < draw.vertex_binding_count && v < MaxBindingsPerDraw; ++v) {
+                const auto& vertex = draw.vertex_bindings[v];
+                DrawPackage::VertexBinding out{};
+                out.binding = vertex.binding;
+                out.host_buffer = vertex.host_buffer;
+                out.host_offset = vertex.host_offset;
+                out.guest_base = vertex.guest_base;
+                out.guest_size = vertex.guest_size;
+                out.stride = vertex.stride;
+                out.input_rate = vertex.input_rate;
+                out.divisor = vertex.divisor;
+                out.upload_sequence = vertex.upload_sequence;
+                out.content_hash = vertex.content_hash;
+                out.status = vertex.status;
+                out.resource_ref = add_geometry_resource(
+                    vertex.host_buffer, vertex.host_offset, vertex.guest_base, vertex.guest_size,
+                    vertex.upload_sequence, vertex.content_hash, vertex.retained_offset,
+                    vertex.retained_bytes, vertex.status);
+                package.vertex_bindings.push_back(out);
+            }
+
+            if (draw.has_index_binding) {
+                const auto& index = draw.index_binding;
+                DrawPackage::IndexBinding out{};
+                out.host_buffer = index.host_buffer;
+                out.host_offset = index.host_offset;
+                out.guest_base = index.guest_base;
+                out.guest_size = index.guest_size;
+                out.index_size = index.index_size;
+                out.index_count = index.index_count;
+                out.first_index = index.first_index;
+                out.base_vertex = index.base_vertex;
+                out.instance_count = index.instance_count;
+                out.first_instance = index.first_instance;
+                out.primitive_type = index.primitive_type;
+                out.index_type = index.index_type;
+                out.swap_mode = index.swap_mode;
+                out.upload_sequence = index.upload_sequence;
+                out.content_hash = index.content_hash;
+                out.status = index.status;
+                out.resource_ref = add_geometry_resource(
+                    index.host_buffer, index.host_offset, index.guest_base, index.guest_size,
+                    index.upload_sequence, index.content_hash, index.retained_offset,
+                    index.retained_bytes, index.status);
+                package.index_binding = out;
+                package.has_index_binding = true;
+            }
+
+            // Readiness is derived per dimension, not asserted as one flag.
+            package.readiness.shader_buffers_ready = !package.bindings.empty();
             for (const auto& binding : package.bindings) {
                 if (binding.resource_ref == 0)
                     continue;
                 const auto& resource = package.resources[binding.resource_ref - 1];
                 if (resource.status != static_cast<u8>(CaptureStatus::HostContentVerified) &&
                     resource.status != static_cast<u8>(CaptureStatus::HostContentCaptured)) {
-                    package.replay_ready = false;
-                    package.not_ready_reason = "a required resource is guest-observed only";
+                    package.readiness.shader_buffers_ready = false;
                     break;
                 }
             }
-            if (package.bindings.empty()) {
-                package.not_ready_reason = "draw has no bindings";
+
+            package.readiness.geometry_ready = !package.vertex_bindings.empty();
+            for (const auto& vertex : package.vertex_bindings) {
+                if (vertex.resource_ref == 0) {
+                    package.readiness.geometry_ready = false;
+                    break;
+                }
+                const auto& resource = package.resources[vertex.resource_ref - 1];
+                if (resource.status != static_cast<u8>(CaptureStatus::HostContentVerified) &&
+                    resource.status != static_cast<u8>(CaptureStatus::HostContentCaptured)) {
+                    package.readiness.geometry_ready = false;
+                    break;
+                }
+            }
+            if (package.readiness.geometry_ready && package.is_indexed) {
+                if (!package.has_index_binding || package.index_binding.resource_ref == 0) {
+                    package.readiness.geometry_ready = false;
+                }
+            }
+
+            // Textures and pipeline state are not captured by this phase, so those dimensions stay
+            // false and the limitation says why.
+            package.readiness.textures_ready = false;
+            package.readiness.pipeline_state_ready = false;
+            package.readiness.diagnostic_geometry_replay_ready =
+                package.readiness.geometry_ready;
+            package.readiness.full_draw_replay_ready = false;
+            if (package.readiness.diagnostic_geometry_replay_ready) {
+                package.readiness.limitation =
+                    "diagnostic geometry replay only: no textures, no original shaders, no "
+                    "material state";
+            } else {
+                package.readiness.limitation = "geometry is incomplete or not host-verified";
             }
 
             std::string error;
