@@ -1,5 +1,13 @@
 # User-directed priority: C shader resources, then resource ownership, then FD4; A attachment/viewport deferred.
 items:
+  - id: C-007-BOUNDED-SHADER-METADATA-INDEX
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "0x240 validates descriptor inputs and produces successful metadata indices 0..14; 0x3020 extracts bits 2..5 from 32-entry 0x33CA890; C-006 0x33CA910 is a 16-DWORD table"
+    report: "reports/atlas_shader_metadata_index_c007.md"
+    verifier: "tools/atlas/verify_shader_metadata_index_c007.py"
+    next: "Trace producer of 0x33CA890 and selector origin from descriptor +0x14; do not infer live stage identity"
   - id: C-006-SHADER-MASK-SELECTOR
     track: C
     priority: 1
