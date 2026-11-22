@@ -1,5 +1,13 @@
 # Research tasks must be promoted only after actual original-target-byte verification.
 items:
+  - id: A-014-DEFERRED-VIEWPORT-CACHE
+    track: A
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "Original SELF vtable 0x03F26A08 Execute 0x13A6BB0 forwards six viewport scalars to 0x0CB8AE0; context caches six fields and conditionally reserves 12 DWORDs via writer +0x460"
+    report: "reports/atlas_viewport_a014.md"
+    verifier: "tools/atlas/verify_viewport_a014.py"
+    next: "Trace command constructor and viewport producer, cache writeback, FDEs and per-eye provenance; do not infer runtime execution"
   - id: A-013-CONDITIONAL-GRAPHICS-STATE-BUNDLE
     track: A
     priority: 1
