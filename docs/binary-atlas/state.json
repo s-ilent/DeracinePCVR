@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "A-019 dual context dispatch committed to draft PR #1",
+  "github_write_status": "A-020 context resource-release report committed to draft PR #1",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -429,6 +429,25 @@
       "confidence": "high for byte-decoded dual context routing; concrete context types and live reachability unresolved",
       "runtime_observed": false,
       "report": "reports/atlas_mode2_context_dispatch_a019.md"
+    },
+    {
+      "id": "A-020-CONTEXT-RESOURCE-RELEASE",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "vtable_elf_va": "0x03EDFCA0",
+      "vtable_slot": "+0x00",
+      "method_elf_va": "0x0CACDA0",
+      "conditional_writer_elf_va": "0x02F62440",
+      "cache_update_elf_va": "0x0CAB2E0",
+      "release_elf_va": "0x0CACE80",
+      "context_offsets": [
+        "+0x460",
+        "+0x568",
+        "+0x928"
+      ],
+      "confidence": "high for byte-decoded state/cache/refcount behavior; medium for exact destructor kind",
+      "runtime_observed": false,
+      "report": "reports/atlas_context_resource_release_a020.md"
     }
   ],
   "known_false": [],
