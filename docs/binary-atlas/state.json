@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "C-006 report/verifier committed to draft PR #1",
+  "github_write_status": "C-007 report/verifier/state/queue committed to draft research branch",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -611,6 +611,22 @@
       "runtime_observed": false,
       "report": "reports/atlas_shader_mask_selector_c006.md",
       "verifier": "tools/atlas/verify_shader_mask_c006.py"
+    },
+    {
+      "id": "C-007-BOUNDED-SHADER-METADATA-INDEX",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "resolver_elf_va": "0x00000240",
+      "power_two_helper_elf_va": "0x00002EC0",
+      "selector_decoder_elf_va": "0x00003020",
+      "index_predicate_elf_va": "0x00002FE0",
+      "selector_table_elf_va": "0x033CA890",
+      "metadata_table_elf_va": "0x033CA910",
+      "success_index_range": "0..14",
+      "confidence": "high for success-path bound and table; semantic identity unknown",
+      "runtime_observed": false,
+      "report": "reports/atlas_shader_metadata_index_c007.md",
+      "verifier": "tools/atlas/verify_shader_metadata_index_c007.py"
     }
   ],
   "known_false": [],
