@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "A-021 command node construction report committed to draft PR #1",
+  "github_write_status": "C-001 shader resource interface report and verifier committed to draft PR #1",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -471,6 +471,18 @@
       "confidence": "high for queued node construction and reference increments; source C++ class unresolved",
       "runtime_observed": false,
       "report": "reports/atlas_context_node_constructor_a021.md"
+    },
+    {
+      "id": "C-001-SHADER-RESOURCE-INTERFACE",
+      "status": "VERIFIED_STATIC_NEW",
+      "method_elf_va": "0x0CB5130",
+      "resource_vcall_offset": "+0x38",
+      "writer_context_offset": "+0x460",
+      "packet_dwords": 7,
+      "report": "reports/atlas_shader_resource_interface_c001.md",
+      "verifier": "tools/atlas/verify_shader_resource_c001.py",
+      "runtime_observed": false,
+      "confidence": "high for object field accesses and writer contract; medium for shader binding attribution"
     }
   ],
   "known_false": [],
