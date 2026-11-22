@@ -1,5 +1,13 @@
 # User-directed priority: C shader resources, then resource ownership, then FD4; A attachment/viewport deferred.
 items:
+  - id: C-003-NESTED-SHADER-DESCRIPTOR
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "0x0CB57CF conditional nested descriptor +0x20/+0x11/+0x1C/+0x3C feeds distinct 72-byte state packet through context writer +0x460; 0x03091BF0 selects 18 versus 3 DWORDs"
+    report: "reports/atlas_nested_shader_descriptor_c003.md"
+    verifier: "tools/atlas/verify_nested_shader_c003.py"
+    next: "Decode 0x03091BF0 and 0x0CB5A1D abbreviated packet; map shader-stage/resource meaning without runtime inference"
   - id: C-002-DESCRIPTOR-WORD-MASK
     track: C
     priority: 1
@@ -14,52 +22,51 @@ items:
     finding: "0x0CB5130 mode-zero resource vcall +0x38 returns object whose +0x18/+0x20/+0x88 fields feed seven-DWORD writer through context +0x460"
     report: "reports/atlas_shader_resource_interface_c001.md"
     next: "Decode 0x03092D20 transformation of returned-object +0x18 and find virtual +0x38 target producer"
-items:
   - id: A-021-CONTEXT-NODE-CONSTRUCTION
     track: A
-    priority: 1
+    priority: 3
     status: VERIFIED_STATIC
     finding: "0x197588A installs vtable 0x03EDFCA0 on a 0x30-byte queued node; two nested references incremented at 0x19758C8 and 0x19758D4"
     report: "reports/atlas_context_node_constructor_a021.md"
     next: "Recover producer FDE, +0x10/+0x18 payload provenance and command-list Execute/teardown distinction"
   - id: A-020-CONTEXT-RESOURCE-RELEASE
     track: A
-    priority: 1
+    priority: 3
     status: VERIFIED_STATIC
     finding: "Graphics-context table 0x03EDFCA0 first slot 0x0CACDA0 selects resource, emits conditional state, updates slot cache/dirty mask, decrements reference and releases nested pointers"
     report: "reports/atlas_context_resource_release_a020.md"
     next: "Locate vtable constructor and owner of +0x20/+0x28 nested references; resolve command-list context fields"
   - id: A-019-MODE2-DUAL-CONTEXT-DISPATCH
     track: A
-    priority: 1
+    priority: 3
     status: VERIFIED_STATIC
     finding: "Mode-2 local vtable 0x03EDFC00 Execute 0x0CACC90 dispatches via command-list +0x20/context vslot +0x30; global vtable 0x03EDFC80 Execute 0x0CACD70 via command-list +0x28/context vslot +0x00"
     report: "reports/atlas_mode2_context_dispatch_a019.md"
     next: "Resolve concrete context implementations and command-list field ownership, without assuming stereo or live reachability"
   - id: A-018-ALTERNATE-VIEWPORT-MULTILIST
     track: A
-    priority: 1
+    priority: 3
     status: VERIFIED_STATIC
     finding: "0x1404710 enqueues same viewport command 0x03F26A08; mode +0xD8==2 additionally enqueues 0x03EDFC00 locally and 0x03EDFC80 globally"
     report: "reports/atlas_alternate_viewport_a018.md"
     next: "Resolve both extra vtable Execute targets, virtual +0xD8 ownership, and non-2 branch 0x1404C37"
   - id: A-017-PACKED-VIEWPORT-UPSTREAM
     track: A
-    priority: 1
+    priority: 3
     status: VERIFIED_STATIC
     finding: "Original SELF 0x14002A0 scales packed coordinate pairs from +0x70/+0x78 and conditionally calls viewport producer 0x1400A40 or alternate 0x1404710 based on owner +0xD8"
     report: "reports/atlas_viewport_upstream_a017.md"
     next: "Decode alternate 0x1404710 and locate writer of owner +0xD8 and packed input ownership; no stereo assumption"
   - id: A-016-VIEWPORT-INPUT-AND-OWNER-CACHE
     track: A
-    priority: 1
+    priority: 3
     status: VERIFIED_STATIC
     finding: "Original SELF 0x1400A40 takes two packed coordinate qwords from incoming RCX, writes owner +0x30..+0x3C and enqueues viewport payload; earlier 0x1400A98 calls arena helper 0x13D67E0 with zero flags"
     report: "reports/atlas_viewport_source_a016.md"
     next: "Find readers of owner +0x30..+0x3C and callsites passing 16-byte coordinate pair; no per-eye inference"
   - id: A-015-DEFERRED-VIEWPORT-PRODUCER
     track: A
-    priority: 1
+    priority: 3
     status: VERIFIED_STATIC
     finding: "Original SELF 0x1400ACF..0x1400B5B allocates and links 0x03F26A08 viewport command; splits two packed 64-bit coordinate words and sets depth 0.0..1.0"
     report: "reports/atlas_viewport_producer_a015.md"
@@ -67,7 +74,7 @@ items:
     next: "Trace producer callers and packed coordinate source ownership; distinguish generic viewport from per-eye viewport without runtime assumption"
   - id: A-014-DEFERRED-VIEWPORT-CACHE
     track: A
-    priority: 1
+    priority: 3
     status: VERIFIED_STATIC
     finding: "Original SELF vtable 0x03F26A08 Execute 0x13A6BB0 forwards six viewport scalars to 0x0CB8AE0; context caches six fields and conditionally reserves 12 DWORDs via writer +0x460"
     report: "reports/atlas_viewport_a014.md"
@@ -75,7 +82,7 @@ items:
     next: "Trace command constructor and viewport producer, cache writeback, FDEs and per-eye provenance; do not infer runtime execution"
   - id: A-013-CONDITIONAL-GRAPHICS-STATE-BUNDLE
     track: A
-    priority: 1
+    priority: 3
     status: VERIFIED_STATIC
     finding: "Original SELF callee 0x03090310 uses two descriptor predicates to select 6/24 DWORD emission; 0x0CC28E9 passes writer +0x460 and descriptor; capacity callback and 24/96-byte payloads independently decoded"
     report: "reports/atlas_state_bundle_a013.md"
@@ -83,7 +90,7 @@ items:
     next: "Trace descriptor +0x00..+0x30 producer and predicate meanings, then relate output to PS4 GPU registers without guessing"
   - id: A-012-RESOURCE-SCALAR-CACHE-EMISSION
     track: A
-    priority: 1
+    priority: 3
     status: VERIFIED_STATIC
     finding: "Original SELF 0x0CC2766..0x0CC27F9 checks resource +0x1C, compares float +0x20 with converted context cache +0x51C, conditionally emits a 12-byte command through writer +0x460"
     report: "reports/atlas_resource_scalar_a012.md"
@@ -91,7 +98,7 @@ items:
     next: "Trace resource +0x20 producer and adjacent 0x03090310 context operation; do not guess GPU register meaning"
   - id: A-011-RESOURCE-BATCH-REGISTRATION
     track: A
-    priority: 1
+    priority: 3
     status: VERIFIED_STATIC
     finding: "Original SELF block 0x0CC2ADE..0x0CC2C48 snapshots global 0x04496748, stamps one of two resource layouts, and appends paired 16-byte records to context +0x428/+0x438 arrays"
     report: "reports/atlas_resource_batch_a011.md"
@@ -99,7 +106,7 @@ items:
     next: "Trace consumers of paired arrays and global stamp producer; no unverified frame-counter or C++ ownership attribution"
   - id: A-010-DIRECT-CONTEXT-ATTACHMENT
     track: A
-    priority: 1
+    priority: 3
     status: VERIFIED_STATIC
     finding: "Original SELF function 0x0D049F0 selects a global indexed resource, emits dimension-derived state via context writer +0x460, stamps resource +0x68/+0x6C/+0x70, and directly calls attachment context method 0x0CC2420"
     report: "reports/atlas_context_attachment_a010.md"
@@ -107,7 +114,7 @@ items:
     next: "Trace resource table producer and global 0x04496748 writer; determine dimension and resource ownership semantics"
   - id: A-009-ATTACHMENT-BACKING-METADATA
     track: A
-    priority: 1
+    priority: 3
     status: VERIFIED_STATIC
     finding: "Original SELF: attachment binding helper 0x0CC7E00 reads backing +0x3C for graphics-state emission and conditionally initializes +0x08, sets +0x10, and stamps +0x0C from global 0x04496748"
     report: "reports/atlas_attachment_metadata_a009.md"
@@ -115,14 +122,14 @@ items:
     next: "Trace 0x04496748 writer and backing +0x3C producer; determine metadata meaning and lifetime without assuming a frame counter"
   - id: A-005-DEFERRED-ATTACHMENT-COMMAND
     track: A
-    priority: 1
+    priority: 3
     status: VERIFIED_STATIC
     finding: "Original SELF constructor 0x1420F77 installs command vtable 0x03F26A28; Execute 0x13A6A30 forwards eight 0x18-byte descriptors to context method 0x0CC2420, which binds resources through 0x0CC7E00"
     report: "reports/atlas_render_target_command_a005.md"
     constraint: "C++ SetRenderTargets name inferred, not recovered; no runtime reachability"
   - id: A-006-ATTACHMENT-RESOURCE-OWNERSHIP
     track: A
-    priority: 1
+    priority: 3
     status: PARTIAL_VERIFIED_STATIC
     finding: "Original SELF: 0x0CC7E00 calls resource virtual +0x38, reads backing +0x3C, calls 0x0CC9240 which emits 12-byte graphics-state words through context writer +0x460"
     report: "reports/atlas_attachment_backing_a006.md"
@@ -131,7 +138,7 @@ items:
     acceptance: "FDE/vtable producer, backing layout and ownership with multiple original-byte corroborations"
   - id: A-007-ATTACHMENT-STATE-TEMPLATES
     track: A
-    priority: 1
+    priority: 3
     status: VERIFIED_STATIC
     finding: "Original SELF: 0x02F5D0F0 selects one of four graphics-state templates for backing values 1..4 and emits 22-DWORD pair plus separate 3-DWORD command via writer"
     report: "reports/atlas_attachment_template_a007.md"
@@ -139,7 +146,7 @@ items:
     next: "Resolve data table relocations and resource ownership; do not assign GPU packet register names without independent evidence"
   - id: A-008-ATTACHMENT-PROFILE-CONTENTS
     track: A
-    priority: 1
+    priority: 3
     status: VERIFIED_STATIC
     finding: "Original SELF six scalar tables yield four progressive graphics-state profiles and final packed words 0x00108001, 0x0020C002, 0x0030E003, 0x00410004"
     report: "reports/atlas_attachment_profiles_a008.md"
@@ -147,7 +154,7 @@ items:
     next: "Identify attachment backing field +0x3C producer and semantics; exact PS4 GPU register names remain unresolved"
   - id: A-003-INDIRECT-CALLER-OWNERSHIP
     track: A
-    priority: 1
+    priority: 3
     status: READY_STATIC
     target: "Trace source/callers of 0x0CBBEF0 via context vtable +0x4f8, and distinguish method RDI from fourth argument RCX->R13"
     constraint: "Use 1.00 original hash and decode real indirect call instructions plus object/vptr provenance; no inferred runtime reachability"
@@ -161,7 +168,7 @@ items:
     acceptance: "Decoded FDE, call-state differences and upstream type/usage corroboration"
   - id: A-001-CALLER-DISPATCH
     track: A
-    priority: 1
+    priority: 3
     status: BLOCKED_WITH_RESOURCES
     target: "Decode RVA 0x13A68E8 on the separately hashed 01.01 image; determine direct E8 vs indirect vtable+0x4f0 and trace object provenance"
     constraint: "Runtime caller was reported in B3; reconcile 1.00/1.01 RVAs rather than assuming equivalence"
@@ -199,7 +206,7 @@ items:
     acceptance: "Binary-backed field uses, allocation/binding evidence and differentiated shader hash/GPU VA/ELF VA"
   - id: D-001-FD4-BRIDGE
     track: D
-    priority: 6
+    priority: 2
     status: READY_STATIC
     target: "Recover an original-binary FD4Plugin->FD4/dantelion2 ownership edge affecting render/camera/VR state"
     acceptance: "Relocation/xrefs/disassembly plus structure-layout corroboration; no offset transplant from other games"
