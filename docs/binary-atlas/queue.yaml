@@ -1,5 +1,12 @@
-# A-019 original SELF verified mode-2 dual-context dispatch.
+# A-020 original SELF verified context resource release and vtable ownership.
 items:
+  - id: A-020-CONTEXT-RESOURCE-RELEASE
+    track: A
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "Graphics-context table 0x03EDFCA0 first slot 0x0CACDA0 selects resource, emits conditional state, updates slot cache/dirty mask, decrements reference and releases nested pointers"
+    report: "reports/atlas_context_resource_release_a020.md"
+    next: "Locate vtable constructor and owner of +0x20/+0x28 nested references; resolve command-list context fields"
   - id: A-019-MODE2-DUAL-CONTEXT-DISPATCH
     track: A
     priority: 1
