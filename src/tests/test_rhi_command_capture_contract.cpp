@@ -101,8 +101,12 @@ TEST(RhiCommandCaptureContract, PrologueMatchIsScopedToTheCommandId) {
 }
 
 TEST(RhiCommandCaptureContract, CaptureIsBounded) {
+    // The bound is a compile-time array, so it must stay small enough to be a sane static
+    // allocation. It rose from 512 to 16384 because the title screen issues roughly 470 draws per
+    // frame and a 512-record window filled during the health warning before the scene appeared.
     EXPECT_GT(MaxCapturedCommands, 0u);
-    EXPECT_LE(MaxCapturedCommands, 4096u);
+    EXPECT_LE(MaxCapturedCommands, 65536u);
+    EXPECT_GE(MaxCapturedCommands, 4096u);
 }
 
 TEST(RhiCommandCaptureContract, StartDelayIsBounded) {
