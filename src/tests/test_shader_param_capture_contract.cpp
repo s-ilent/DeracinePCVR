@@ -68,16 +68,26 @@ TEST(ShaderParamCaptureContract, ByteBudgetIsBounded) {
 }
 
 TEST(ShaderParamCaptureContract, StatusValuesAreDistinct) {
-    // The exporter distinguishes complete, metadata-only, partial, unsupported and invalid, so a
-    // package can say what it actually has rather than implying completeness.
-    const std::array<CaptureStatus, 5> all{
-        CaptureStatus::Complete, CaptureStatus::MetadataOnly, CaptureStatus::Partial,
-        CaptureStatus::Unsupported, CaptureStatus::Invalid};
+    // The exporter distinguishes guest-memory observation from host-content verification, so a
+    // package can say what it actually established rather than implying completeness.
+    const std::array<CaptureStatus, 7> all{
+        CaptureStatus::GuestMemoryObserved, CaptureStatus::HostContentVerified,
+        CaptureStatus::HostContentCaptured, CaptureStatus::MetadataOnly, CaptureStatus::Partial,
+        CaptureStatus::Unsupported,        CaptureStatus::Invalid};
     for (size_t i = 0; i < all.size(); ++i) {
         for (size_t j = i + 1; j < all.size(); ++j) {
             EXPECT_NE(static_cast<u8>(all[i]), static_cast<u8>(all[j]));
         }
     }
+}
+
+TEST(ShaderParamCaptureContract, GuestObservationIsNotHostVerification) {
+    // The distinction the repair exists for: a guest-memory hash is a weaker claim than the
+    // contents of the host buffer the draw read, and the two must never share a status value.
+    EXPECT_NE(static_cast<u8>(CaptureStatus::GuestMemoryObserved),
+              static_cast<u8>(CaptureStatus::HostContentVerified));
+    EXPECT_NE(static_cast<u8>(CaptureStatus::GuestMemoryObserved),
+              static_cast<u8>(CaptureStatus::HostContentCaptured));
 }
 
 } // namespace

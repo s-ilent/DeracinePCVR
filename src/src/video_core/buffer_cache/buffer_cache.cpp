@@ -12,6 +12,7 @@
 #include "common/scope_exit.h"
 #include "core/emulator_settings.h"
 #include "core/memory.h"
+#include "core/shader_param_capture.h"
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/amdgpu/pm4_packet.h"
 #include "video_core/buffer_cache/buffer_cache.h"
@@ -452,6 +453,12 @@ std::pair<Buffer*, u32> BufferCache::ObtainBuffer(VAddr device_addr, u32 size, b
         const auto [data, offset] = stream_buffer.Map(size, instance.UniformMinAlignment());
         memory->CopySparseMemory(device_addr, data, size);
         stream_buffer.Commit();
+        // This copy is the authoritative content the draw will read, so record it. A later
+        // binding of the same guest range can then be reported as host-verified rather than
+        // guest-observed.
+        Core::ShaderParamCapture::NoteHostUpload(
+            device_addr, size, data,
+            reinterpret_cast<u64>(static_cast<VkBuffer>(stream_buffer.Handle())), offset);
         return {&stream_buffer, static_cast<u32>(offset)};
     }
     if (IsBufferInvalid(buffer_id)) {

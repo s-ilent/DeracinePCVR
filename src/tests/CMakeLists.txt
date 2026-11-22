@@ -1710,3 +1710,28 @@ gtest_discover_tests(shadps4_shader_param_capture_contract_test
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     DISCOVERY_TIMEOUT 60
 )
+
+# ===========================================================================
+# Deracine draw-package schema and validator
+# ===========================================================================
+add_executable(shadps4_draw_package_test
+    test_draw_package.cpp
+)
+
+target_include_directories(shadps4_draw_package_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+)
+
+target_compile_features(shadps4_draw_package_test PRIVATE cxx_std_23)
+
+target_link_libraries(shadps4_draw_package_test PRIVATE
+    GTest::gtest_main
+)
+
+list(APPEND TEST_TARGETS shadps4_draw_package_test)
+
+gtest_discover_tests(shadps4_draw_package_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)

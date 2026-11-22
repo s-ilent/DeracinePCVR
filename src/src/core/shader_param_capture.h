@@ -39,20 +39,31 @@ inline constexpr size_t MaxBytesPerResource = 64 * 1024;
 inline constexpr size_t MaxTotalBytes = 64 * 1024 * 1024;
 
 /// How completely a resource was captured.
+///
+/// `Complete` is deliberately absent: a guest-memory hash does not establish that the bytes are
+/// the contents of the host buffer the draw consumed. The states below say exactly what was
+/// established, so a package cannot imply more than it has.
 enum class CaptureStatus : u8 {
-    /// The full requested range was captured and hashed.
-    Complete = 0,
-    /// Only metadata was recorded; no bytes were taken.
-    MetadataOnly = 1,
-    /// Fewer bytes than requested were captured.
-    Partial = 2,
-    /// The resource type is not supported by this capture.
-    Unsupported = 3,
-    /// The resource was invalid, null or stale at capture time.
-    Invalid = 4,
+    /// Guest bytes were sampled and hashed; host equivalence is unverified.
+    GuestMemoryObserved = 0,
+    /// The bytes correspond to the actual bound host resource, established at upload time.
+    HostContentVerified = 1,
+    /// Verified host-resource bytes were retained for export.
+    HostContentCaptured = 2,
+    /// Descriptor and binding captured without contents.
+    MetadataOnly = 3,
+    /// The required range was not fully available.
+    Partial = 4,
+    /// Capture cannot safely support this resource.
+    Unsupported = 5,
+    /// The observation was inconsistent, stale or invalid.
+    Invalid = 6,
 };
 
-/// One shader buffer binding, as the production binding path resolved it.
+/// One shader buffer binding, recorded at the point production constructs it.
+///
+/// Every field is written by the production binding path for this specific descriptor, so no
+/// relationship is reconstructed afterwards from parallel array indices.
 struct BufferBinding {
     u8 stage{};
     u32 resource_index{};
@@ -64,8 +75,15 @@ struct BufferBinding {
     /// Raw descriptor words, so the original sharp can be reconstructed.
     u32 sharp_words[4]{};
 
-    u64 base_address{};
-    u64 size{};
+    /// Descriptor-requested guest range, before clamping.
+    u64 requested_base{};
+    u64 requested_size{};
+    /// The validated range production actually used, after ClampRangeSize.
+    u64 clamped_base{};
+    u64 clamped_size{};
+    /// True when clamping reduced the range, so an incomplete descriptor is reported as such.
+    bool range_clamped{};
+
     u32 stride{};
     u32 num_records{};
     u8 data_format{};
@@ -80,23 +98,30 @@ struct BufferBinding {
     bool is_written{};
     bool is_formatted{};
     bool used_as_readconst{};
+    bool is_special{};
     u8 buffer_type{};
 
-    /// The Vulkan binding the renderer assigned, and the values it supplied.
+    /// The unified Vulkan descriptor binding the renderer assigned, and the values it supplied.
     u32 vk_binding{};
     u64 vk_buffer_handle{};
     u64 vk_offset{};
     u64 vk_range{};
+    /// The push-constant offset adjustment applied for this binding, if any.
+    u32 push_offset_adjust{};
 
-    /// The buffer-cache resource identity and the guest range it covers.
+    /// The buffer-cache resource identity.
     u64 buffer_id{};
-    u64 buffer_cpu_addr{};
-    u64 buffer_size_bytes{};
 
     /// Capture outcome for this binding.
     u8 capture_status{};
     u32 captured_bytes{};
     u64 captured_hash{};
+    /// Package-local resource id, so two bindings of the same content share one entry.
+    u32 resource_ref{};
+    /// Offset into the retained-byte pool, and how many bytes are there. Zero bytes means no
+    /// content was retained, which is the case when only guest memory was observed.
+    u32 retained_offset{};
+    u32 retained_bytes{};
 };
 
 /// One stage's user-data state at the draw.
@@ -135,6 +160,44 @@ struct DrawSnapshot {
 /// Records one draw's shader parameters and resource metadata. Called from the rasterizer after
 /// the descriptor writes are built, so the values are the ones actually supplied to Vulkan.
 void NoteDrawParams(const DrawSnapshot& snapshot) noexcept;
+
+/// Begins a per-draw binding observation. Called once per draw before the stages are walked, so
+/// the production binding path can append each descriptor as it constructs it.
+void BeginDrawBindings(u64 provenance_id) noexcept;
+
+/// Appends one binding, recorded by the production binding path at the point it constructs the
+/// descriptor. Returns false when the per-draw bound is reached.
+bool RecordBinding(const BufferBinding& binding) noexcept;
+
+/// Ends the observation and hands the collected bindings to the draw snapshot.
+void EndDrawBindings(DrawSnapshot& snapshot) noexcept;
+
+/// Records that a guest range was copied into a host-visible buffer by the production upload
+/// path, so a later binding of that range can be reported as host-verified rather than
+/// guest-observed. `host_bytes` is the destination of the copy, which is the authoritative
+/// content the draw will read.
+void NoteHostUpload(u64 guest_addr, u64 size, const u8* host_bytes, u64 host_buffer_handle,
+                    u64 host_offset) noexcept;
+
+/// Looks up the most recent host upload covering a guest range. Returns false when the range was
+/// never uploaded through a path this capture observed, in which case a binding of it stays
+/// guest-observed.
+[[nodiscard]] bool FindHostUpload(u64 guest_addr, u64 size, u64& host_buffer_handle,
+                                  u64& host_offset, u64& content_hash) noexcept;
+
+/// Copies the retained host bytes for a guest range into `out`. Returns false when the upload was
+/// not observed or the retained prefix is shorter than the request, so a caller never receives a
+/// partial buffer presented as complete.
+[[nodiscard]] bool CopyHostUploadBytes(u64 guest_addr, u64 size, u8* out, u64& copied) noexcept;
+
+/// Reserves space in the retained-byte pool and copies the host bytes there. Returns the pool
+/// offset and the number of bytes stored, or a zero length when the pool is exhausted. The pool is
+/// separate from the per-binding records so a binding stays small.
+[[nodiscard]] bool RetainHostBytes(u64 guest_addr, u64 size, u32& pool_offset,
+                                   u32& retained) noexcept;
+
+/// Reads retained bytes back out of the pool. Used by the package writer.
+[[nodiscard]] bool ReadRetainedBytes(u32 pool_offset, u32 size, u8* out) noexcept;
 
 /// Content hash of a captured byte range. The buffer cache exposes no per-resource generation
 /// counter, so a content hash is the only version identity it can honestly provide.
