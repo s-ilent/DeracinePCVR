@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "C-007 report/verifier/state/queue committed to draft research branch",
+  "github_write_status": "C-008 report/verifier/state/queue committed to draft research branch",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -627,6 +627,35 @@
       "runtime_observed": false,
       "report": "reports/atlas_shader_metadata_index_c007.md",
       "verifier": "tools/atlas/verify_shader_metadata_index_c007.py"
+    },
+    {
+      "id": "C-008-RESOURCE-LAYOUT-PRODUCER",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "producer_elf_va": "0x00005760",
+      "producer_self_offset": "0x00025490",
+      "callers_elf_va": [
+        "0x000092CA",
+        "0x0000963A",
+        "0x0000999A"
+      ],
+      "consumers_elf_va": [
+        "0x00006190",
+        "0x00006F40",
+        "0x00005B90"
+      ],
+      "record_offsets": [
+        "+0x28",
+        "+0x48",
+        "+0x4C",
+        "+0x50",
+        "+0x54",
+        "+0x58"
+      ],
+      "confidence": "high for original byte producer/consumer edges; resource identity, GPU semantics, FDE and runtime use unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_resource_layout_c008.md",
+      "verifier": "tools/atlas/verify_resource_layout_c008.py"
     }
   ],
   "known_false": [],
