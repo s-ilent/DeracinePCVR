@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "A-017 original-byte upstream viewport scaling and alternate dispatch committed to draft PR #1",
+  "github_write_status": "A-018 original-byte alternate viewport multi-list producer committed to draft PR #1",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -400,6 +400,19 @@
       "confidence": "high for scaled packed coordinate producer and conditional alternate dispatch; semantic owner and per-eye usage unknown",
       "runtime_observed": false,
       "report": "reports/atlas_viewport_upstream_a017.md"
+    },
+    {
+      "id": "A-018-ALTERNATE-VIEWPORT-MULTILIST",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "producer_elf_va": "0x1404710",
+      "viewport_vtable_elf_va": "0x03F26A08",
+      "mode_field": "+0xD8",
+      "mode2_local_vtable_elf_va": "0x03EDFC00",
+      "mode2_global_vtable_elf_va": "0x03EDFC80",
+      "confidence": "high for decoded command construction and separate list ownership; Execute identities and runtime unknown",
+      "runtime_observed": false,
+      "report": "reports/atlas_alternate_viewport_a018.md"
     }
   ],
   "known_false": [],
