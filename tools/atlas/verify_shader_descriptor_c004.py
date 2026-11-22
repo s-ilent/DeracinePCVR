@@ -13,7 +13,7 @@ def main():
    if va==0x3091bf0:
     assert b[0x10d:0x112]==bytes.fromhex("c4 42 68 f2 f6")
    else:
-    assert b[0xb:0x10]==bytes.fromhex("85 c0 be 12 00")
+    assert b[0x10:0x15]==bytes.fromhex("85 c0 be 12 00")
    if a.disassemble:
     with tempfile.TemporaryDirectory() as td:
      q=pathlib.Path(td)/"window";q.write_bytes(b)
