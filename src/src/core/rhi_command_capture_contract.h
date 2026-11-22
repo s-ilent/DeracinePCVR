@@ -31,7 +31,11 @@ inline constexpr std::string_view StartDelayEnvironmentVariable =
 inline constexpr u32 MaxStartDelaySeconds = 600;
 
 /// Bounded record count. The capture never allocates and never grows.
-inline constexpr size_t MaxCapturedCommands = 512;
+///
+/// The title screen issues roughly 470 draws per frame across a handful of command types, so a
+/// 512-record bound fills within a fraction of one frame. 16384 covers several frames of the
+/// title screen while staying a fixed, compile-time array.
+inline constexpr size_t MaxCapturedCommands = 16384;
 
 /// The five recovered command Execute wrappers, with their exact 16-byte entry prologues.
 /// Each prologue is displacement-free, so the displaced instructions need no fixups.
