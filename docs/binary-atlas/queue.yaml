@@ -1,5 +1,13 @@
 # Research tasks must be promoted only after actual original-target-byte verification.
 items:
+  - id: A-015-DEFERRED-VIEWPORT-PRODUCER
+    track: A
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "Original SELF 0x1400ACF..0x1400B5B allocates and links 0x03F26A08 viewport command; splits two packed 64-bit coordinate words and sets depth 0.0..1.0"
+    report: "reports/atlas_viewport_producer_a015.md"
+    verifier: "tools/atlas/verify_viewport_producer_a015.py"
+    next: "Trace producer callers and packed coordinate source ownership; distinguish generic viewport from per-eye viewport without runtime assumption"
   - id: A-014-DEFERRED-VIEWPORT-CACHE
     track: A
     priority: 1
