@@ -1,5 +1,12 @@
-# A-018 original SELF verified alternate viewport mode-2 multi-list construction.
+# A-019 original SELF verified mode-2 dual-context dispatch.
 items:
+  - id: A-019-MODE2-DUAL-CONTEXT-DISPATCH
+    track: A
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "Mode-2 local vtable 0x03EDFC00 Execute 0x0CACC90 dispatches via command-list +0x20/context vslot +0x30; global vtable 0x03EDFC80 Execute 0x0CACD70 via command-list +0x28/context vslot +0x00"
+    report: "reports/atlas_mode2_context_dispatch_a019.md"
+    next: "Resolve concrete context implementations and command-list field ownership, without assuming stereo or live reachability"
   - id: A-018-ALTERNATE-VIEWPORT-MULTILIST
     track: A
     priority: 1
