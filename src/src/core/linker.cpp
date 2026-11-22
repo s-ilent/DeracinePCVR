@@ -27,6 +27,7 @@
 #include "core/libraries/sysmodule/sysmodule.h"
 #include "core/linker.h"
 #include "core/rhi_command_capture.h"
+#include "core/shader_param_capture.h"
 #include "core/vertex_input_capture.h"
 #include "core/rhi_entry_probe.h"
 #include "core/memory.h"
@@ -539,6 +540,7 @@ void Linker::Execute(const std::vector<std::string>& args) {
         *module, Common::ElfInfo::Instance().GameSerial(), Common::ElfInfo::Instance().AppVer());
     // The vertex-input snapshot is its own opt-in and only reads the environment.
     VertexInputCapture::TryInstall();
+    ShaderParamCapture::TryInstall();
 
     main_thread.Run([this, module, &args](std::stop_token) {
         Common::SetCurrentThreadName("Game:Main");

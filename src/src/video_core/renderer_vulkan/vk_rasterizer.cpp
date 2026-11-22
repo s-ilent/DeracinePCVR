@@ -6,6 +6,7 @@
 #include "core/known_title.h"
 #include "core/memory.h"
 #include "core/rhi_entry_probe.h"
+#include "core/shader_param_capture.h"
 #include "core/vertex_input_capture.h"
 #include "shader_recompiler/runtime_info.h"
 #include "video_core/amdgpu/liverpool.h"
@@ -595,6 +596,141 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
                                          : 1u);
             }
         }
+
+    // Record the shader parameters and resolved buffer bindings for this draw. This runs after the
+    // descriptor writes were built, so every value is the one actually supplied to Vulkan rather
+    // than a parallel reconstruction.
+    if (Core::RhiEntryProbe::CurrentDrawProvenanceId() != 0) {
+        Core::ShaderParamCapture::DrawSnapshot snapshot{};
+        snapshot.provenance_id = Core::RhiEntryProbe::CurrentDrawProvenanceId();
+        snapshot.primitive_type = static_cast<u32>(liverpool->regs.primitive_type);
+        snapshot.num_indices = liverpool->regs.num_indices;
+        snapshot.num_instances = liverpool->regs.num_instances.NumInstances();
+        snapshot.is_indexed = is_indexed;
+        {
+            const auto& key = pipeline->GetGraphicsKey();
+            snapshot.pipeline_hash = std::hash<GraphicsPipelineKey>{}(key);
+            snapshot.vs_hash =
+                key.stage_hashes[static_cast<u32>(Shader::LogicalStage::Vertex)];
+            snapshot.ps_hash =
+                key.stage_hashes[static_cast<u32>(Shader::LogicalStage::Fragment)];
+        }
+
+        // The push-constant block the renderer will submit, captured as raw words.
+        const auto* push_bytes = reinterpret_cast<const u32*>(&push_data);
+        const u32 push_words =
+            std::min<u32>(sizeof(push_data) / sizeof(u32), 16u);
+
+        for (const auto* stage : pipeline->GetStages()) {
+            if (!stage || snapshot.stage_count >= 3)
+                continue;
+            auto& out = snapshot.stages[snapshot.stage_count++];
+            out.stage = static_cast<u8>(stage->l_stage);
+            out.pgm_hash = stage->pgm_hash;
+            // Only the registers the shader declares are recorded, so a stage that uses four
+            // registers does not produce a 32-register dump.
+            out.user_data_count = static_cast<u32>(
+                std::min<size_t>(stage->user_data.size(), Core::ShaderParamCapture::MaxUserDataRegs));
+            for (u32 r = 0; r < out.user_data_count; ++r) {
+                out.user_data[r] = stage->user_data[r];
+            }
+            out.push_data_words = push_words;
+            for (u32 r = 0; r < push_words; ++r) {
+                out.push_data[r] = push_bytes[r];
+            }
+        }
+
+        // Walk the same binding order the descriptor writes used, so the recorded Vulkan binding
+        // numbers are the ones the renderer assigned rather than the shader's resource indices.
+        u32 unified_binding = 0;
+        for (const auto* stage : pipeline->GetStages()) {
+            if (!stage)
+                continue;
+            for (u32 i = 0; i < stage->buffers.size(); ++i) {
+                if (snapshot.binding_count >= Core::ShaderParamCapture::MaxBindingsPerDraw)
+                    break;
+                const auto& desc = stage->buffers[i];
+                const auto vsharp = desc.GetSharp(*stage);
+                auto& out = snapshot.bindings[snapshot.binding_count++];
+                out.stage = static_cast<u8>(stage->l_stage);
+                out.resource_index = i;
+                out.sharp_idx = desc.sharp_idx;
+                out.sgpr_base = 0;
+                out.dword_offset = 0;
+                std::memcpy(out.sharp_words, &vsharp, sizeof(out.sharp_words));
+                out.base_address = vsharp.base_address;
+                out.size = vsharp.GetSize();
+                out.stride = vsharp.GetStride();
+                out.num_records = vsharp.num_records;
+                out.data_format = vsharp.data_format;
+                out.num_format = vsharp.num_format;
+                out.dst_sel_x = vsharp.dst_sel_x;
+                out.dst_sel_y = vsharp.dst_sel_y;
+                out.dst_sel_z = vsharp.dst_sel_z;
+                out.dst_sel_w = vsharp.dst_sel_w;
+                out.is_storage = desc.IsStorage(vsharp);
+                out.is_written = desc.is_written;
+                out.is_formatted = desc.is_formatted;
+                out.used_as_readconst = desc.used_as_readconst;
+                out.buffer_type = static_cast<u8>(desc.buffer_type);
+                out.vk_binding = unified_binding++;
+                // The descriptor write for this slot carries the resolved Vulkan buffer and range.
+                if (i < buffer_infos.size()) {
+                    out.vk_buffer_handle =
+                        reinterpret_cast<u64>(static_cast<VkBuffer>(buffer_infos[i].buffer));
+                    out.vk_offset = buffer_infos[i].offset;
+                    out.vk_range = buffer_infos[i].range;
+                }
+                if (i < buffer_bindings.size()) {
+                    out.buffer_id = static_cast<u64>(std::get<0>(buffer_bindings[i]).index);
+                }
+                // The buffer cache exposes no per-resource generation counter, so the honest
+                // version identity is the guest range plus a content hash of what was captured.
+                // A resource whose bytes are not safely readable is marked rather than guessed.
+                if (desc.IsSpecial() || vsharp.base_address == 0 || vsharp.GetSize() == 0) {
+                    out.capture_status =
+                        static_cast<u8>(Core::ShaderParamCapture::CaptureStatus::MetadataOnly);
+                } else if (desc.is_written) {
+                    // A GPU-written buffer cannot be copied from guest memory without a readback,
+                    // which this phase does not add.
+                    out.capture_status =
+                        static_cast<u8>(Core::ShaderParamCapture::CaptureStatus::Unsupported);
+                } else {
+                    const u64 size = std::min<u64>(vsharp.GetSize(),
+                                                   Core::ShaderParamCapture::MaxBytesPerResource);
+                    const u64 take = Core::ShaderParamCapture::ReserveCaptureBytes(size);
+                    if (take == 0) {
+                        out.capture_status =
+                            static_cast<u8>(Core::ShaderParamCapture::CaptureStatus::Partial);
+                    } else {
+                        const auto* bytes =
+                            reinterpret_cast<const u8*>(vsharp.base_address);
+                        out.captured_hash = Core::ShaderParamCapture::HashCapturedBytes(bytes, take);
+                        out.captured_bytes = static_cast<u32>(take);
+                        out.capture_status = static_cast<u8>(
+                            take == vsharp.GetSize()
+                                ? Core::ShaderParamCapture::CaptureStatus::Complete
+                                : Core::ShaderParamCapture::CaptureStatus::Partial);
+                    }
+                }
+                snapshot.total_captured_bytes += out.captured_bytes;
+                if (out.capture_status ==
+                    static_cast<u8>(Core::ShaderParamCapture::CaptureStatus::Partial)) {
+                    ++snapshot.partial_resources;
+                } else if (out.capture_status ==
+                           static_cast<u8>(Core::ShaderParamCapture::CaptureStatus::Unsupported)) {
+                    ++snapshot.unsupported_resources;
+                } else if (out.capture_status ==
+                           static_cast<u8>(Core::ShaderParamCapture::CaptureStatus::Invalid)) {
+                    ++snapshot.invalid_resources;
+                }
+            }
+        }
+
+        Core::ShaderParamCapture::NoteDrawParams(snapshot);
+    }
+
+
 
         Core::VertexInputCapture::NoteDrawInputs(snapshot);
         Core::RhiEntryProbe::ClearCurrentDrawProvenance();
@@ -1384,6 +1520,8 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
         set_write.pBufferInfo = &buffer_infos.back();
         ++binding.buffer;
     }
+
+
 }
 
 std::unique_ptr<VideoCore::Buffer> Rasterizer::IsolateReadConstGuestBuffer(VAddr addr, u64 size) {
