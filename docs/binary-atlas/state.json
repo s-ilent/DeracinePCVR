@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "C-002 report and verifier committed to draft PR #1",
+  "github_write_status": "C-003 report/verifier committed to draft PR #1",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -504,6 +504,32 @@
       "runtime_observed": false,
       "report": "reports/atlas_shader_descriptor_mask_c002.md",
       "verifier": "tools/atlas/verify_shader_descriptor_c002.py"
+    },
+    {
+      "id": "C-003-NESTED-SHADER-DESCRIPTOR",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "block_elf_va": "0x0CB55B1..0x0CB5909",
+      "window_elf_va": "0x0CB57CF..0x0CB59CF",
+      "window_self_offset": "0x0CD54FF",
+      "window_sha256": "a2162445681946519c8d2a46e05622bf8e62dd34c54996f066175fa1028f17e3",
+      "nested_descriptor_pointer": "+0x20",
+      "nested_descriptor_offsets": [
+        "+0x11",
+        "+0x1C",
+        "+0x3C"
+      ],
+      "context_writer": "+0x460",
+      "predicate_callee_elf_va": "0x03091BF0",
+      "writer_dwords": [
+        18,
+        3
+      ],
+      "full_packet_bytes": 72,
+      "confidence": "high for instruction/packet mechanics; GPU register and runtime unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_nested_shader_descriptor_c003.md",
+      "verifier": "tools/atlas/verify_nested_shader_c003.py"
     }
   ],
   "known_false": [],
