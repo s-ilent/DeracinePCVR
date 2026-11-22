@@ -1,5 +1,13 @@
 # User-directed priority: C shader resources, then resource ownership, then FD4; A attachment/viewport deferred.
 items:
+  - id: C-005-DESCRIPTOR-FORMAT-CLASSIFIER
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "0x0308F8F0 packs 3 descriptor +0x10 fields through four bitset families and four-entry tables; 0xAB0 gates +0x14 low five bits against exact 22-value membership"
+    report: "reports/atlas_shader_format_classifier_c005.md"
+    verifier: "tools/atlas/verify_shader_format_c005.py"
+    next: "Decode 0x3220/0x3450 stack output and C-004 final cleared-bit range"
   - id: C-004-DESCRIPTOR-MASK-PACKET-SELECTION
     track: C
     priority: 1
