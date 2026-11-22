@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "C-003 report/verifier committed to draft PR #1",
+  "github_write_status": "C-004 report/verifier committed to draft PR #1",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -530,6 +530,27 @@
       "runtime_observed": false,
       "report": "reports/atlas_nested_shader_descriptor_c003.md",
       "verifier": "tools/atlas/verify_nested_shader_c003.py"
+    },
+    {
+      "id": "C-004-DESCRIPTOR-MASK-PACKET-SELECTION",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "helper_elf_va": "0x03091BF0",
+      "caller_elf_va": "0x0CB5872",
+      "abbreviated_packet_elf_va": "0x0CB5A1D",
+      "descriptor_offsets": [
+        "+0x00",
+        "+0x10",
+        "+0x14"
+      ],
+      "emission_dwords": [
+        18,
+        3
+      ],
+      "runtime_observed": false,
+      "confidence": "high for mask-based conditional packet selection; hardware meaning unresolved",
+      "report": "reports/atlas_shader_descriptor_predicate_c004.md",
+      "verifier": "tools/atlas/verify_shader_descriptor_c004.py"
     }
   ],
   "known_false": [],
