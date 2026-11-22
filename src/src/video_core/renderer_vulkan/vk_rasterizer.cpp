@@ -655,8 +655,6 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
                 out.stage = static_cast<u8>(stage->l_stage);
                 out.resource_index = i;
                 out.sharp_idx = desc.sharp_idx;
-                out.sgpr_base = 0;
-                out.dword_offset = 0;
                 std::memcpy(out.sharp_words, &vsharp, sizeof(out.sharp_words));
                 out.base_address = vsharp.base_address;
                 out.size = vsharp.GetSize();

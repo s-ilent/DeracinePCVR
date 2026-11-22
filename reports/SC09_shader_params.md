@@ -3,7 +3,7 @@
 ## Result
 
 Shader user data, buffer bindings and resource contents are captured for verified draws. One
-title-screen run produced **128 draws, 408 bindings, all complete, 186,656 bytes hashed**, with
+title-screen run produced **128 draws, 552 bindings, all complete, 763,600 bytes hashed**, with
 0 dropped, 0 partial, 0 unsupported and 0 invalid.
 
 Every stage uses exactly 16 user-data registers and a 16-word push-constant block.
@@ -158,13 +158,78 @@ The Atlas also notes that `Execute` releases resource references, so a snapshot 
 synchronously. That is consistent with our design: we capture at draw time from the resolved
 descriptor, not by retaining a resource pointer.
 
+## The Atlas A-023 comparison
+
+A-023 reports the shader-map provenance and a deferred upload-command family.
+
+### The shader map
+
+Two binding paths (`0x0CB132A`, `0x0CC372B`) assign `state+0xC468 = shader_resource+0xB0`. The
+generic user-data binder then reads `map+0xC2+2*slot`, which is `shader_resource+0x172+2*slot` for
+stage zero. That is **16 slots of u16**, each holding a register index, with `0xFFFF` for unmapped
+and bit 15 selecting direct PM4 emission versus shadow-register update.
+
+Our capture records `sharp_idx`, which is the index into the shader's flattened user-data buffer
+where the descriptor begins. Across 552 bindings it takes exactly nine values:
+
+| `sharp_idx` | Slot equivalent | Bindings |
+| --- | --- | --- |
+| 0 | 0 | 18 |
+| 4 | 1 | 134 |
+| 8 | 2 | 119 |
+| 12 | 3 | 26 |
+| 16 | 4 | 117 |
+| 20 | 5 | 117 |
+| 24 | 6 | 11 |
+| 28 | 7 | 8 |
+| 32 | 8 | 2 |
+
+Two observations follow, and they are consistent with A-023 rather than contradicting it:
+
+1. **`sharp_idx` is always a multiple of 4**, so it is a DWORD index into the flattened buffer,
+   not a slot number. Dividing by four gives the slot-equivalent index, and all nine values fall
+   inside the 16 slots the Atlas map provides.
+2. **Nine of sixteen slots are in use** in this sample. The map is not fully populated, which is
+   what a `0xFFFF`-for-unmapped design implies.
+
+So the Atlas map is the **slot-to-register indirection**, and our `sharp_idx` is the **resolved
+register offset** after that indirection. They are two views of the same binding, at different
+stages. Our capture already holds the post-indirection value, which is the one a replay needs.
+
+The `state+0xC468` offset matches our existing `ContextShaderStateOffset = 0x468` constant, which
+SC-02 recovered independently. That is a useful cross-check on both findings.
+
+### The deferred upload family
+
+Six Execute methods (`0x0CAAE70`, `0x0CAB100`, `0x0CAB140`, `0x0CAB1C0`, `0x0CAB180`, `0x0CAB200`)
+write through context buffer pointers `+0xAE0` to `+0xB08`, sharing copy routine `0x0CAAEB0`.
+Producer `0x0CC6BA0` snapshots up to 16 bytes into the command-list allocator and enqueues vtable
+`0x03EDF7E0`.
+
+This is a **different mechanism** from anything this phase captures. It is a deferred upload of up
+to 16 bytes into a context buffer, not a shader descriptor binding. It plausibly carries small
+uniform payloads, but nothing in our capture identifies which context buffer a given draw read.
+
+No hooks were added, for the same reason as A-022: the effective values are already captured, and
+this family is a producer path. It becomes relevant when the UE4-provenance question is pursued,
+because it is a candidate for how small constant blocks reach the GPU.
+
+The Atlas notes that the shader-map resource and the separate upload-owner metadata are **not
+proven to be the same object**. Our data does not resolve that either: we observe the resolved
+descriptors, not the objects that produced them.
+
 ## UE4 shader-parameter provenance
 
-Not recovered. The Atlas commands are the strongest candidate for the guest-side write path, and
-the corrected graphics-context vtable at `0x03EDFF18` with the shader recorder at `+0xC8` is the
-strongest candidate for the binding path.
+Not recovered. The strongest candidates are now:
 
-Neither was pursued in this phase, because the effective GPU-side state is complete and the task
+| Candidate | Address | Role |
+| --- | --- | --- |
+| Shader-map binding | `0x0CB132A`, `0x0CC372B` | writes `state+0xC468` |
+| Generic user-data binder | A-022 `0x0CACDA0`, `0x0CACF80` | writes four DWORDs at `resource+0x50` |
+| Deferred upload | `0x0CAAE70` family | up to 16 bytes into context buffers |
+| Shader recorder | `0x0CB5130` at vtable `0x03EDFF18 + 0xC8` | pipeline state |
+
+None was pursued in this phase, because the effective GPU-side state is complete and the task
 prioritised it. The mapping
 `UE4 parameter → PS4 RHI object → GPU descriptor → Vulkan binding` remains open at the first
 arrow.
@@ -175,17 +240,17 @@ arrow.
 | --- | --- |
 | Draws | 128 |
 | Dropped | 0 |
-| Bindings | 408 |
-| Complete | 408 |
+| Bindings | 552 |
+| Complete | 552 |
 | Metadata-only | 0 |
 | Partial | 0 |
 | Unsupported | 0 |
 | Invalid | 0 |
-| Storage-classified | 408 |
-| Read-const | 358 |
+| Storage-classified | 552 |
+| Read-const | 543 |
 | Draws with push constants | 128 |
-| Total bytes hashed | 186,656 |
-| Byte budget | 4,194,304 |
+| Total bytes hashed | 763,600 |
+| Byte budget | 67,108,864 |
 
 ## Limitations
 
@@ -200,6 +265,8 @@ arrow.
 - **`buffer_cpu_addr` and `buffer_bytes` are zero** for every binding, because the buffer-cache
   `Buffer` object was not reachable from the capture point. The guest range is recorded instead,
   which is what the descriptor actually addresses.
+- **`sharp_idx` is a DWORD index, not a slot number.** It is always a multiple of four. Dividing
+  by four gives the slot-equivalent index, which is what the Atlas A-023 map addresses.
 
 ## Next milestone: SC-10
 

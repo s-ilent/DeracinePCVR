@@ -207,15 +207,14 @@ void ExportShaderParams() noexcept {
                 const auto& binding = draw.bindings[b];
                 LOG_INFO(Core_Linker,
                          "DERACINE_SHADER_BINDING provenance_id={} stage={} resource={} "
-                         "sharp_idx={} sgpr_base={} dword_offset={} sharp=[{:#x},{:#x},{:#x},"
+                         "sharp_idx={} sharp=[{:#x},{:#x},{:#x},"
                          "{:#x}] base={:#x} size={} stride={} records={} data_format={} "
                          "num_format={} dst_sel={}{}{}{} storage={} written={} formatted={} "
                          "readconst={} buffer_type={} vk_binding={} vk_buffer={:#x} vk_offset={} "
                          "vk_range={} buffer_id={} buffer_cpu={:#x} buffer_bytes={} status={} "
                          "captured={} hash={:#x}",
                          draw.provenance_id, binding.stage, binding.resource_index,
-                         binding.sharp_idx, binding.sgpr_base, binding.dword_offset,
-                         binding.sharp_words[0], binding.sharp_words[1], binding.sharp_words[2],
+                         binding.sharp_idx, binding.sharp_words[0], binding.sharp_words[1], binding.sharp_words[2],
                          binding.sharp_words[3], binding.base_address, binding.size,
                          binding.stride, binding.num_records, binding.data_format,
                          binding.num_format, binding.dst_sel_x, binding.dst_sel_y,

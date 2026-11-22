@@ -33,8 +33,10 @@ inline constexpr size_t MaxUserDataRegs = 32;
 /// silently truncated.
 inline constexpr size_t MaxBytesPerResource = 64 * 1024;
 
-/// Bounded total bytes captured across the whole run.
-inline constexpr size_t MaxTotalBytes = 4 * 1024 * 1024;
+/// Bounded total bytes captured across the whole run. The title screen binds large buffers (a
+/// single draw can reference 276 KB), so this covers a representative sample without truncating
+/// most of it. A draw that exceeds the remaining budget is reported as partial.
+inline constexpr size_t MaxTotalBytes = 64 * 1024 * 1024;
 
 /// How completely a resource was captured.
 enum class CaptureStatus : u8 {
@@ -54,9 +56,10 @@ enum class CaptureStatus : u8 {
 struct BufferBinding {
     u8 stage{};
     u32 resource_index{};
+    /// Index into the shader's flattened user-data buffer where the descriptor begins. A
+    /// BufferResource carries only this index; it has no separate SGPR base or dword offset, which
+    /// is a property of vertex-fetch attributes instead.
     u32 sharp_idx{};
-    u32 sgpr_base{};
-    u32 dword_offset{};
 
     /// Raw descriptor words, so the original sharp can be reconstructed.
     u32 sharp_words[4]{};
