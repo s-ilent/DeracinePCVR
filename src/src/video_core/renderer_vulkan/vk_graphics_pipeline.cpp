@@ -35,6 +35,12 @@ GraphicsPipeline::GraphicsPipeline(
     std::span<const vk::ShaderModule> modules, SerializationSupport& sdata, bool preloading)
     : Pipeline{instance, scheduler, desc_heap, profile, pipeline_cache}, key{key_},
       fetch_shader{std::move(fetch_shader_)} {
+    // Keep the vertex step rates so a draw-time observer can report the divisors the renderer
+    // actually used, rather than recomputing them from a parallel model.
+    if (runtime_infos.size() > u32(Shader::LogicalStage::Vertex)) {
+        step_rate_0 = runtime_infos[u32(Shader::LogicalStage::Vertex)].vs_info.step_rate_0;
+        step_rate_1 = runtime_infos[u32(Shader::LogicalStage::Vertex)].vs_info.step_rate_1;
+    }
     const vk::Device device = instance.GetDevice();
     std::ranges::copy(infos, stages.begin());
     BuildDescSetLayout(preloading);

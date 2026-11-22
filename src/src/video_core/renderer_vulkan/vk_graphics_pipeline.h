@@ -100,6 +100,15 @@ public:
         return key;
     }
 
+    /// The vertex step rates the pipeline was built with. Exposed so a draw-time observer can
+    /// report the instance divisors the renderer actually used, rather than recomputing them.
+    u32 GetStepRate0() const noexcept {
+        return step_rate_0;
+    }
+    u32 GetStepRate1() const noexcept {
+        return step_rate_1;
+    }
+
     /// Gets the attributes and bindings for vertex inputs.
     template <typename Attribute, typename Binding>
     void GetVertexInputs(VertexInputs<Attribute>& attributes, VertexInputs<Binding>& bindings,
@@ -113,6 +122,8 @@ private:
 private:
     GraphicsPipelineKey key;
     std::optional<const Shader::Gcn::FetchShaderData> fetch_shader{};
+    u32 step_rate_0{};
+    u32 step_rate_1{};
 };
 
 } // namespace Vulkan

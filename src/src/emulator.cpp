@@ -45,6 +45,7 @@
 #include "core/linker.h"
 #include "core/rhi_command_capture.h"
 #include "core/rhi_entry_probe.h"
+#include "core/vertex_input_capture.h"
 #include "core/memory.h"
 #include "core/user_settings.h"
 #ifdef ENABLE_OPENXR_HOST
@@ -100,6 +101,7 @@ void Emulator::Shutdown() {
     // Export the command capture before the log is flushed, so a clean quit still reports it.
     Core::RhiCommandCapture::ExportCapturedCommands();
     Core::RhiEntryProbe::ExportProvenance();
+    Core::VertexInputCapture::ExportVertexInputs();
     Common::Log::Flush();
     if (controllers) {
         controllers->ResetLightbarColors();

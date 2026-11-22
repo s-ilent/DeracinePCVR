@@ -6,6 +6,7 @@
 #include "core/known_title.h"
 #include "core/memory.h"
 #include "core/rhi_entry_probe.h"
+#include "core/vertex_input_capture.h"
 #include "shader_recompiler/runtime_info.h"
 #include "video_core/amdgpu/liverpool.h"
 #include "common/alignment.h"
@@ -516,6 +517,86 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
             regs.color_target_mask.raw, regs.depth_buffer.DepthAddress(),
             static_cast<bool>(regs.depth_control.depth_enable),
             static_cast<bool>(regs.depth_control.depth_write_enable));
+
+        // Capture the effective vertex and index input state for this exact draw. The values come
+        // from the same objects the binding path just used, so the snapshot describes the real
+        // draw rather than a parallel reconstruction.
+        Core::VertexInputCapture::DrawSnapshot snapshot{};
+        snapshot.provenance_id = provenance_id;
+        snapshot.vs_hash =
+            provenance_key.stage_hashes[static_cast<u32>(Shader::LogicalStage::Vertex)];
+        snapshot.ps_hash =
+            provenance_key.stage_hashes[static_cast<u32>(Shader::LogicalStage::Fragment)];
+        snapshot.pipeline_hash = std::hash<GraphicsPipelineKey>{}(provenance_key);
+        snapshot.primitive_type = static_cast<u32>(regs.primitive_type);
+        snapshot.is_indexed = is_indexed;
+        snapshot.num_indices = num_vertices;
+        snapshot.num_instances = num_instances;
+        snapshot.index_offset = regs.index_offset;
+        snapshot.vertex_offset = vertex_offset;
+        snapshot.instance_offset = instance_offset;
+        snapshot.index_type = static_cast<u8>(regs.index_buffer_type.index_type);
+        snapshot.index_swap_mode = static_cast<u8>(regs.index_buffer_type.swap_mode);
+        snapshot.index_base_address = regs.index_base_address.Address<VAddr>();
+        snapshot.index_size =
+            regs.index_buffer_type.index_type == AmdGpu::IndexType::Index16 ? 2u : 4u;
+        snapshot.index_address =
+            snapshot.index_base_address + regs.index_offset * snapshot.index_size;
+        snapshot.index_buffer_size = regs.num_indices * snapshot.index_size;
+        snapshot.color_mask = regs.color_target_mask.raw;
+        snapshot.depth_address = regs.depth_buffer.DepthAddress();
+        snapshot.depth_test = static_cast<bool>(regs.depth_control.depth_enable);
+        snapshot.depth_write = static_cast<bool>(regs.depth_control.depth_write_enable);
+
+        if (fetch_shader) {
+            const u32 step_rate_0 = pipeline->GetStepRate0();
+            const u32 step_rate_1 = pipeline->GetStepRate1();
+            for (const auto& attrib : fetch_shader->attributes) {
+                if (snapshot.attribute_count >= Core::VertexInputCapture::MaxAttributesPerDraw)
+                    break;
+                const auto buffer = attrib.GetSharp(vs_info);
+                const auto step_rate = attrib.GetStepRate();
+                auto& out = snapshot.attributes[snapshot.attribute_count++];
+                out.semantic = attrib.semantic;
+                out.dest_vgpr = attrib.dest_vgpr;
+                out.num_elements = attrib.num_elements;
+                out.sgpr_base = attrib.sgpr_base;
+                out.dword_offset = attrib.dword_offset;
+                out.instance_data = attrib.instance_data;
+                out.inst_offset = attrib.inst_offset;
+                out.data_format = attrib.data_format;
+                out.num_format = attrib.num_format;
+                out.base_address = buffer.base_address;
+                out.stride = buffer.GetStride();
+                out.num_records = buffer.num_records;
+                out.descriptor_data_format = buffer.data_format;
+                out.descriptor_num_format = buffer.num_format;
+                out.dst_sel_x = buffer.dst_sel_x;
+                out.dst_sel_y = buffer.dst_sel_y;
+                out.dst_sel_z = buffer.dst_sel_z;
+                out.dst_sel_w = buffer.dst_sel_w;
+                out.element_size = buffer.element_size;
+                out.index_stride = buffer.index_stride;
+                out.add_tid_enable = buffer.add_tid_enable;
+                // The renderer assigns one binding per semantic and folds the fetch instruction
+                // offset into the buffer address, so the attribute offset is zero.
+                out.binding = attrib.semantic;
+                out.attribute_offset = 0;
+                out.vk_format = static_cast<u32>(LiverpoolToVK::SurfaceFormat(
+                    buffer.GetDataFmt(), buffer.GetNumberFmt()));
+                out.input_rate =
+                    step_rate == Shader::Gcn::VertexAttribute::InstanceIdType::None ? 0u : 1u;
+                out.divisor = step_rate == Shader::Gcn::VertexAttribute::InstanceIdType::OverStepRate0
+                                  ? step_rate_0
+                                  : (step_rate ==
+                                             Shader::Gcn::VertexAttribute::InstanceIdType::
+                                                 OverStepRate1
+                                         ? step_rate_1
+                                         : 1u);
+            }
+        }
+
+        Core::VertexInputCapture::NoteDrawInputs(snapshot);
         Core::RhiEntryProbe::ClearCurrentDrawProvenance();
     }
 
