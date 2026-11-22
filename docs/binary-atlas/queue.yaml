@@ -1,5 +1,12 @@
 # User-directed priority: C shader resources, then resource ownership, then FD4; A attachment/viewport deferred.
 items:
+  - id: C-002-DESCRIPTOR-WORD-MASK
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "0x03092D20 masks descriptor DWORD +0 using fields +4/+6/+0xC/+0x18 and lookup 0x03752FB0; return feeds C-001 packet"
+    report: "reports/atlas_shader_descriptor_mask_c002.md"
+    next: "Resolve 0xAB0 predicate and virtual +0x38 descriptor producer"
   - id: C-001-SHADER-RESOURCE-INTERFACE
     track: C
     priority: 1
