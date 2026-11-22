@@ -1,5 +1,13 @@
 # User-directed priority: C shader resources, then resource ownership, then FD4; A attachment/viewport deferred.
 items:
+  - id: C-008-RESOURCE-LAYOUT-PRODUCER
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "0x5760 constructs validated derived resource layout fields +0x28/+0x48..+0x58; three direct callers 0x92CA/0x963A/0x999A pass output to distinct consumers 0x6190/0x6F40/0x5B90"
+    report: "reports/atlas_resource_layout_c008.md"
+    verifier: "tools/atlas/verify_resource_layout_c008.py"
+    next: "Trace 0x6190/0x6F40/0x5B90 usage of derived fields and establish FDE, guest resource versus GPU address domains"
   - id: C-007-BOUNDED-SHADER-METADATA-INDEX
     track: C
     priority: 1
