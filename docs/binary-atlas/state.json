@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "A-020 context resource-release report committed to draft PR #1",
+  "github_write_status": "A-021 command node construction report committed to draft PR #1",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -448,6 +448,29 @@
       "confidence": "high for byte-decoded state/cache/refcount behavior; medium for exact destructor kind",
       "runtime_observed": false,
       "report": "reports/atlas_context_resource_release_a020.md"
+    },
+    {
+      "id": "A-021-CONTEXT-NODE-CONSTRUCTION",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "constructor_elf_va": "0x197588A",
+      "vtable_elf_va": "0x03EDFCA0",
+      "node_size": "0x30",
+      "node_fields": [
+        "+0x00 vptr",
+        "+0x08 Next",
+        "+0x10 payload pointer",
+        "+0x18 slot",
+        "+0x20 nested reference",
+        "+0x28 refcounted reference"
+      ],
+      "reference_increment_sites": [
+        "0x19758C8",
+        "0x19758D4"
+      ],
+      "confidence": "high for queued node construction and reference increments; source C++ class unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_context_node_constructor_a021.md"
     }
   ],
   "known_false": [],
