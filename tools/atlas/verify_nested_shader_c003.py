@@ -18,8 +18,8 @@ def main():
     assert len(data)==SIZE
     assert hashlib.sha256(data).hexdigest()==EXPECTED_WINDOW
     # Instruction-boundary anchors in independently decoded window.
-    assert data[0x58:0x5d]==bytes.fromhex("e8 79 c3 3d 02") # 0xCB586D -> 0x3091BF0
-    assert data[0x10c:0x111]==bytes.fromhex("e8 37 c3 3d 02") # 0xCB58B4 -> 0x3091BF0
+    assert data[0x9e:0xa3]==bytes.fromhex("e8 79 c3 3d 02") # 0xCB586D -> 0x3091BF0
+    assert data[0xe5:0xea]==bytes.fromhex("e8 37 c3 3d 02") # 0xCB58B4 -> 0x3091BF0
     print("C-003 original SELF and window SHA-256 verified")
     if args.disassemble:
         with tempfile.TemporaryDirectory() as td:
