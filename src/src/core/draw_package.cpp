@@ -168,6 +168,12 @@ bool WritePackage(const Package& package, const std::string& directory) noexcept
             json << "      \"upload_sequence\": " << vertex.upload_sequence << ",\n";
             json << "      \"content_hash\": " << vertex.content_hash << ",\n";
             json << "      \"resource_ref\": " << vertex.resource_ref << ",\n";
+            json << "      \"semantic\": " << vertex.semantic << ",\n";
+            json << "      \"vk_format\": " << vertex.vk_format << ",\n";
+            json << "      \"attr_offset\": " << vertex.attr_offset << ",\n";
+            json << "      \"element_count\": " << vertex.element_count << ",\n";
+            json << "      \"vs_hash\": " << vertex.vs_hash << ",\n";
+            json << "      \"ps_hash\": " << vertex.ps_hash << ",\n";
             json << "      \"status\": \"" << StatusName(vertex.status) << "\"\n";
             json << "    }" << (i + 1 < package.vertex_bindings.size() ? "," : "") << "\n";
         }
@@ -195,6 +201,23 @@ bool WritePackage(const Package& package, const std::string& directory) noexcept
             json << "    \"status\": \"" << StatusName(index.status) << "\"\n";
             json << "  },\n";
         }
+
+        const auto& geo = package.geometry;
+        json << "  \"geometry\": {\n";
+        json << "    \"position_binding\": " << geo.position_binding << ",\n";
+        json << "    \"position_components\": " << geo.position_components << ",\n";
+        json << "    \"position_evidence\": \"" << EscapeJson(geo.position_evidence) << "\",\n";
+        json << "    \"bounds_min\": [" << geo.bounds_min[0] << ", " << geo.bounds_min[1] << ", "
+             << geo.bounds_min[2] << "],\n";
+        json << "    \"bounds_max\": [" << geo.bounds_max[0] << ", " << geo.bounds_max[1] << ", "
+             << geo.bounds_max[2] << "],\n";
+        json << "    \"is_three_dimensional\": "
+             << (geo.is_three_dimensional ? "true" : "false") << ",\n";
+        json << "    \"triangle_count\": " << geo.triangle_count << ",\n";
+        json << "    \"degenerate_triangles\": " << geo.degenerate_triangles << ",\n";
+        json << "    \"unique_referenced_vertices\": " << geo.unique_referenced_vertices << ",\n";
+        json << "    \"nonfinite_vertices\": " << geo.nonfinite_vertices << "\n";
+        json << "  },\n";
 
         json << "  \"readiness\": {\n";
         json << "    \"shader_buffers_ready\": "

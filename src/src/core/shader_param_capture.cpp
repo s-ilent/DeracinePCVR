@@ -11,7 +11,9 @@
 #include <mutex>
 #include <string_view>
 
+#include <functional>
 #include <map>
+#include <set>
 #include <tuple>
 
 #include "common/logging/log.h"
@@ -204,21 +206,32 @@ bool FindHostUploadForBinding(u64 host_buffer, u64 host_offset, u64 size, u64 gu
             const auto& upload = g_host_uploads[slot];
             if (upload.key.sequence == 0)
                 continue;
-            // The host allocation and offset are the identity. A guest range re-uploaded into a
-            // different allocation must not resolve to the earlier one.
+            // The host allocation is the identity. A guest range re-uploaded into a different
+            // allocation must not resolve to the earlier one.
             if (upload.key.host_buffer != host_buffer)
                 continue;
-            if (upload.key.host_offset != host_offset)
+            // The production path uploads merged ranges, so a binding may sit anywhere inside an
+            // upload rather than exactly at its start. Containment is the correct relation: the
+            // binding's host offset must fall inside the upload, and the same delta must hold on
+            // the guest side, which is what proves the two describe the same bytes.
+            if (host_offset < upload.key.host_offset)
                 continue;
-            if (upload.key.size < size)
+            const u64 host_delta = host_offset - upload.key.host_offset;
+            if (host_delta + size > upload.key.size)
                 continue;
-            // The guest range is a consistency check, not the identity.
-            if (upload.key.guest_addr != guest_addr)
+            if (guest_addr < upload.key.guest_addr)
                 continue;
-            // The hash covers only the retained prefix, so a larger range cannot be claimed.
-            if (upload.retained_bytes < size)
+            if (guest_addr - upload.key.guest_addr != host_delta)
+                continue;
+            // The hash covers only the retained prefix, so a range beyond it cannot be claimed.
+            if (host_delta + size > upload.retained_bytes)
                 continue;
             key = upload.key;
+            // The retained bytes start at the upload's own offset, so the caller's slice begins at
+            // host_delta into them.
+            key.host_offset = upload.key.host_offset + host_delta;
+            key.guest_addr = upload.key.guest_addr + host_delta;
+            key.size = size;
             content_hash = upload.content_hash;
             return true;
         }
@@ -243,9 +256,14 @@ bool CopyUploadBytes(const UploadKey& key, u8* out, u64& copied) noexcept {
             const auto& upload = g_host_uploads[slot];
             if (upload.key.sequence != key.sequence)
                 continue;
-            if (upload.retained_bytes < key.size)
+            // A binding may reference a slice of the upload, so the retained bytes are indexed
+            // from the upload's own start rather than from the binding's.
+            if (key.host_offset < upload.key.host_offset)
                 return false;
-            std::memcpy(out, upload.retained.data(), static_cast<size_t>(key.size));
+            const u64 delta = key.host_offset - upload.key.host_offset;
+            if (delta + key.size > upload.retained_bytes)
+                return false;
+            std::memcpy(out, upload.retained.data() + delta, static_cast<size_t>(key.size));
             copied = key.size;
             return true;
         }
@@ -255,10 +273,12 @@ bool CopyUploadBytes(const UploadKey& key, u8* out, u64& copied) noexcept {
     }
 }
 
-bool RetainUploadBytes(const UploadKey& key, u32& pool_offset, u32& retained) noexcept {
+bool RetainUploadBytes(const UploadKey& key, u32& pool_offset, u32& retained,
+                        u64& content_hash) noexcept {
     try {
         pool_offset = 0;
         retained = 0;
+        content_hash = 0;
         if (!g_state.enabled.load(std::memory_order_relaxed))
             return false;
         const u32 want = static_cast<u32>(std::min<u64>(key.size, MaxBytesPerResource));
@@ -272,6 +292,9 @@ bool RetainUploadBytes(const UploadKey& key, u32& pool_offset, u32& retained) no
             return false;
         pool_offset = offset;
         retained = static_cast<u32>(copied);
+        // Hash exactly the bytes retained. For a binding inside a merged upload this is a slice,
+        // and the package's hash must describe the slice rather than the whole upload.
+        content_hash = HashCapturedBytes(g_retained_pool.data() + offset, retained);
         return true;
     } catch (...) {
         return false;
@@ -516,9 +539,16 @@ void WriteFirstPackage(const char* directory) noexcept {
     try {
         std::scoped_lock lock{g_state.mutex};
         const u32 draws = g_state.draw_count.load(std::memory_order_relaxed);
-        // Pick the draw with the most captured geometry, not the first one. The title screen's
-        // early draws are full-screen quads whose first two components are UVs, which would
-        // demonstrate nothing about geometry reconstruction.
+        // Selection is by stable signature, not by provenance id, because ids shift between runs.
+        // A candidate must be a complete indexed draw whose every vertex binding resolved to host
+        // content, and it is scored on how much three-dimensional structure it carries rather than
+        // on raw size: a screen-space quad has one stream and a two-component position, while a
+        // scene mesh has several streams and real 3D formats.
+        const char* override_env = std::getenv("SHADPS4_DERACINE_DRAW_PACKAGE_SELECT");
+        const u64 override_vs = override_env != nullptr && *override_env != '\0'
+                                    ? std::strtoull(override_env, nullptr, 0)
+                                    : 0;
+
         u32 best_index = MaxCapturedDraws;
         u64 best_score = 0;
         for (u32 i = 0; i < MaxCapturedDraws && i < draws; ++i) {
@@ -527,10 +557,14 @@ void WriteFirstPackage(const char* directory) noexcept {
                 continue;
             if (!candidate.has_index_binding)
                 continue;
+            if (override_vs != 0 && candidate.vs_hash != override_vs)
+                continue;
+
             // Only consider draws whose geometry is fully resolved: a draw with an unresolved
             // vertex binding cannot produce a valid package, so it is not a candidate.
             bool complete = candidate.index_binding.retained_bytes != 0;
             u64 score = candidate.index_binding.retained_bytes;
+            u32 three_d_streams = 0;
             for (u32 v = 0; v < candidate.vertex_binding_count && v < MaxBindingsPerDraw; ++v) {
                 const auto& vertex = candidate.vertex_bindings[v];
                 if (vertex.retained_bytes == 0) {
@@ -538,9 +572,39 @@ void WriteFirstPackage(const char* directory) noexcept {
                     break;
                 }
                 score += vertex.retained_bytes;
+                // A three-component float attribute is the shape a position or normal takes. A
+                // two-component one is more often a UV.
+                if (vertex.element_count >= 3) {
+                    ++three_d_streams;
+                }
             }
-            if (!complete)
+            if (!complete) {
+                // Name the binding that failed, so the reason is actionable rather than a count.
+                for (u32 v = 0; v < candidate.vertex_binding_count && v < MaxBindingsPerDraw;
+                     ++v) {
+                    const auto& vertex = candidate.vertex_bindings[v];
+                    if (vertex.retained_bytes != 0)
+                        continue;
+                    LOG_INFO(Core_Linker,
+                             "DERACINE_DRAW_PACKAGE_CANDIDATE provenance_id={} "
+                             "rejected=incomplete binding={} status={} guest_size={} stride={} "
+                             "upload={}",
+                             candidate.provenance_id, vertex.binding, vertex.status,
+                             vertex.guest_size, vertex.stride, vertex.upload_sequence);
+                    break;
+                }
+                if (candidate.index_binding.retained_bytes == 0) {
+                    LOG_INFO(Core_Linker,
+                             "DERACINE_DRAW_PACKAGE_CANDIDATE provenance_id={} "
+                             "rejected=incomplete index status={} guest_size={}",
+                             candidate.provenance_id, candidate.index_binding.status,
+                             candidate.index_binding.guest_size);
+                }
                 continue;
+            }
+            // Weight three-dimensional structure heavily, so a small scene mesh outranks a large
+            // screen-space element.
+            score += static_cast<u64>(three_d_streams) * 1024ull * 1024ull;
             if (score > best_score) {
                 best_score = score;
                 best_index = i;
@@ -668,6 +732,12 @@ void WriteFirstPackage(const char* directory) noexcept {
                 out.upload_sequence = vertex.upload_sequence;
                 out.content_hash = vertex.content_hash;
                 out.status = vertex.status;
+                out.semantic = vertex.semantic;
+                out.vk_format = vertex.vk_format;
+                out.attr_offset = vertex.attr_offset;
+                out.element_count = vertex.element_count;
+                out.vs_hash = vertex.vs_hash;
+                out.ps_hash = vertex.ps_hash;
                 out.resource_ref = add_geometry_resource(
                     vertex.host_buffer, vertex.host_offset, vertex.guest_base, vertex.guest_size,
                     vertex.upload_sequence, vertex.content_hash, vertex.retained_offset,
@@ -700,6 +770,100 @@ void WriteFirstPackage(const char* directory) noexcept {
                     index.retained_bytes, index.status);
                 package.index_binding = out;
                 package.has_index_binding = true;
+            }
+
+            // Interpret the geometry: pick a position candidate, measure its bounds, and count the
+            // triangles. The position choice is evidence-based rather than assumed, and the
+            // evidence is recorded so a reader can disagree with it.
+            {
+                auto& geo = package.geometry;
+                geo.bounds_min[0] = geo.bounds_min[1] = geo.bounds_min[2] = 1e30f;
+                geo.bounds_max[0] = geo.bounds_max[1] = geo.bounds_max[2] = -1e30f;
+
+                // A position candidate is a three- or four-component float attribute whose values
+                // span more than one unit on at least two axes. A UV or a normal does not.
+                u32 best_binding = 0;
+                u32 best_components = 0;
+                float best_span = 0.0f;
+                for (const auto& vertex : package.vertex_bindings) {
+                    if (vertex.resource_ref == 0 || vertex.element_count < 2)
+                        continue;
+                    if (vertex.vk_format != 106 && vertex.vk_format != 109) {
+                        // Only 32-bit float formats are interpreted; anything else would be a
+                        // guess about numeric type.
+                        continue;
+                    }
+                    const auto& resource = package.resources[vertex.resource_ref - 1];
+                    if (resource.bytes.size() < vertex.stride || vertex.stride == 0)
+                        continue;
+                    const u32 count = static_cast<u32>(resource.bytes.size() / vertex.stride);
+                    float lo[3] = {1e30f, 1e30f, 1e30f};
+                    float hi[3] = {-1e30f, -1e30f, -1e30f};
+                    for (u32 v = 0; v < count; ++v) {
+                        for (u32 c = 0; c < 3 && c < vertex.element_count; ++c) {
+                            float value = 0.0f;
+                            std::memcpy(&value,
+                                        resource.bytes.data() + v * vertex.stride + c * 4,
+                                        sizeof(value));
+                            if (!std::isfinite(value)) {
+                                ++geo.nonfinite_vertices;
+                                continue;
+                            }
+                            lo[c] = std::min(lo[c], value);
+                            hi[c] = std::max(hi[c], value);
+                        }
+                    }
+                    // Rank by the second-largest axis span, so a flat quad does not win on one wide
+                    // axis alone.
+                    std::array<float, 3> spans{hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
+                    std::sort(spans.begin(), spans.end(), std::greater<float>());
+                    const float score = spans[1];
+                    if (score > best_span) {
+                        best_span = score;
+                        best_binding = vertex.binding;
+                        best_components = vertex.element_count;
+                        for (u32 c = 0; c < 3; ++c) {
+                            geo.bounds_min[c] = lo[c];
+                            geo.bounds_max[c] = hi[c];
+                        }
+                    }
+                }
+                geo.position_binding = best_binding;
+                geo.position_components = best_components;
+                geo.position_evidence =
+                    "largest second-axis span among 32-bit float attributes";
+                geo.is_three_dimensional = best_span > 1.0f;
+
+                // Triangle statistics from the captured indices.
+                if (package.has_index_binding && package.index_binding.resource_ref != 0) {
+                    const auto& index_resource =
+                        package.resources[package.index_binding.resource_ref - 1];
+                    const u32 width = package.index_binding.index_size;
+                    const u32 count = package.index_binding.index_count;
+                    if ((width == 2 || width == 4) &&
+                        index_resource.bytes.size() >= static_cast<size_t>(count) * width) {
+                        std::vector<u32> indices(count);
+                        for (u32 i = 0; i < count; ++i) {
+                            if (width == 2) {
+                                u16 v = 0;
+                                std::memcpy(&v, index_resource.bytes.data() + i * 2, sizeof(v));
+                                indices[i] = v;
+                            } else {
+                                std::memcpy(&indices[i], index_resource.bytes.data() + i * 4,
+                                            sizeof(u32));
+                            }
+                        }
+                        geo.triangle_count = count / 3;
+                        std::set<u32> unique{indices.begin(), indices.end()};
+                        geo.unique_referenced_vertices = static_cast<u32>(unique.size());
+                        for (u32 t = 0; t + 2 < count; t += 3) {
+                            if (indices[t] == indices[t + 1] || indices[t + 1] == indices[t + 2] ||
+                                indices[t] == indices[t + 2]) {
+                                ++geo.degenerate_triangles;
+                            }
+                        }
+                    }
+                }
             }
 
             // Readiness is derived per dimension, not asserted as one flag.

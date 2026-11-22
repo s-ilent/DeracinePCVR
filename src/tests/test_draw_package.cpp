@@ -72,6 +72,9 @@ void AddGeometry(Package& package) {
     vertex.guest_size = 16;
     vertex.resource_ref = 1;
     vertex.status = 1;
+    vertex.semantic = 0;
+    vertex.vk_format = 106;
+    vertex.element_count = 3;
     package.vertex_bindings.push_back(vertex);
 
     IndexBinding index{};

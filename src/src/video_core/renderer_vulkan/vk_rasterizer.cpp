@@ -1575,10 +1575,12 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
                         // content.
                         u32 pool_offset = 0;
                         u32 retained = 0;
+                        u64 slice_hash = 0;
                         if (Core::ShaderParamCapture::RetainUploadBytes(upload_key, pool_offset,
-                                                                       retained)) {
+                                                                       retained, slice_hash)) {
                             record.retained_offset = pool_offset;
                             record.retained_bytes = retained;
+                            record.captured_hash = slice_hash;
                         }
                     } else {
                         const auto* bytes = reinterpret_cast<const u8*>(vsharp.base_address);

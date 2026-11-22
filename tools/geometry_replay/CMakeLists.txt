@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
-# Standalone diagnostic geometry replay.
+# Standalone diagnostic 3D replay.
 #
 # Deliberately a separate CMake project from the emulator: it links only the Vulkan loader and the
 # C++ standard library, so it cannot accidentally acquire a dependency on shadPS4's renderer,
@@ -12,17 +12,26 @@
 #   cmake --build build-geometry-replay
 
 cmake_minimum_required(VERSION 3.20)
-project(deracine_geometry_replay LANGUAGES CXX)
+project(deracine_scene_replay LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_executable(deracine_geometry_replay main.cpp)
+add_executable(deracine_scene_replay main.cpp)
 
 # Prefer the vendored headers when the tree has them, so the build does not depend on a system SDK.
 set(VULKAN_HEADERS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../src/externals/vulkan-headers/include")
 if(EXISTS "${VULKAN_HEADERS_DIR}/vulkan/vulkan.h")
-    target_include_directories(deracine_geometry_replay PRIVATE "${VULKAN_HEADERS_DIR}")
+    target_include_directories(deracine_scene_replay PRIVATE "${VULKAN_HEADERS_DIR}")
+endif()
+
+# A real JSON parser rather than string search: a multi-stream package has similarly named fields
+# in different objects, and confusing them silently would be worse than refusing the package.
+set(JSON_HEADERS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../src/externals/json/single_include")
+if(EXISTS "${JSON_HEADERS_DIR}/nlohmann/json.hpp")
+    target_include_directories(deracine_scene_replay PRIVATE "${JSON_HEADERS_DIR}")
+else()
+    message(FATAL_ERROR "nlohmann/json not found at ${JSON_HEADERS_DIR}")
 endif()
 
 # The loader is resolved at runtime from the system; only the import library is needed to link.
@@ -30,7 +39,7 @@ endif()
 # exports. That keeps the replay dependent on nothing but the Vulkan runtime that is already there.
 find_library(VULKAN_LOADER vulkan-1)
 if(VULKAN_LOADER)
-    target_link_libraries(deracine_geometry_replay PRIVATE "${VULKAN_LOADER}")
+    target_link_libraries(deracine_scene_replay PRIVATE "${VULKAN_LOADER}")
 elseif(WIN32)
     set(VULKAN_DEF "${CMAKE_BINARY_DIR}/vulkan-1.def")
     set(VULKAN_IMPLIB "${CMAKE_BINARY_DIR}/vulkan-1.lib")
@@ -70,7 +79,7 @@ elseif(WIN32)
                 COMMAND "${LIB_EXE}" "/def:${VULKAN_DEF}" /machine:x64 "/out:${VULKAN_IMPLIB}"
                 RESULT_VARIABLE LIB_RESULT)
             if(LIB_RESULT EQUAL 0)
-                target_link_libraries(deracine_geometry_replay PRIVATE "${VULKAN_IMPLIB}")
+                target_link_libraries(deracine_scene_replay PRIVATE "${VULKAN_IMPLIB}")
             endif()
         endif()
     endif()
@@ -82,7 +91,7 @@ else()
 endif()
 
 if(MSVC)
-    target_compile_options(deracine_geometry_replay PRIVATE /W4)
+    target_compile_options(deracine_scene_replay PRIVATE /W4)
 else()
-    target_compile_options(deracine_geometry_replay PRIVATE -Wall -Wextra)
+    target_compile_options(deracine_scene_replay PRIVATE -Wall -Wextra)
 endif()

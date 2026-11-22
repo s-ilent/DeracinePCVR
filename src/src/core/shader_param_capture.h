@@ -154,6 +154,18 @@ struct VertexBindingRecord {
     u32 retained_offset{};
     u32 retained_bytes{};
     u8 status{};
+
+    /// The attribute this binding feeds, as the production vertex-input construction describes it.
+    /// A binding is one attribute in shadPS4's layout, so these travel with the binding rather than
+    /// in a separate list.
+    u32 semantic{};
+    u32 vk_format{};
+    u32 attr_offset{};
+    u32 element_count{};
+    /// Shader-side identity, for correlating a draw with its vertex shader.
+    u64 vs_hash{};
+    u64 ps_hash{};
+    u64 pipeline_hash{};
 };
 
 /// The index binding as the production path bound it.
@@ -262,8 +274,12 @@ struct UploadKey {
 [[nodiscard]] bool CopyUploadBytes(const UploadKey& key, u8* out, u64& copied) noexcept;
 
 /// Reserves space in the retained-byte pool and copies an exact upload's host bytes there.
-[[nodiscard]] bool RetainUploadBytes(const UploadKey& key, u32& pool_offset,
-                                     u32& retained) noexcept;
+///
+/// `content_hash` receives the hash of the bytes actually retained, which for a binding inside a
+/// merged upload is a slice rather than the whole upload. The package must carry the slice's hash,
+/// because that is what its bytes are.
+[[nodiscard]] bool RetainUploadBytes(const UploadKey& key, u32& pool_offset, u32& retained,
+                                     u64& content_hash) noexcept;
 
 /// Reads retained bytes back out of the pool. Used by the package writer.
 [[nodiscard]] bool ReadRetainedBytes(u32 pool_offset, u32 size, u8* out) noexcept;

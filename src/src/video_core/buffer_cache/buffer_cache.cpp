@@ -190,6 +190,46 @@ void BufferCache::DownloadBufferMemory(Buffer& buffer, VAddr device_addr, u64 si
     }
 }
 
+/// Component count of a Vulkan vertex format, for the capture's own classification. Only the
+/// formats the renderer actually produces for vertex input are named; anything else reports zero
+/// rather than a guess.
+static u32 VertexFormatComponents(vk::Format format) {
+    switch (format) {
+    case vk::Format::eR32Sfloat:
+    case vk::Format::eR32Uint:
+    case vk::Format::eR32Sint:
+        return 1;
+    case vk::Format::eR32G32Sfloat:
+    case vk::Format::eR32G32Uint:
+    case vk::Format::eR32G32Sint:
+    case vk::Format::eR16G16Sfloat:
+    case vk::Format::eR16G16Unorm:
+    case vk::Format::eR16G16Snorm:
+    case vk::Format::eR8G8Unorm:
+    case vk::Format::eR8G8Snorm:
+        return 2;
+    case vk::Format::eR32G32B32Sfloat:
+    case vk::Format::eR32G32B32Uint:
+    case vk::Format::eR32G32B32Sint:
+    case vk::Format::eR16G16B16Sfloat:
+    case vk::Format::eR16G16B16Unorm:
+    case vk::Format::eR16G16B16Snorm:
+        return 3;
+    case vk::Format::eR32G32B32A32Sfloat:
+    case vk::Format::eR32G32B32A32Uint:
+    case vk::Format::eR32G32B32A32Sint:
+    case vk::Format::eR16G16B16A16Sfloat:
+    case vk::Format::eR16G16B16A16Unorm:
+    case vk::Format::eR16G16B16A16Snorm:
+    case vk::Format::eR8G8B8A8Unorm:
+    case vk::Format::eR8G8B8A8Snorm:
+    case vk::Format::eR8G8B8A8Srgb:
+        return 4;
+    default:
+        return 0;
+    }
+}
+
 void BufferCache::BindVertexBuffers(
     const Vulkan::GraphicsPipeline& pipeline,
     boost::container::small_vector<vk::BufferMemoryBarrier2, 16>& barriers) {
@@ -273,6 +313,26 @@ void BufferCache::BindVertexBuffers(
             record.guest_base = buffer.base_address;
             record.guest_size = buffer.GetSize();
             record.stride = buffer.GetStride();
+            // The attribute this binding feeds, as the production vertex-input construction
+            // describes it. shadPS4 binds one attribute per binding, so the index is the semantic.
+            if (i < attributes.size()) {
+                record.semantic = attributes[i].location;
+                record.vk_format = static_cast<u32>(attributes[i].format);
+                record.attr_offset = static_cast<u32>(attributes[i].offset);
+                record.element_count = VertexFormatComponents(attributes[i].format);
+            }
+            if (i < bindings.size()) {
+                record.input_rate = static_cast<u32>(bindings[i].inputRate);
+            }
+            if (i < divisors.size()) {
+                record.divisor = divisors[i].divisor;
+            }
+            // Shader identity, so a package can be selected and reproduced by signature rather
+            // than by a provenance id that shifts between runs.
+            const auto& key = pipeline.GetGraphicsKey();
+            record.vs_hash = key.stage_hashes[static_cast<size_t>(Shader::LogicalStage::Vertex)];
+            record.ps_hash =
+                key.stage_hashes[static_cast<size_t>(Shader::LogicalStage::Fragment)];
             if (buffer.GetSize() > 0) {
                 const auto host_info =
                     std::ranges::find_if(ranges_merged, [&](const BufferRange& range) {
@@ -294,10 +354,12 @@ void BufferCache::BindVertexBuffers(
                         record.content_hash = hash;
                         u32 pool_offset = 0;
                         u32 retained = 0;
+                        u64 slice_hash = 0;
                         if (Core::ShaderParamCapture::RetainUploadBytes(key, pool_offset,
-                                                                       retained)) {
+                                                                       retained, slice_hash)) {
                             record.retained_offset = pool_offset;
                             record.retained_bytes = retained;
+                            record.content_hash = slice_hash;
                             record.status = static_cast<u8>(
                                 retained == buffer.GetSize()
                                     ? Core::ShaderParamCapture::CaptureStatus::HostContentVerified
@@ -406,9 +468,12 @@ void BufferCache::BindIndexBuffer(
             record.content_hash = hash;
             u32 pool_offset = 0;
             u32 retained = 0;
-            if (Core::ShaderParamCapture::RetainUploadBytes(key, pool_offset, retained)) {
+            u64 slice_hash = 0;
+            if (Core::ShaderParamCapture::RetainUploadBytes(key, pool_offset, retained,
+                                                           slice_hash)) {
                 record.retained_offset = pool_offset;
                 record.retained_bytes = retained;
+                record.content_hash = slice_hash;
                 record.status = static_cast<u8>(
                     retained == index_buffer_size
                         ? Core::ShaderParamCapture::CaptureStatus::HostContentVerified

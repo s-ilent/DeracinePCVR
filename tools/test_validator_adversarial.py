@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""Adversarial tests for the independent package validator.
+
+Each case corrupts a copy of a real package in one specific way and asserts that the validator
+rejects it. This is what makes the validator's acceptance meaningful: it is not merely permissive.
+
+Usage: python test_validator_adversarial.py <package-directory>
+"""
+
+import json
+import os
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+VALIDATOR = os.path.join(HERE, "validate_draw_package.py")
+
+
+def run_validator(directory):
+    result = subprocess.run(
+        [sys.executable, VALIDATOR, directory], capture_output=True, text=True)
+    return result.returncode, result.stdout.strip()
+
+
+def load(directory):
+    with open(os.path.join(directory, "package.json"), encoding="utf-8") as handle:
+        package = json.load(handle)
+    with open(os.path.join(directory, "resources.bin"), "rb") as handle:
+        blob = bytearray(handle.read())
+    return package, blob
+
+
+def save(directory, package, blob):
+    with open(os.path.join(directory, "package.json"), "w", encoding="utf-8") as handle:
+        json.dump(package, handle, indent=1)
+    with open(os.path.join(directory, "resources.bin"), "wb") as handle:
+        handle.write(bytes(blob))
+
+
+def main(argv):
+    if len(argv) != 1:
+        print(__doc__)
+        return 2
+    source = argv[0]
+
+    code, out = run_validator(source)
+    if code != 0:
+        print(f"the source package does not validate: {out}")
+        return 1
+    print(f"source package validates: {out}")
+
+    cases = []
+
+    def case(name, mutate):
+        cases.append((name, mutate))
+
+    def corrupt_blob(package, blob):
+        blob[0] ^= 0xFF
+
+    def wrong_schema(package, blob):
+        package["schema_version"] = 1
+
+    def missing_provenance(package, blob):
+        package["provenance_id"] = 0
+
+    def duplicate_resource(package, blob):
+        package["resources"].append(dict(package["resources"][0]))
+
+    def dangling_vertex_ref(package, blob):
+        package["vertex_bindings"][0]["resource_ref"] = 9999
+
+    def bad_format(package, blob):
+        package["vertex_bindings"][0]["vk_format"] = 12345
+
+    def wrong_component_count(package, blob):
+        package["vertex_bindings"][0]["element_count"] = 7
+
+    def attribute_exceeds_stride(package, blob):
+        package["vertex_bindings"][0]["attr_offset"] = 4096
+
+    def zero_stride(package, blob):
+        package["vertex_bindings"][0]["stride"] = 0
+
+    def bad_index_width(package, blob):
+        package["index_binding"]["index_size"] = 3
+
+    def index_count_too_large(package, blob):
+        package["index_binding"]["index_count"] = 10 ** 6
+
+    def degenerate_3d_claim(package, blob):
+        package["geometry"]["bounds_min"] = [0.0, 0.0, 0.0]
+        package["geometry"]["bounds_max"] = [1.0, 1.0, 0.0]
+
+    def inverted_bounds(package, blob):
+        package["geometry"]["bounds_min"], package["geometry"]["bounds_max"] = (
+            package["geometry"]["bounds_max"], package["geometry"]["bounds_min"])
+
+    def wrong_triangle_count(package, blob):
+        package["geometry"]["triangle_count"] += 1
+
+    def wrong_degenerate_count(package, blob):
+        package["geometry"]["degenerate_triangles"] += 1
+
+    def wrong_unique_count(package, blob):
+        package["geometry"]["unique_referenced_vertices"] += 1
+
+    def position_binding_missing(package, blob):
+        package["geometry"]["position_binding"] = 999
+
+    def position_components_mismatch(package, blob):
+        package["geometry"]["position_components"] = 9
+
+    def diagnostic_without_geometry(package, blob):
+        package["readiness"]["geometry_ready"] = False
+
+    def full_draw_without_textures(package, blob):
+        package["readiness"]["full_draw_replay_ready"] = True
+
+    def unverified_vertex_resource(package, blob):
+        ref = package["vertex_bindings"][0]["resource_ref"]
+        for resource in package["resources"]:
+            if resource["id"] == ref:
+                resource["status"] = "guest_memory_observed"
+
+    def truncated_blob(package, blob):
+        del blob[-16:]
+
+    case("corrupted blob byte", corrupt_blob)
+    case("wrong schema version", wrong_schema)
+    case("missing provenance", missing_provenance)
+    case("duplicate resource id", duplicate_resource)
+    case("dangling vertex reference", dangling_vertex_ref)
+    case("unknown vertex format", bad_format)
+    case("wrong component count", wrong_component_count)
+    case("attribute exceeds stride", attribute_exceeds_stride)
+    case("zero stride", zero_stride)
+    case("bad index width", bad_index_width)
+    case("index count too large", index_count_too_large)
+    case("degenerate 3D claim", degenerate_3d_claim)
+    case("inverted bounds", inverted_bounds)
+    case("wrong triangle count", wrong_triangle_count)
+    case("wrong degenerate count", wrong_degenerate_count)
+    case("wrong unique vertex count", wrong_unique_count)
+    case("position binding missing", position_binding_missing)
+    case("position components mismatch", position_components_mismatch)
+    case("diagnostic readiness without geometry", diagnostic_without_geometry)
+    case("full draw readiness without textures", full_draw_without_textures)
+    case("unverified vertex resource", unverified_vertex_resource)
+    case("truncated blob", truncated_blob)
+
+    failures = 0
+    for name, mutate in cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = os.path.join(tmp, "package")
+            shutil.copytree(source, work)
+            package, blob = load(work)
+            mutate(package, blob)
+            save(work, package, blob)
+            code, out = run_validator(work)
+            if code == 0:
+                print(f"  FAIL  {name}: validator accepted a corrupted package")
+                failures += 1
+            else:
+                print(f"  ok    {name}: {out}")
+
+    print()
+    print(f"{len(cases) - failures}/{len(cases)} adversarial cases rejected")
+    return 0 if failures == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

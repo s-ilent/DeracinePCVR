@@ -83,6 +83,16 @@ struct VertexBinding {
     u64 content_hash{};
     u32 resource_ref{};
     u8 status{};
+
+    /// The attribute this binding feeds, as the production vertex-input construction describes it.
+    /// shadPS4 binds one attribute per binding, so the two travel together.
+    u32 semantic{};
+    u32 vk_format{};
+    u32 attr_offset{};
+    u32 element_count{};
+    /// Shader identity, so a package can be selected and reproduced by signature.
+    u64 vs_hash{};
+    u64 ps_hash{};
 };
 
 /// The index binding, with the draw arguments the renderer actually used.
@@ -121,6 +131,28 @@ struct Readiness {
     std::string limitation;
 };
 
+/// How the diagnostic replay should interpret the geometry. This is a documented choice, not a
+/// recovered fact: the game's own transform is not captured.
+struct GeometryInterpretation {
+    /// Binding and component count that the diagnostic renderer treats as object-space position.
+    u32 position_binding{};
+    u32 position_components{};
+    /// How that attribution was established.
+    std::string position_evidence;
+    /// Axis-aligned bounds of the position attribute, in the captured units.
+    float bounds_min[3]{};
+    float bounds_max[3]{};
+    /// Whether the bounds are nondegenerate on all three axes, which is what distinguishes a scene
+    /// mesh from a screen-space element.
+    bool is_three_dimensional{};
+    /// Triangle statistics, computed from the captured indices.
+    u32 triangle_count{};
+    u32 degenerate_triangles{};
+    u32 unique_referenced_vertices{};
+    /// Nonfinite position values found while computing the bounds.
+    u32 nonfinite_vertices{};
+};
+
 struct Package {
     u32 schema_version{SchemaVersion};
     std::string scene;
@@ -139,6 +171,7 @@ struct Package {
     std::vector<VertexBinding> vertex_bindings;
     bool has_index_binding{};
     IndexBinding index_binding{};
+    GeometryInterpretation geometry;
 
     Readiness readiness;
 
