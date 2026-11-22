@@ -1,5 +1,13 @@
 # User-directed priority: C shader resources, then resource ownership, then FD4; A attachment/viewport deferred.
 items:
+  - id: C-009-CPU-RESOURCE-TRANSFER-CONSUMERS
+    track: C
+    priority: 2
+    status: VERIFIED_STATIC
+    finding: "0x6190 and 0x6F40 are matching region-transfer wrappers sharing 0x5B90 address helper and 0x2EC0 classifier; first wrapper has explicit CPU byte/word/dword/qword/16-byte copies"
+    report: "reports/atlas_resource_transfer_c009.md"
+    verifier: "tools/atlas/verify_resource_transfer_c009.py"
+    next: "Decode special paths 0x64D0 and 0x7280, verify transfer direction, FDE bounds and usage of derived layout +0x28/+0x48..+0x58"
   - id: C-008-RESOURCE-LAYOUT-PRODUCER
     track: C
     priority: 1
