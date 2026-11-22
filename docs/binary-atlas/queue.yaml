@@ -1,5 +1,13 @@
 # Research tasks must be promoted only after actual original-target-byte verification.
 items:
+  - id: A-013-CONDITIONAL-GRAPHICS-STATE-BUNDLE
+    track: A
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "Original SELF callee 0x03090310 uses two descriptor predicates to select 6/24 DWORD emission; 0x0CC28E9 passes writer +0x460 and descriptor; capacity callback and 24/96-byte payloads independently decoded"
+    report: "reports/atlas_state_bundle_a013.md"
+    verifier: "tools/atlas/verify_state_bundle_a013.py"
+    next: "Trace descriptor +0x00..+0x30 producer and predicate meanings, then relate output to PS4 GPU registers without guessing"
   - id: A-012-RESOURCE-SCALAR-CACHE-EMISSION
     track: A
     priority: 1
