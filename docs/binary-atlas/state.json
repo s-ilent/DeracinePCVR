@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "A-016 original-byte viewport source and owner-cache finding committed to draft PR #1",
+  "github_write_status": "A-017 original-byte upstream viewport scaling and alternate dispatch committed to draft PR #1",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -382,6 +382,24 @@
       "confidence": "high for instruction-confirmed call and dual coordinate writes; owner/eye identity unknown",
       "runtime_observed": false,
       "report": "reports/atlas_viewport_source_a016.md"
+    },
+    {
+      "id": "A-017-PACKED-VIEWPORT-UPSTREAM",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "caller_elf_va": "0x14002A0",
+      "viewport_callsite_elf_va": "0x140047B",
+      "viewport_target_elf_va": "0x1400A40",
+      "alternate_callsite_elf_va": "0x1400456",
+      "alternate_target_elf_va": "0x1404710",
+      "branch_field": "+0xD8",
+      "packed_input_offsets": [
+        "+0x70",
+        "+0x78"
+      ],
+      "confidence": "high for scaled packed coordinate producer and conditional alternate dispatch; semantic owner and per-eye usage unknown",
+      "runtime_observed": false,
+      "report": "reports/atlas_viewport_upstream_a017.md"
     }
   ],
   "known_false": [],
