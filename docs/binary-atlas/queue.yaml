@@ -1,5 +1,13 @@
 # User-directed priority: C shader resources, then resource ownership, then FD4; A attachment/viewport deferred.
 items:
+  - id: C-004-DESCRIPTOR-MASK-PACKET-SELECTION
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "0x03091BF0 computes a descriptor +0x00 bit mask from +0x10/+0x14 format fields; 0x0CB5872 chooses 18 versus 3 DWORDs; zero path at 0x0CB5A1D emits 12-byte packet"
+    report: "reports/atlas_shader_descriptor_predicate_c004.md"
+    verifier: "tools/atlas/verify_shader_descriptor_c004.py"
+    next: "Decode 0x0308F8F0 and 0xAB0 format predicates and lookup 0x03752FB0; do not infer shader stage or live use"
   - id: C-003-NESTED-SHADER-DESCRIPTOR
     track: C
     priority: 1
