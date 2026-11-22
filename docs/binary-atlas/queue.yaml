@@ -1,5 +1,12 @@
-# A-017 original SELF verified upstream viewport producer; no runtime or stereo attribution.
+# A-018 original SELF verified alternate viewport mode-2 multi-list construction.
 items:
+  - id: A-018-ALTERNATE-VIEWPORT-MULTILIST
+    track: A
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "0x1404710 enqueues same viewport command 0x03F26A08; mode +0xD8==2 additionally enqueues 0x03EDFC00 locally and 0x03EDFC80 globally"
+    report: "reports/atlas_alternate_viewport_a018.md"
+    next: "Resolve both extra vtable Execute targets, virtual +0xD8 ownership, and non-2 branch 0x1404C37"
   - id: A-017-PACKED-VIEWPORT-UPSTREAM
     track: A
     priority: 1
