@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "A-014 original SELF viewport command chain verified; report/checker committed; PR #1 remains draft",
+  "github_write_status": "A-015 viewport command producer and packed-coordinate source verified; report/checker committed; PR #1 remains draft",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -339,6 +339,31 @@
       "runtime_observed": false,
       "report": "reports/atlas_viewport_a014.md",
       "verifier": "tools/atlas/verify_viewport_a014.py"
+    },
+    {
+      "id": "A-015-DEFERRED-VIEWPORT-PRODUCER",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "producer_elf_va": "0x1400ACF",
+      "vtable_lea_elf_va": "0x1400B1E",
+      "vtable_elf_va": "0x03F26A08",
+      "execute_elf_va": "0x13A6BB0",
+      "payload_offsets": [
+        "+0x10",
+        "+0x14",
+        "+0x18",
+        "+0x1C",
+        "+0x20",
+        "+0x24"
+      ],
+      "depth_interval": [
+        0,
+        1
+      ],
+      "confidence": "high for command allocation, linked-list insertion and payload; packed-coordinate owner and runtime reachability unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_viewport_producer_a015.md",
+      "verifier": "tools/atlas/verify_viewport_producer_a015.py"
     }
   ],
   "known_false": [],
