@@ -1,4 +1,12 @@
-# A-021 verified queued context-family command constructor and reference ownership.
+# User-directed priority: C shader resources, then resource ownership, then FD4; A attachment/viewport deferred.
+items:
+  - id: C-001-SHADER-RESOURCE-INTERFACE
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "0x0CB5130 mode-zero resource vcall +0x38 returns object whose +0x18/+0x20/+0x88 fields feed seven-DWORD writer through context +0x460"
+    report: "reports/atlas_shader_resource_interface_c001.md"
+    next: "Decode 0x03092D20 transformation of returned-object +0x18 and find virtual +0x38 target producer"
 items:
   - id: A-021-CONTEXT-NODE-CONSTRUCTION
     track: A
