@@ -71,7 +71,7 @@ def run(path):
         tests.append((f"opcode 0x{a}", code(int(a,16),len(expected))==expected))
     first=[int(h,16)+0x02F5D000 for h in FIRST.split()]
     # Values E078 in SECOND refer to a different page than the others.
-    second=[(0x02F5E000+int(h,16)) if h=="E078" else (0x02F5D000+int(h,16)) for h in SECOND.split()]
+    second=[(0x02F50000+int(h,16)) if h=="E078" else (0x02F5D000+int(h,16)) for h in SECOND.split()]
     for table, targets, label in [(FIRST_TABLE,first,"first"),(SECOND_TABLE,second,"second")]:
         for i,target in enumerate(targets):
             displacement=struct.unpack("<i",code(table+4*i,4))[0]
