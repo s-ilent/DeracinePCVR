@@ -1,3 +1,16 @@
+# C-027 independently verified shared CPU bucket pointer-slot allocator
+  - id: C-027-BUCKET-POINTER-ALLOCATOR
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "0x0C7BD40 converts count to 4-byte allocation, updates pointer slot +0x08; original caller pairs 0x0CC9776/0x0CC978D and 0x0C8F00B/0x0C8F02A"
+    report: "reports/atlas_bucket_allocator_c027.md"
+    verifier: "tools/atlas/verify_bucket_allocator_c027.py"
+  - id: C-028-REGISTRY-CONTEXT-CONSTRUCTOR
+    track: C
+    priority: 1
+    status: READY_STATIC
+    target: "Find constructor initializing context +0x410/+0x418/+0x420; verify ownership and join to 0x0CB87D0 reset"
 # C-026 independently original-SELF verified CPU registry bucket growth and rehash
   - id: C-026-CPU-REGISTRY-BUCKET-REHASH
     track: C
