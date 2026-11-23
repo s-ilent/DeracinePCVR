@@ -1,5 +1,13 @@
 # User-directed priority: C shader resources, then resource ownership, then FD4; A attachment/viewport deferred.
 items:
+  - id: C-012-TRANSFER-DESCRIPTOR-NORMALIZERS
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "0x9460 and 0x97D0 normalize descriptor +0x08/+0x0C/+0x10 under selector +0x28/+0x2C, forward local region descriptor via RCX to opposing transfer entries 0x91C0 and 0x9530"
+    report: "reports/atlas_transfer_wrappers_c012.md"
+    verifier: "tools/atlas/verify_transfer_wrappers_c012.py"
+    next: "Enumerate both 16-entry jump tables and locate original descriptor producer; shader virtual +0x38 owner remains higher semantic-value target"
   - id: C-011-TRANSFER-POINTER-ABI
     track: C
     priority: 1
