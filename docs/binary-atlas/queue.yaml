@@ -1,10 +1,24 @@
 # User-directed priority: C shader resources, then resource ownership, then FD4; A attachment/viewport deferred.
 items:
+  - id: C-015-SHADER-MODE-EMISSION
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "Mode 1 and 5 produce aligned variable record, 24-byte mode-specific record and 28-byte trailing record; constants 0x00038528C0044700 vs 0x00038504C0044700"
+    report: "reports/atlas_shader_emission_c015.md"
+    verifier: "tools/atlas/verify_shader_emission_c015.py"
+    next: "Resolve resource virtual +0x38 producer and returned-object +0x08/+0x18/+0x20/+0x88 ownership; do not infer GPU VA"
+  - id: C-016-SHADER-RESOURCE-VTABLE-PRODUCER
+    track: C
+    priority: 1
+    status: READY_STATIC
+    target: "Find concrete vtable slot +0x38 target used at 0x0CB5237 and 0x0CB82CC, with allocation, FDE and multiple returned-object field uses"
+    acceptance: "Independently decoded original-byte vtable relocation, constructor/producer and consumer field edges, no guessed C++ name"
   - id: C-014-SHADER-MODE-DISPATCH
     track: C
     priority: 1
     status: VERIFIED_STATIC
-    finding: "0x0CB5130 mode table routes 0/2/4 to shared resource path, 1 to virtual +0x38 update and six-DWORD writer, 3 to early return, 5 to separate six-DWORD writer"
+    finding: "0x0CB5130 mode table routes 0/2/4 to shared resource path, 1 to virtual +0x38 update and multi-phase writer, 3 to early return, 5 to separate multi-phase writer"
     report: "reports/atlas_shader_modes_c014.md"
     verifier: "tools/atlas/verify_shader_modes_c014.py"
     next: "Find concrete vtable +0x38 resource producer, allocation and owner; correlate mode-specific operations with SC-09 without asserting runtime use"
@@ -288,7 +302,7 @@ items:
     acceptance: "Independently verified original target edges and explicit distinction from public UE4 reference"
   - id: C-001-SHADER-RESOURCE
     track: C
-    priority: 5
+    priority: 1
     status: READY_STATIC
     target: "Trace graphics shader-state slot to guest resource ownership, uniform descriptor construction and program identity"
     acceptance: "Binary-backed field uses, allocation/binding evidence and differentiated shader hash/GPU VA/ELF VA"
