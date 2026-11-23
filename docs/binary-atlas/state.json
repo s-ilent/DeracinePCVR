@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "C-017 report/verifier/state/queue committed to research branch",
+  "github_write_status": "C-018 report/verifier/state/queue committed to research branch",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -855,6 +855,25 @@
       "runtime_observed": false,
       "report": "reports/atlas_shader_context_cache_c017.md",
       "verifier": "tools/atlas/verify_shader_context_cache_c017.py"
+    },
+    {
+      "id": "C-018-DESCRIPTOR-CONSUMER-SEMANTICS",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "functions_elf_va": [
+        "0x02F62A40",
+        "0x02F62BD0"
+      ],
+      "lookup_offsets": [
+        "+0x22",
+        "+0x82"
+      ],
+      "record_bytes": 48,
+      "cache_write_bytes": 32,
+      "confidence": "high for signed-word branch, CPU cache versus writer record; stage attribution unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_descriptor_consumers_c018.md",
+      "verifier": "tools/atlas/verify_descriptor_consumers_c018.py"
     }
   ],
   "known_false": [],
