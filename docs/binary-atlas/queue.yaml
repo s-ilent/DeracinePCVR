@@ -8,7 +8,20 @@
     next: "Trace producer of enclosing-object +0x218 table and r15 resource-array allocation/bounds"
 # User-directed priority: C shader resources, then resource ownership, then FD4; A attachment/viewport deferred.
 items:
-  - id: C-020-FOUR-DWORD-DESCRIPTOR-CONSUMER
+  - id: C-022-RESOURCE-KEYED-LOOKUP
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "0x0CAC030 prioritizes resource +0x30 virtual descriptor, +0x28, +0x38 and performs keyed chained lookup in context +0x3D8/+0x410/+0x418/+0x420"
+    report: "reports/atlas_resource_keyed_lookup_c022.md"
+    verifier: "tools/atlas/verify_resource_keyed_lookup_c022.py"
+    next: "Trace keyed registry construction and mutation to distinguish binding cache from resource validation"
+  - id: C-023-RESOURCE-KEYED-REGISTRY-PRODUCER
+    track: C
+    priority: 1
+    status: READY_STATIC
+    target: "Find constructor and mutation for +0x3D8/+0x410/+0x418/+0x420 in 0x0CAC030 context"
+- id: C-020-FOUR-DWORD-DESCRIPTOR-CONSUMER
     track: C
     priority: 1
     status: VERIFIED_STATIC
