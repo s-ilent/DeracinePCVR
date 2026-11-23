@@ -1,5 +1,13 @@
 # User-directed priority: C shader resources, then resource ownership, then FD4; A attachment/viewport deferred.
 items:
+  - id: C-013-TRANSFER-SELECTOR-EXHAUSTIVE
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "Original two 16-entry relative tables accept only selectors 1,4,8,16 (when gated), normalize 8-wide or 4x4 blocks, and reject 12 other in-range cases"
+    report: "reports/atlas_transfer_selector_c013.md"
+    verifier: "tools/atlas/verify_transfer_selector_c013.py"
+    next: "Prioritize shader virtual +0x38 producer at 0x0CB5130; descriptor +0x28/+0x2C owner is secondary"
   - id: C-012-TRANSFER-DESCRIPTOR-NORMALIZERS
     track: C
     priority: 1
