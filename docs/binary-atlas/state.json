@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "C-023 report/verifier/state/queue committed to research branch",
+  "github_write_status": "C-024 report/verifier/state/queue committed to research branch",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -977,6 +977,18 @@
       "runtime_observed": false,
       "report": "reports/atlas_registry_reset_c023.md",
       "verifier": "tools/atlas/verify_registry_reset_c023.py"
+    },
+    {
+      "id": "C-024-CPU-REGISTRY-REMOVAL",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "block_elf_va": "0x0CB80D0..0x0CB828B",
+      "self_offset": "0x0CD7E00..0x0CD7FBB",
+      "window_sha256": "b61b2c4cc5e2461401b002b86327dc4530a530fb62e33f91549f3806aeab60e9",
+      "confidence": "high for removal/free-list mutation; enclosing FDE and exact owner unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_registry_removal_c024.md",
+      "verifier": "tools/atlas/verify_registry_removal_c024.py"
     }
   ],
   "known_false": [],
