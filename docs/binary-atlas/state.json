@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "C-013 report/verifier/state/queue committed to draft research branch",
+  "github_write_status": "C-014 report/verifier/state/queue committed to draft research branch",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -773,6 +773,28 @@
       "verifier": "tools/atlas/verify_transfer_selector_c013.py",
       "runtime_observed": false,
       "confidence": "high for original jump-table control flow; unknown semantic format IDs"
+    },
+    {
+      "id": "C-014-SHADER-MODE-DISPATCH",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "dispatch_elf_va": "0x0CB51BF",
+      "table_elf_va": "0x035C3980",
+      "targets_elf_va": [
+        "0x0CB51E0",
+        "0x0CB82B4",
+        "0x0CB51E0",
+        "0x0CB8637",
+        "0x0CB51E0",
+        "0x0CB846C"
+      ],
+      "mode_1_virtual_offset": "+0x38",
+      "mode_1_returned_object_write": "+0x08",
+      "mode_1_and_5_writer_dwords": 6,
+      "confidence": "high for exact modes, object write, capacity and early-return; shader stage and runtime unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_shader_modes_c014.md",
+      "verifier": "tools/atlas/verify_shader_modes_c014.py"
     }
   ],
   "known_false": [],
