@@ -1,3 +1,16 @@
+# C-026 independently original-SELF verified CPU registry bucket growth and rehash
+  - id: C-026-CPU-REGISTRY-BUCKET-REHASH
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "0x0CC9767 writes +0x48 capacity, calls 0x0C7BD40 twice; -1 bucket reset and active-bitset-driven rehash through 0x0CC99B7"
+    report: "reports/atlas_registry_rehash_c026.md"
+    verifier: "tools/atlas/verify_registry_rehash_c026.py"
+  - id: C-027-BUCKET-ALLOCATION-HELPER
+    track: C
+    priority: 1
+    status: READY_STATIC
+    target: "0x0C7BD40 FDE, multiple callers, inline +0x38 vs heap +0x40 allocation contract and constructor"
 # C-025 verified original SELF CPU keyed registry insertion, 2026-11-24.
   - id: C-025-REGISTRY-INSERT-PRODUCER
     track: C
@@ -6,11 +19,6 @@
     finding: "0x0CC8558 -> 0x0CC93D0 inserts CPU key into context+0x3D8 registry"
     report: "reports/atlas_registry_insert_c025.md"
     verifier: "tools/atlas/verify_registry_insert_c025.py"
-  - id: C-026-REGISTRY-REHASH-AND-OWNER
-    track: C
-    priority: 1
-    status: READY_STATIC
-    target: "Decode remainder of 0x0CC93D0 duplicate-key and rehash path, FDE, constructor of +0x410/+0x420"
   - id: C-021-THREE-RESOURCE-DISPATCH-STREAMS
     track: C
     priority: 1
