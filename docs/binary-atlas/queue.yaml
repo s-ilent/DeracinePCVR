@@ -1,5 +1,13 @@
 # User-directed priority: C shader resources, then resource ownership, then FD4; A attachment/viewport deferred.
 items:
+  - id: C-019-DESCRIPTOR-SELECTOR-REGISTER-OFFSETS
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "Both descriptor consumers use seven-entry 0x037530B0 selector table; emitted control DWORD = (WORD & 0x3FFF) + table[ESI] - 0x2C00; ESI=0 base 0x240"
+    report: "reports/atlas_descriptor_selector_c019.md"
+    verifier: "tools/atlas/verify_descriptor_selector_c019.py"
+    next: "Recover +0xC180 WORD-table producer and register-definition join without assuming stage identity"
   - id: C-019-DESCRIPTOR-TABLE-PRODUCER
     track: C
     priority: 1
