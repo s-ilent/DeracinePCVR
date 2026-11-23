@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "C-028 report/verifier/state/queue committed to research branch",
+  "github_write_status": "C-029 report/verifier/state/queue committed to research branch",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -1042,6 +1042,20 @@
       "runtime_observed": false,
       "report": "reports/atlas_registry_second_producer_c028.md",
       "verifier": "tools/atlas/verify_registry_second_producer_c028.py"
+    },
+    {
+      "id": "C-029-CLASSIFIER-BITCLEAR",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "entry_elf_va": "0x0308FE70",
+      "self_offset": "0x030AFBA0",
+      "consumer_elf_va": "0x0CC2821",
+      "selector_table_elf_va": "0x035AF480",
+      "result": "returns input DWORD +0x08 with conditional contiguous mask cleared; C-028 shifts result by eight before CPU registry insertion",
+      "confidence": "high for bit clearing; shader semantics unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_classifier_bitclear_c029.md",
+      "verifier": "tools/atlas/verify_classifier_bitclear_c029.py"
     }
   ],
   "known_false": [],
