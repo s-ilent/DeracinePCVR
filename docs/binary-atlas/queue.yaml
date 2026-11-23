@@ -1,5 +1,19 @@
 # User-directed priority: C shader resources, then resource ownership, then FD4; A attachment/viewport deferred.
 items:
+  - id: C-017-SHADER-CONTEXT-CACHE-TRANSITION
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "0x0CB4AF3 selects resource state, clears context +0x448/+0x450 cache, updates writer +0xC388/+0xC530 and calls two descriptor consumers"
+    report: "reports/atlas_shader_context_cache_c017.md"
+    verifier: "tools/atlas/verify_shader_context_cache_c017.py"
+    next: "Decode 0x02F62A40 and 0x02F62BD0 stage-specific selector behavior at selected entry +0xBC/+0xC0"
+  - id: C-018-DESCRIPTOR-CONSUMER-SEMANTICS
+    track: C
+    priority: 1
+    status: READY_STATIC
+    target: "Independently trace 0x02F62A40 versus 0x02F62BD0 and WORD selectors +0xBC/+0xC0 to per-stage user data or resource table semantics"
+    acceptance: "Original-byte decoded caller/callee edges, FDE, field provenance and exact SELF offsets; no assumed GPU VA"
   - id: C-016-PAIRED-SHADER-RESOURCE-DESCRIPTORS
     track: C
     priority: 1
