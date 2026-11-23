@@ -8,4 +8,4 @@ with p.open("rb") as f:
     f.seek(0xCE9100)
     d=f.read(0x1E8)
 assert hashlib.sha256(d).hexdigest()=="70f50e7c6fa211b9374705d3254521a2aa2b70864b034219430e20e926f8710f"
-print("C-025 original SELF insertion interval PASS")
+with p.open("rb") as f:\n    f.seek(0xCE8288)\n    caller=f.read(0x29)\nassert hashlib.sha256(caller).hexdigest()=="7d7d41460b940e0ef93b78da0e0c62dd09395d549ecf8537e2721f77672af7ed"\nprint("C-025 original SELF caller and insertion interval PASS")
