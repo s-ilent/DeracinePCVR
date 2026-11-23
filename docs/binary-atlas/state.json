@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "C-026 report/verifier/state/queue committed to research branch",
+  "github_write_status": "C-027 report/verifier/state/queue committed to research branch",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -1009,6 +1009,26 @@
       "confidence": "high for insertion and recycling, medium for deduplication semantics; runtime unverified",
       "report": "reports/atlas_registry_insert_c025.md",
       "verifier": "tools/atlas/verify_registry_insert_c025.py"
+    },
+    {
+      "id": "C-027-BUCKET-POINTER-ALLOCATOR",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "helper_elf_va": "0x0C7BD40",
+      "first_return_elf_va": "0x0C7C15B",
+      "caller_pairs_elf_va": [
+        "0x0CC9776",
+        "0x0CC978D",
+        "0x0C8F00B",
+        "0x0C8F02A"
+      ],
+      "pointer_slot_offset": "+0x08",
+      "element_size_bytes": 4,
+      "verified_interval_self_offset": "0x0C9BA70..0x0C9BE8C",
+      "confidence": "high pointer slot/count-times-four and distinct caller joins; exact FDE/allocator ownership unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_bucket_allocator_c027.md",
+      "verifier": "tools/atlas/verify_bucket_allocator_c027.py"
     }
   ],
   "known_false": [],
