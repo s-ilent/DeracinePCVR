@@ -1,3 +1,16 @@
+# C-029 independently verified original SELF masked-DWORD CPU registry classifier
+  - id: C-029-CLASSIFIER-BITCLEAR
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "0x0308FE70 returns descriptor DWORD +0x08 with conditional bit range cleared; 0x0CC2821 producer shifts result left eight before registry insertion"
+    report: "reports/atlas_classifier_bitclear_c029.md"
+    verifier: "tools/atlas/verify_classifier_bitclear_c029.py"
+  - id: C-030-CLASSIFIER-INPUT-OWNER
+    track: C
+    priority: 1
+    status: READY_STATIC
+    target: "Identify [r8+0x28] producer at 0x0CC2816, and width-helper 0x03220/0x03450 output contract; connect to descriptor ownership without guessing shader hash"
 # C-028 verified second, gated CPU registry key producer; C-001 shader descriptor table remains top semantic priority.
   - id: C-028-SECOND-REGISTRY-KEY-PRODUCER
     track: C
