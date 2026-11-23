@@ -1,3 +1,16 @@
+# C-028 verified second, gated CPU registry key producer; C-001 shader descriptor table remains top semantic priority.
+  - id: C-028-SECOND-REGISTRY-KEY-PRODUCER
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "0x0CC27F9 mode/global gate; 0x0CC2821 calls classifier 0x0308FE70, shifts result by eight and inserts via 0x0CC2839 into context+0x3D8"
+    report: "reports/atlas_registry_second_producer_c028.md"
+    verifier: "tools/atlas/verify_registry_second_producer_c028.py"
+  - id: C-029-SECOND-CLASSIFIER-OWNER
+    track: C
+    priority: 2
+    status: READY_STATIC
+    target: "Trace [r8+0x28] source and full 0x0308FE70 return semantics; compare 0x03091BF0 and 0x0CAC030 without assuming shader stage"
 # C-027 independently verified shared CPU bucket pointer-slot allocator
   - id: C-027-BUCKET-POINTER-ALLOCATOR
     track: C
