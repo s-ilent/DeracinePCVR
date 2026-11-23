@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "C-010 report/verifier/state/queue committed to draft research branch",
+  "github_write_status": "C-011 report/verifier/state/queue committed to draft research branch",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -693,6 +693,24 @@
       "runtime_observed": false,
       "report": "reports/atlas_resource_special_transfer_c010.md",
       "verifier": "tools/atlas/verify_resource_special_transfer_c010.py"
+    },
+    {
+      "id": "C-011-TRANSFER-POINTER-ABI",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "entry_elf_vas": [
+        "0x91C0",
+        "0x9530"
+      ],
+      "consumer_elf_vas": [
+        "0x6190",
+        "0x6F40"
+      ],
+      "layout_builder_elf_va": "0x5760",
+      "confidence": "high for same six-argument API and opposite CPU transfer paths; resource ownership unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_transfer_pointer_abi_c011.md",
+      "verifier": "tools/atlas/verify_transfer_pointer_abi_c011.py"
     }
   ],
   "known_false": [],
