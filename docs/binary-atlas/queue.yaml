@@ -8,6 +8,18 @@
     next: "Trace producer of enclosing-object +0x218 table and r15 resource-array allocation/bounds"
 # User-directed priority: C shader resources, then resource ownership, then FD4; A attachment/viewport deferred.
 items:
+  - id: C-024-CPU-REGISTRY-REMOVAL
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "0x0CB80D0..0x0CB828B unlinks 16-byte CPU key records, updates +0x408 free list and +0x3F8 bitset; +0x40C increments on removal"
+    report: "reports/atlas_registry_removal_c024.md"
+    verifier: "tools/atlas/verify_registry_removal_c024.py"
+  - id: C-025-REGISTRY-INSERT-PRODUCER
+    track: C
+    priority: 1
+    status: READY_STATIC
+    target: "Find +0x3D8 record insertion/allocator, +0x408 free-list consumer and +0x418/+0x420 bucket construction; resolve enclosing FDE"
   - id: C-022-RESOURCE-KEYED-LOOKUP
     track: C
     priority: 1
