@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "C-011 report/verifier/state/queue committed to draft research branch",
+  "github_write_status": "C-012 report/verifier/state/queue committed to draft research branch",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -711,10 +711,35 @@
       "runtime_observed": false,
       "report": "reports/atlas_transfer_pointer_abi_c011.md",
       "verifier": "tools/atlas/verify_transfer_pointer_abi_c011.py"
+    },
+    {
+      "id": "C-012-TRANSFER-DESCRIPTOR-NORMALIZERS",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "entry_elf_vas": [
+        "0x9460",
+        "0x97D0"
+      ],
+      "entry_self_offsets": [
+        "0x29190",
+        "0x29500"
+      ],
+      "direct_call_sites": [
+        "0x950C -> 0x91C0",
+        "0x987C -> 0x9530"
+      ],
+      "jump_table_elf_vas": [
+        "0x33CAD10",
+        "0x33CAD90"
+      ],
+      "confidence": "high for paired descriptor field normalizers and direct call edges; endpoint ownership and GPU identity unknown",
+      "runtime_observed": false,
+      "report": "reports/atlas_transfer_wrappers_c012.md",
+      "verifier": "tools/atlas/verify_transfer_wrappers_c012.py"
     }
   ],
   "known_false": [],
-  "next_action": "Trace producer and ownership of 0x03090310 descriptor fields +0x00..+0x30 and resolve predicate semantics; preserve distinction from PS4 GPU register names.",
+  "next_action": "Enumerate 16 entries in both normalization jump tables, identify descriptor +0x28/+0x2C owner; prioritize shader vcall +0x38 producer if no RHI link",
   "draft_pr_url": "https://github.com/s-ilent/DeracinePCVR/pull/1",
   "draft_pr_number": 1,
   "recheck": {
