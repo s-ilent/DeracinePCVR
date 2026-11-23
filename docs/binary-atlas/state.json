@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "C-029 report/verifier/state/queue committed to research branch",
+  "github_write_status": "C-030 report/verifier/state/queue committed to research branch",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -1056,6 +1056,26 @@
       "runtime_observed": false,
       "report": "reports/atlas_classifier_bitclear_c029.md",
       "verifier": "tools/atlas/verify_classifier_bitclear_c029.py"
+    },
+    {
+      "id": "C-030-CLASSIFIER-INDEXED-TABLE-HELPERS",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "helpers_elf_va": [
+        "0x03220",
+        "0x03450"
+      ],
+      "index_source_elf_va": "0x0240",
+      "shared_table_elf_va": "0x033CA910",
+      "extract_fields": [
+        "bits 6..7",
+        "bits 12..13"
+      ],
+      "classifier_elf_va": "0x0308FE70",
+      "confidence": "high for original-byte helper and classifier dataflow; index/table ownership and shader identity unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_classifier_helpers_c030.md",
+      "verifier": "tools/atlas/verify_classifier_helpers_c030.py"
     }
   ],
   "known_false": [],
