@@ -45,6 +45,7 @@
 #include "core/linker.h"
 #include "core/rhi_command_capture.h"
 #include "core/rhi_entry_probe.h"
+#include "core/semantic_tape.h"
 #include "core/shader_param_capture.h"
 #include "core/vertex_input_capture.h"
 #include "core/memory.h"
@@ -104,6 +105,8 @@ void Emulator::Shutdown() {
     Core::RhiEntryProbe::ExportProvenance();
     Core::VertexInputCapture::ExportVertexInputs();
     Core::ShaderParamCapture::ExportShaderParams();
+    // The tape reads the command capture and the draw package, so it must run after both.
+    Core::SemanticTape::ExportTape();
     Common::Log::Flush();
     if (controllers) {
         controllers->ResetLightbarColors();

@@ -19,10 +19,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_executable(deracine_scene_replay main.cpp)
 
+# The semantic-tape replay. Same dependency discipline as the diagnostic replay: the Vulkan loader,
+# the C++ standard library and a JSON parser, nothing from the emulator.
+add_executable(deracine_tape_replay tape_replay.cpp tape.cpp)
+
 # Prefer the vendored headers when the tree has them, so the build does not depend on a system SDK.
 set(VULKAN_HEADERS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../src/externals/vulkan-headers/include")
 if(EXISTS "${VULKAN_HEADERS_DIR}/vulkan/vulkan.h")
     target_include_directories(deracine_scene_replay PRIVATE "${VULKAN_HEADERS_DIR}")
+    target_include_directories(deracine_tape_replay PRIVATE "${VULKAN_HEADERS_DIR}")
 endif()
 
 # A real JSON parser rather than string search: a multi-stream package has similarly named fields
@@ -30,6 +35,7 @@ endif()
 set(JSON_HEADERS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../src/externals/json/single_include")
 if(EXISTS "${JSON_HEADERS_DIR}/nlohmann/json.hpp")
     target_include_directories(deracine_scene_replay PRIVATE "${JSON_HEADERS_DIR}")
+    target_include_directories(deracine_tape_replay PRIVATE "${JSON_HEADERS_DIR}")
 else()
     message(FATAL_ERROR "nlohmann/json not found at ${JSON_HEADERS_DIR}")
 endif()
@@ -40,6 +46,7 @@ endif()
 find_library(VULKAN_LOADER vulkan-1)
 if(VULKAN_LOADER)
     target_link_libraries(deracine_scene_replay PRIVATE "${VULKAN_LOADER}")
+    target_link_libraries(deracine_tape_replay PRIVATE "${VULKAN_LOADER}")
 elseif(WIN32)
     set(VULKAN_DEF "${CMAKE_BINARY_DIR}/vulkan-1.def")
     set(VULKAN_IMPLIB "${CMAKE_BINARY_DIR}/vulkan-1.lib")
@@ -80,6 +87,7 @@ elseif(WIN32)
                 RESULT_VARIABLE LIB_RESULT)
             if(LIB_RESULT EQUAL 0)
                 target_link_libraries(deracine_scene_replay PRIVATE "${VULKAN_IMPLIB}")
+                target_link_libraries(deracine_tape_replay PRIVATE "${VULKAN_IMPLIB}")
             endif()
         endif()
     endif()
@@ -92,6 +100,8 @@ endif()
 
 if(MSVC)
     target_compile_options(deracine_scene_replay PRIVATE /W4)
+    target_compile_options(deracine_tape_replay PRIVATE /W4)
 else()
     target_compile_options(deracine_scene_replay PRIVATE -Wall -Wextra)
+    target_compile_options(deracine_tape_replay PRIVATE -Wall -Wextra)
 endif()

@@ -39,5 +39,35 @@ struct CurrentCommand {
 /// claimed the identity, so a second invocation cannot inherit the same command.
 void ConsumeDeferredCommand() noexcept;
 
+/// One captured command, as the tape exporter needs it. Scalars and opaque pointer values only:
+/// nothing here is dereferenced after the hook returns.
+struct CapturedCommandView {
+    std::uint64_t sequence{};
+    std::uint64_t native_thread_id{};
+    std::uint64_t guest_thread_id{};
+    std::uint64_t list_pointer{};
+    std::uint64_t context_pointer{};
+    std::uint64_t vtable_rva{};
+    std::uint64_t payload[8]{};
+    std::uint64_t render_targets[8]{};
+    std::uint64_t depth_target{};
+    std::uint64_t uavs[8]{};
+    std::uint64_t shader_state{};
+    std::uint64_t shader_resource{};
+    std::uint64_t program_data{};
+    std::uint32_t shader_modifier{};
+    std::uint8_t command_id{};
+    std::uint8_t payload_words{};
+    std::uint8_t render_target_count{};
+    std::uint8_t uav_count{};
+    std::uint8_t shader_status{};
+};
+
+/// Number of captured commands, or 0 when the capture is not installed.
+[[nodiscard]] std::uint32_t CapturedCommandCount() noexcept;
+
+/// Copies one captured command by index. Returns false when the index is out of range.
+[[nodiscard]] bool GetCapturedCommand(std::uint32_t index, CapturedCommandView& out) noexcept;
+
 } // namespace RhiCommandCapture
 } // namespace Core
