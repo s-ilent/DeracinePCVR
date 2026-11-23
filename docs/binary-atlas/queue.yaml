@@ -1,5 +1,13 @@
 # User-directed priority: C shader resources, then resource ownership, then FD4; A attachment/viewport deferred.
 items:
+  - id: C-011-TRANSFER-POINTER-ABI
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "0x91C0 and 0x9530 preserve the same six-argument ABI, validate original RDX layout descriptor, construct 0x5760 layout and dispatch original RDI/RSI/RCX to opposite-direction CPU transfer consumers"
+    report: "reports/atlas_transfer_pointer_abi_c011.md"
+    verifier: "tools/atlas/verify_transfer_pointer_abi_c011.py"
+    next: "Find callers and FDEs of 0x91C0/0x9530, establish which endpoint is layout-addressed; return to shader vcall +0x38 ownership"
   - id: C-010-SPECIAL-CPU-TRANSFER-DIRECTION
     track: C
     priority: 2
