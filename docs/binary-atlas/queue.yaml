@@ -1,5 +1,13 @@
 # User-directed priority: C shader resources, then resource ownership, then FD4; A attachment/viewport deferred.
 items:
+  - id: C-010-SPECIAL-CPU-TRANSFER-DIRECTION
+    track: C
+    priority: 2
+    status: VERIFIED_STATIC
+    finding: "0x64D0 and 0x7280 implement opposite CPU copy directions in special layout transfer paths, sharing 0x5B90 address helper and 0x2EC0 classifier"
+    report: "reports/atlas_resource_special_transfer_c010.md"
+    verifier: "tools/atlas/verify_resource_special_transfer_c010.py"
+    next: "Trace pointer provenance from 0x92E5 and 0x9655; establish layout-addressed side and FDEs"
   - id: C-009-CPU-RESOURCE-TRANSFER-CONSUMERS
     track: C
     priority: 2
