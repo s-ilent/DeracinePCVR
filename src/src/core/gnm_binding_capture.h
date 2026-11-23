@@ -37,13 +37,22 @@ inline constexpr u32 GroupedBinderRva = 0x0CC0070;
 /// at 0x0CC1010 from the upload object's +0x48.
 inline constexpr u32 DeferredUploadCallerRva = 0x0CC0D50;
 
-/// The provider that materialises the descriptor into the caller's stack buffer.
-inline constexpr u32 DeferredUploadProviderRva = 0x0CC1010;
-
 /// Upload-object field offsets, from the provider's disassembly.
 inline constexpr u32 UploadObjectValid = 0x40;
 inline constexpr u32 UploadObjectSource = 0x48;
 inline constexpr u32 UploadObjectSize = 0x50;
+
+/// The caller's stack buffer, relative to its entry stack pointer.
+///
+/// From the caller's prologue: push rbp; mov rsp,rbp; push r15,r14,r13,r12,rbx; sub rsp,0x28.
+/// The provider's output buffer is `rbp-0x40`, so relative to the entry rsp (which points at the
+/// return address) it is `rsp-0x48`. The writer is then called with that same address as its
+/// source, which is what makes the association checkable rather than assumed.
+inline constexpr u64 UploadCallerBufferFromEntryRsp = 0x48;
+
+/// Bounded per-thread nesting depth for upload invocations. The observed path is not recursive,
+/// so this is a safety cap rather than a working limit.
+inline constexpr size_t MaxUploadNesting = 8;
 
 /// Binder field offsets, from the original disassembly of 0x0CC0070.
 inline constexpr u32 BinderDirtyMask = 0x928;
@@ -82,6 +91,18 @@ enum class Provenance : u8 {
     Unavailable = 2,
 };
 
+/// How a writer invocation was tied to an upload object. Only `Matched` is a causal claim.
+enum class UploadProvenance : u8 {
+    /// No upload invocation was pending on this thread for this source buffer.
+    Unmatched = 0,
+    /// An upload invocation was pending and its expected provider buffer equals the writer's
+    /// source. This is the causal association.
+    Matched = 1,
+    /// An upload invocation was pending but its expected buffer differs from the writer's source.
+    /// Recorded as a mismatch, never treated as a match.
+    SourceMismatch = 2,
+};
+
 /// One captured typed-writer invocation, joined to the shader that declared the binding.
 struct BindingRecord {
     u64 sequence{};
@@ -109,6 +130,11 @@ struct BindingRecord {
     bool shader_resource_plausible{};
     /// Derived: the program data pointer the shader resource holds.
     VAddr program_data{};
+    /// Derived: the program address the stage record names, and the stage record's own 23-bit size
+    /// field. The trailer must equal `code_address + stage_size - 28`, which is the original
+    /// decoder's arithmetic; recording both makes that checkable rather than assumed.
+    VAddr code_address{};
+    u32 stage_size{};
     /// Derived: the OrbShdr trailer address inside the program.
     VAddr trailer{};
     /// Derived: the shader hash from the trailer.
@@ -128,6 +154,14 @@ struct BindingRecord {
     VAddr upload_object{};
     u32 upload_size{};
     bool upload_valid{};
+    /// How the upload object was associated with this writer invocation.
+    UploadProvenance upload_provenance{UploadProvenance::Unmatched};
+    /// The provider's output buffer this invocation expected, and whether the writer's source
+    /// matched it. A match is the causal link; a mismatch is recorded, never resolved by guessing.
+    VAddr expected_provider_buffer{};
+    bool source_matches_provider_buffer{};
+    /// FNV-1a over the descriptor bytes, so two captures can be compared without the bytes.
+    u64 descriptor_fingerprint{};
 
     /// The declaration this writer call corresponds to, when the shader's metadata was parsed.
     bool declaration_matched{};
