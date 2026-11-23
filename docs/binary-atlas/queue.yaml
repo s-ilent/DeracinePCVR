@@ -1,5 +1,13 @@
 # User-directed priority: C shader resources, then resource ownership, then FD4; A attachment/viewport deferred.
 items:
+  - id: C-016-PAIRED-SHADER-RESOURCE-DESCRIPTORS
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "0x0CB4330 invokes shader mode 0, compares two +0x38 resource-derived +0x18 descriptors through 0x03092D20 and conditionally writes +0x140/+0x148"
+    report: "reports/atlas_paired_shader_resource_c016.md"
+    verifier: "tools/atlas/verify_paired_shader_resource_c016.py"
+    next: "Resolve concrete virtual +0x38 implementation, construction and FDE of 0x0CB4330"
   - id: C-015-SHADER-MODE-EMISSION
     track: C
     priority: 1
