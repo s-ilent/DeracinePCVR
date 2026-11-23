@@ -1,5 +1,13 @@
 # User-directed priority: C shader resources, then resource ownership, then FD4; A attachment/viewport deferred.
 items:
+  - id: C-014-SHADER-MODE-DISPATCH
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "0x0CB5130 mode table routes 0/2/4 to shared resource path, 1 to virtual +0x38 update and six-DWORD writer, 3 to early return, 5 to separate six-DWORD writer"
+    report: "reports/atlas_shader_modes_c014.md"
+    verifier: "tools/atlas/verify_shader_modes_c014.py"
+    next: "Find concrete vtable +0x38 resource producer, allocation and owner; correlate mode-specific operations with SC-09 without asserting runtime use"
   - id: C-013-TRANSFER-SELECTOR-EXHAUSTIVE
     track: C
     priority: 1
