@@ -16,7 +16,7 @@ Instruction-boundary evidence:
 - `0x02F62EC3`: mark `state+0xC250+index` dirty.
 - Caller `0x0CC0298..0x0CC02B3`: loads context `+0x460`, adds `0x2E8` to obtain consumer state, selects descriptor pointer from `[r15+rax*8]+0x14`, sets count ECX=1, and calls `0x02F62D60` with a decoded direct E8 at `0x0CC02B3`.
 
-**Exact body:** ELF `[0x02F62D60,0x02F62EDA)`, SELF `[0x02F82A90,0x02F82C0A)`, 378 bytes, SHA-256 `89673455122f571b5907fa474a61517d29c0b4839a67d7a33521114672a6c63b`. The direct caller is SELF offset `0x0CC1FFE3`. No FDE or relocation was independently established for this new function.
+**Exact body:** ELF `[0x02F62D60,0x02F62EDA)`, SELF `[0x02F82A90,0x02F82C0A)`, 378 bytes, SHA-256 `89673455122f571b5907fa474a61517d29c0b4839a67d7a33521114672a6c63b`. The direct caller is SELF offset `0x0CDFFE3`. No FDE or relocation was independently established for this new function.
 
 **Confidence:** high for disassembly, +0xA2 lookup, 16-byte CPU copy, 32-byte emission, caller argument construction and common selector table. Medium for the interpretation as shader/resource binding rather than a generic descriptor routing family. The register meanings and `bextr` selector provenance remain unresolved. CPU cache updates are not GPU buffer-cache version transitions.
 
