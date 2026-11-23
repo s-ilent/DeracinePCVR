@@ -1,3 +1,16 @@
+# C-030 independently verified original SELF indexed-table classifier width helpers
+  - id: C-030-CLASSIFIER-INDEXED-TABLE-HELPERS
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "0x03220 and 0x03450 both call 0x0240, then extract distinct 2-bit fields from shared 0x033CA910 table to classifier output"
+    report: "reports/atlas_classifier_helpers_c030.md"
+    verifier: "tools/atlas/verify_classifier_helpers_c030.py"
+  - id: C-031-INDEX-SOURCE-AND-TABLE-OWNER
+    track: C
+    priority: 1
+    status: READY_STATIC
+    target: "Determine 0x0240 index contract and 0x033CA910 table bounds/producer, then join shader resource owner without assuming stage"
 # C-029 independently verified original SELF masked-DWORD CPU registry classifier
   - id: C-029-CLASSIFIER-BITCLEAR
     track: C
