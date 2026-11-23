@@ -16,11 +16,18 @@ items:
     report: "reports/atlas_resource_keyed_lookup_c022.md"
     verifier: "tools/atlas/verify_resource_keyed_lookup_c022.py"
     next: "Trace keyed registry construction and mutation to distinguish binding cache from resource validation"
-  - id: C-023-RESOURCE-KEYED-REGISTRY-PRODUCER
+  - id: C-023-RESOURCE-KEYED-REGISTRY-RESET
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "0x0CB87D0 clears CPU keyed registry records and resets all bucket sentinels through +0x418/+0x420, joining C-022 lookup"
+    report: "reports/atlas_registry_reset_c023.md"
+    verifier: "tools/atlas/verify_registry_reset_c023.py"
+  - id: C-024-RESOURCE-KEYED-REGISTRY-INSERT
     track: C
     priority: 1
     status: READY_STATIC
-    target: "Find constructor and mutation for +0x3D8/+0x410/+0x418/+0x420 in 0x0CAC030 context"
+    target: "Find insert/mutation for +0x3D8 16-byte key/next records and bucket capacity +0x418/+0x420; verify caller/FDE"
 - id: C-020-FOUR-DWORD-DESCRIPTOR-CONSUMER
     track: C
     priority: 1
