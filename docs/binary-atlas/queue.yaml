@@ -1,4 +1,11 @@
-# C-025 verified original SELF CPU keyed registry insertion, 2026-11-24.\n  - id: C-025-REGISTRY-INSERT-PRODUCER\n    track: C\n    priority: 1\n    status: VERIFIED_STATIC\n    finding: "0x0CC8558 produces key and calls 0x0CC93D0 on context+0x3D8; 16-byte records, recycled index, bitset, bucket hash"\n    report: "reports/atlas_registry_insert_c025.md"\n    verifier: "tools/atlas/verify_registry_insert_c025.py"\n  - id: C-026-REGISTRY-REHASH-AND-OWNER\n    track: C\n    priority: 1\n    status: READY_STATIC\n    target: "Decode remainder of 0x0CC93D0 duplicate-key and rehash path, FDE, constructor of +0x410/+0x420"\n  - id: C-021-THREE-RESOURCE-DISPATCH-STREAMS
+# C-025 verified original SELF CPU keyed registry insertion, 2026-11-24.\n  - id: C-025-REGISTRY-INSERT-PRODUCER
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "0x0CC8558 -> 0x0CC93D0 inserts CPU key into context+0x3D8 registry"
+    report: "reports/atlas_registry_insert_c025.md"
+    verifier: "tools/atlas/verify_registry_insert_c025.py"
+  - id: C-026-REGISTRY-REHASH-AND-OWNER\n    track: C\n    priority: 1\n    status: READY_STATIC\n    target: "Decode remainder of 0x0CC93D0 duplicate-key and rehash path, FDE, constructor of +0x410/+0x420"\n  - id: C-021-THREE-RESOURCE-DISPATCH-STREAMS
     track: C
     priority: 1
     status: VERIFIED_STATIC
@@ -35,11 +42,6 @@ items:
     finding: "0x0CB87D0 clears CPU keyed registry records and resets all bucket sentinels through +0x418/+0x420, joining C-022 lookup"
     report: "reports/atlas_registry_reset_c023.md"
     verifier: "tools/atlas/verify_registry_reset_c023.py"
-  - id: C-024-RESOURCE-KEYED-REGISTRY-INSERT
-    track: C
-    priority: 1
-    status: READY_STATIC
-    target: "Find insert/mutation for +0x3D8 16-byte key/next records and bucket capacity +0x418/+0x420; verify caller/FDE"
 - id: C-020-FOUR-DWORD-DESCRIPTOR-CONSUMER
     track: C
     priority: 1
