@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "C-016 report/verifier/state/queue committed to research branch",
+  "github_write_status": "C-017 report/verifier/state/queue committed to research branch",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -829,6 +829,32 @@
       "confidence": "high for instructions and fields; medium for semantic interpretation",
       "report": "reports/atlas_paired_shader_resource_c016.md",
       "verifier": "tools/atlas/verify_paired_shader_resource_c016.py"
+    },
+    {
+      "id": "C-017-SHADER-CONTEXT-CACHE-TRANSITION",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "block_elf_va": "0x0CB4AF3–0x0CB4C6B",
+      "self_offset_range": "0x0CB6E23–0x0CB6F9B",
+      "context_cache_offsets": [
+        "+0x448",
+        "+0x450"
+      ],
+      "context_writer_offset": "+0x460",
+      "writer_dirty_offsets": [
+        "+0xC388",
+        "+0xC530",
+        "+0xC538",
+        "+0xC54E"
+      ],
+      "descriptor_consumer_elf_vas": [
+        "0x02F62A40",
+        "0x02F62BD0"
+      ],
+      "confidence": "high for original bytes, field accesses and call edges; semantic shader stage unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_shader_context_cache_c017.md",
+      "verifier": "tools/atlas/verify_shader_context_cache_c017.py"
     }
   ],
   "known_false": [],
