@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "C-022 report/verifier/state/queue committed to research branch",
+  "github_write_status": "C-023 report/verifier/state/queue committed to research branch",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -957,6 +957,26 @@
       "runtime_observed": false,
       "report": "reports/atlas_resource_keyed_lookup_c022.md",
       "verifier": "tools/atlas/verify_resource_keyed_lookup_c022.py"
+    },
+    {
+      "id": "C-023-RESOURCE-REGISTRY-RESET",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "entry_elf_va": "0x0CB87D0",
+      "end_exclusive_elf_va": "0x0CB8895",
+      "self_file_start": "0x0CD8500",
+      "self_file_end_exclusive": "0x0CD85C5",
+      "window_sha256": "c02ccffb4bd519a3249d5dc2ddcec8518e3d2e710d12b15d7e95136fa0f1ec02",
+      "registry_offsets": [
+        "+0x3D8",
+        "+0x410",
+        "+0x418",
+        "+0x420"
+      ],
+      "confidence": "high for original-byte reset and C-022 field join; no insert, FDE, or runtime evidence",
+      "runtime_observed": false,
+      "report": "reports/atlas_registry_reset_c023.md",
+      "verifier": "tools/atlas/verify_registry_reset_c023.py"
     }
   ],
   "known_false": [],
