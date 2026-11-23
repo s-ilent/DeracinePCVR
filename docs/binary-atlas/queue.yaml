@@ -1,5 +1,10 @@
 # User-directed priority: C shader resources, then resource ownership, then FD4; A attachment/viewport deferred.
 items:
+  - id: C-019-DESCRIPTOR-TABLE-PRODUCER
+    track: C
+    priority: 1
+    status: READY_STATIC
+    target: "Identify owner/producer of state +0xC180 per-index WORD tables, including 0x22 and 0x82 submaps, and register-definition join for 0x037530B0"
   - id: C-017-SHADER-CONTEXT-CACHE-TRANSITION
     track: C
     priority: 1
@@ -11,9 +16,11 @@ items:
   - id: C-018-DESCRIPTOR-CONSUMER-SEMANTICS
     track: C
     priority: 1
-    status: READY_STATIC
-    target: "Independently trace 0x02F62A40 versus 0x02F62BD0 and WORD selectors +0xBC/+0xC0 to per-stage user data or resource table semantics"
-    acceptance: "Original-byte decoded caller/callee edges, FDE, field provenance and exact SELF offsets; no assumed GPU VA"
+    status: VERIFIED_STATIC
+    finding: "Paired +0x22/+0x82 WORD maps route 32-byte descriptor to CPU cache or 48-byte command writer record depending on sign bit"
+    report: "reports/atlas_descriptor_consumers_c018.md"
+    verifier: "tools/atlas/verify_descriptor_consumers_c018.py"
+    next: "Find +0xC180 WORD-table producer and interpret 0x037530B0 against PS4 register definitions"
   - id: C-016-PAIRED-SHADER-RESOURCE-DESCRIPTORS
     track: C
     priority: 1
