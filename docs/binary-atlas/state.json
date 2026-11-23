@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "C-020 report/verifier/state/queue committed to research branch",
+  "github_write_status": "C-021 report/verifier/state/queue committed to research branch",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -915,6 +915,27 @@
       "runtime_observed": false,
       "report": "reports/atlas_descriptor_consumer_c020.md",
       "verifier": "tools/atlas/verify_descriptor_consumer_c020.py"
+    },
+    {
+      "id": "C-021-THREE-RESOURCE-DISPATCH-STREAMS",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "entry_region_elf_va": "0x0CC0190..0x0CC02D2",
+      "resource_array_field": "+0x20",
+      "enclosing_table_fields": [
+        "+0x208",
+        "+0x218"
+      ],
+      "packed_index_bextr_control": "0x1008",
+      "targets_elf_va": [
+        "0x0CC13B0",
+        "0x0CAC030",
+        "0x02F62D60"
+      ],
+      "confidence": "high for original-byte field and call edges; class identity and bounds unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_resource_dispatch_c021.md",
+      "verifier": "tools/atlas/verify_resource_dispatch_c021.py"
     }
   ],
   "known_false": [],
