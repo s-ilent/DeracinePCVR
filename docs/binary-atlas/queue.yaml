@@ -1,5 +1,13 @@
 # User-directed priority: C shader resources, then resource ownership, then FD4; A attachment/viewport deferred.
 items:
+  - id: C-020-FOUR-DWORD-DESCRIPTOR-CONSUMER
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "0x02F62D60 consumes +0xA2 WORD maps, copies 16-byte CPU descriptors or emits 32-byte records; 0x0CC02B3 supplies [r15+rax*8]+0x14"
+    report: "reports/atlas_descriptor_consumer_c020.md"
+    verifier: "tools/atlas/verify_descriptor_consumer_c020.py"
+    next: "Trace +0xA2 map producer and resource-derived descriptor owner at caller 0x0CC02B3"
   - id: C-019-DESCRIPTOR-SELECTOR-REGISTER-OFFSETS
     track: C
     priority: 1
