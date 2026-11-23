@@ -1,11 +1,17 @@
-# C-025 verified original SELF CPU keyed registry insertion, 2026-11-24.\n  - id: C-025-REGISTRY-INSERT-PRODUCER
+# C-025 verified original SELF CPU keyed registry insertion, 2026-11-24.
+  - id: C-025-REGISTRY-INSERT-PRODUCER
     track: C
     priority: 1
     status: VERIFIED_STATIC
     finding: "0x0CC8558 -> 0x0CC93D0 inserts CPU key into context+0x3D8 registry"
     report: "reports/atlas_registry_insert_c025.md"
     verifier: "tools/atlas/verify_registry_insert_c025.py"
-  - id: C-026-REGISTRY-REHASH-AND-OWNER\n    track: C\n    priority: 1\n    status: READY_STATIC\n    target: "Decode remainder of 0x0CC93D0 duplicate-key and rehash path, FDE, constructor of +0x410/+0x420"\n  - id: C-021-THREE-RESOURCE-DISPATCH-STREAMS
+  - id: C-026-REGISTRY-REHASH-AND-OWNER
+    track: C
+    priority: 1
+    status: READY_STATIC
+    target: "Decode remainder of 0x0CC93D0 duplicate-key and rehash path, FDE, constructor of +0x410/+0x420"
+  - id: C-021-THREE-RESOURCE-DISPATCH-STREAMS
     track: C
     priority: 1
     status: VERIFIED_STATIC
