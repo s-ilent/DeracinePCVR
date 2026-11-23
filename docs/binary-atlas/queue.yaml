@@ -1,3 +1,11 @@
+  - id: C-021-THREE-RESOURCE-DISPATCH-STREAMS
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "0x0CC0190..0x0CC02D2 contains three packed-index resource streams; +0x208 table dispatches to 0x0CAC030, +0x218 to four-DWORD descriptor consumer, and virtual +0x38 result to 0x0CC13B0"
+    report: "reports/atlas_resource_dispatch_c021.md"
+    verifier: "tools/atlas/verify_resource_dispatch_c021.py"
+    next: "Trace producer of enclosing-object +0x218 table and r15 resource-array allocation/bounds"
 # User-directed priority: C shader resources, then resource ownership, then FD4; A attachment/viewport deferred.
 items:
   - id: C-020-FOUR-DWORD-DESCRIPTOR-CONSUMER
