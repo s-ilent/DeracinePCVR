@@ -275,21 +275,19 @@ int main() {
         if (!harness::CreateImage(vk, d, img, error)) {
             log.Fail("case5b create: " + error);
         } else {
-            const uint32_t before = harness::GlobalValidationCounters().errors;
+            // Declare the exact VUID this negative test expects. The mechanism
+            // fails the run if the diagnostic never fires, and never suppresses
+            // anything else. Validation messages arrive asynchronously, so the
+            // verdict is deferred to AllExpectationsMet() at the end.
+            const uint64_t token =
+                harness::BeginExpectedDiagnostic("VUID-VkImageViewCreateInfo-image-12397");
             std::string ignored;
             VkImageView bad = harness::CreateView(vk, img.image, VK_FORMAT_R8G8B8A8_SRGB,
                                                   VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1,
                                                   VK_IMAGE_VIEW_TYPE_2D, ignored);
-            const uint32_t after = harness::GlobalValidationCounters().errors;
             if (bad != VK_NULL_HANDLE) vkDestroyImageView(vk.device(), bad, nullptr);
-            if (after > before) {
-                log.Pass("case5b: mismatched view format rejected by validation (expected)");
-                // This error is intentional; do not count it against the run.
-                harness::GlobalValidationCounters().errors = before;
-                harness::GlobalValidationCounters().messages.pop_back();
-            } else {
-                log.Info("case5b: validation did not flag the mismatched view");
-            }
+            harness::EndExpectedDiagnostic(token);
+            log.Pass("case5b: declared expectation for VUID-VkImageViewCreateInfo-image-12397");
             harness::DestroyImage(vk, img);
         }
     }
@@ -326,12 +324,15 @@ int main() {
     nri.Shutdown();
     vk.Shutdown();
 
-    const auto& counters = harness::GlobalValidationCounters();
-    if (counters.errors == 0) {
-        log.Pass("zero validation errors");
+    const uint32_t unexpected = harness::UnexpectedErrorCount();
+    if (unexpected == 0) {
+        log.Pass("zero unexpected validation errors");
     } else {
-        log.Fail(std::to_string(counters.errors) + " validation errors");
-        for (const auto& msg : counters.messages) log.Info(msg);
+        log.Fail(std::to_string(unexpected) + " unexpected validation errors");
+        for (const auto& msg : harness::GlobalValidationCounters().messages) log.Info(msg);
+    }
+    if (!harness::AllExpectationsMet()) {
+        log.Fail("a declared expected diagnostic never fired");
     }
 
     return log.Finish();

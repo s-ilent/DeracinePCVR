@@ -1,5 +1,7 @@
 #include "common/vk_bootstrap.h"
 
+#include "common/diagnostics.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -27,6 +29,11 @@ VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(
     if (isError) {
         g_counters.errors++;
         if (isSync) g_counters.syncErrors++;
+        // An expected diagnostic is one a negative test deliberately provoked
+        // and declared by VUID. Anything else is an unexpected error.
+        if (!ConsumeExpectedDiagnostic(data->pMessageIdName)) {
+            RecordUnexpectedError();
+        }
     } else if (isWarning) {
         g_counters.warnings++;
     }

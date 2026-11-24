@@ -41,6 +41,8 @@ add_library(harness_core STATIC
   src/common/diagnostics.cpp
   src/common/image_io.cpp
   src/common/shader_compile.cpp
+  src/common/resource_registry.cpp
+  src/backend/nri_device.cpp
 )
 target_include_directories(harness_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -65,6 +67,9 @@ set(HARNESS_TESTS
   t03_depth_stencil_aspects
   t04_stereo
   t05_submission_lifetime
+  t06_semantic_nri_draw
+  t07_resource_registry
+  t08_lifetime_gpu
 )
 
 foreach(t ${HARNESS_TESTS})

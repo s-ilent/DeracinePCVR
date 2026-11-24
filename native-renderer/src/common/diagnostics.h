@@ -58,4 +58,37 @@ private:
 // Compare a pixel against an expected RGBA8 value with a tolerance.
 bool PixelNear(const unsigned char* actual, const unsigned char* expected, int tolerance);
 
+// ---------------------------------------------------------------------------
+// Expected diagnostics
+//
+// A negative test deliberately provokes a validation error. Rather than
+// subtracting it from a global counter, it declares the VUID it expects. The
+// declaration is scoped, must actually fire, and never suppresses anything else.
+// ---------------------------------------------------------------------------
+
+// Begins an expectation for a specific VUID. Returns a token for EndExpectation.
+// While active, a matching diagnostic is recorded as expected rather than as an
+// unexpected error. Non-matching diagnostics still count as unexpected.
+uint64_t BeginExpectedDiagnostic(const char* vuid);
+
+// Ends the expectation. Returns true if the expected diagnostic actually fired.
+// A negative test that claims to verify a rejection must fail if it did not.
+bool EndExpectedDiagnostic(uint64_t token);
+
+// Number of unexpected validation errors. This is what the summary reports.
+uint32_t UnexpectedErrorCount();
+
+// Number of expected diagnostics that fired.
+uint32_t ExpectedDiagnosticCount();
+
+// True when every declared expectation actually fired.
+bool AllExpectationsMet();
+
+// Called by the validation callback. Returns true when the message matched an
+// open expectation, so the caller does not count it as unexpected.
+bool ConsumeExpectedDiagnostic(const char* messageIdName);
+
+// Called by the validation callback for an error that no expectation claimed.
+void RecordUnexpectedError();
+
 }  // namespace harness

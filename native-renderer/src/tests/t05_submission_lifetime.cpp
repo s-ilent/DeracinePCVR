@@ -307,12 +307,15 @@ int main() {
     nri.Shutdown();
     vk.Shutdown();
 
-    const auto& counters = harness::GlobalValidationCounters();
-    if (counters.errors == 0) {
-        log.Pass("zero validation errors");
+    const uint32_t unexpected = harness::UnexpectedErrorCount();
+    if (unexpected == 0) {
+        log.Pass("zero unexpected validation errors");
     } else {
-        log.Fail(std::to_string(counters.errors) + " validation errors");
-        for (const auto& msg : counters.messages) log.Info(msg);
+        log.Fail(std::to_string(unexpected) + " unexpected validation errors");
+        for (const auto& msg : harness::GlobalValidationCounters().messages) log.Info(msg);
+    }
+    if (!harness::AllExpectationsMet()) {
+        log.Fail("a declared expected diagnostic never fired");
     }
 
     return log.Finish();

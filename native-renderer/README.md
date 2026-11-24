@@ -19,6 +19,9 @@ the Khronos validation layer active and zero validation errors.
 | `t03_depth_stencil_aspects` | Depth and stencil aspects are independently addressable; a combined attachment view does not imply stencil writes |
 | `t04_stereo` | Sequential and multiview stereo into a two-layer image, with per-layer isolation verified |
 | `t05_submission_lifetime` | Generation-tagged identities, deferred parameter snapshots, and GPU-completion-driven retirement via timeline semaphores |
+| `t06_semantic_nri_draw` | **The end-to-end path**: an indexed stereo draw recorded through the semantic RHI, executed by NRI, into an externally owned image, verified per layer |
+| `t07_resource_registry` | Deterministic CPU test of the corrected ownership model: app ownership and GPU retention are independent |
+| `t08_lifetime_gpu` | The same lifetime semantics against real GPU completion, including deferred destruction and stale-id rejection |
 
 ## Dependencies
 
@@ -65,18 +68,32 @@ counted and reported; a non-zero error count fails the test.
 native-renderer/
   CMakeLists.txt
   src/common/
-    vk_bootstrap.{h,cpp}    instance, device, feature manifest, validation
-    nri_adoption.{h,cpp}    NRI device adoption and image wrapping
-    image_io.{h,cpp}        image creation, transitions, readback, clears
-    shader_compile.{h,cpp}  GLSL to SPIR-V via glslangValidator
-    diagnostics.{h,cpp}     status vocabulary and assertion helpers
+    vk_bootstrap.{h,cpp}      instance, device, feature manifest, validation
+    nri_adoption.{h,cpp}      NRI device adoption and image wrapping
+    image_io.{h,cpp}          image creation, transitions, readback, clears
+    shader_compile.{h,cpp}    GLSL to SPIR-V via glslangValidator
+    diagnostics.{h,cpp}       status vocabulary, expected diagnostics
+    resource_registry.{h,cpp} corrected ownership model
+    semantic_rhi.h            backend-independent interface
+  src/backend/
+    nri_device.{h,cpp}        the NRI implementation of semantic_rhi.h
   src/tests/
     t01_bootstrap.cpp
     t02_external_image.cpp
     t03_depth_stencil_aspects.cpp
     t04_stereo.cpp
     t05_submission_lifetime.cpp
+    t06_semantic_nri_draw.cpp
+    t07_resource_registry.cpp
+    t08_lifetime_gpu.cpp
 ```
+
+## Ownership model
+
+A resource has two independent reasons to stay alive: the application still owns
+it, and GPU submissions still reference it. Physical destruction happens only
+when both are gone. `Destroy()` revokes application ownership and defers
+physical destruction while references remain.
 
 ## Status vocabulary
 
