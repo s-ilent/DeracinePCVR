@@ -458,12 +458,37 @@ public:
                u32 index_element_size, const Mat4& mvp, VkDescriptorSet descriptor_set = {},
                bool textured = false, bool bind_descriptors = false,
                std::vector<u8> push_bytes = {}, u32 push_offset = 0, u32 push_size = 0,
-               u32 push_stages = 0)
+               u32 push_stages = 0, bool push_captured = false)
         : ctx_(ctx), cmd_(cmd), pipeline_(pipeline), layout_(layout), vertex_buffer_(vertex_buffer),
           index_buffer_(index_buffer), index_element_size_(index_element_size), mvp_(mvp),
           descriptor_set_(descriptor_set), textured_(textured), bind_descriptors_(bind_descriptors),
           push_bytes_(std::move(push_bytes)), push_offset_(push_offset), push_size_(push_size),
-          push_stages_(push_stages) {}
+          push_stages_(push_stages) {
+        // The mode is decided once, from what the caller established. An effective shader with no
+        // declared range gets None, not the diagnostic block.
+        if (push_captured) {
+            push_mode_ = push_size_ != 0 ? PushMode::Captured : PushMode::None;
+        } else {
+            push_mode_ = PushMode::Diagnostic;
+        }
+    }
+
+    /// Pushes the constants this pipeline layout expects.
+    ///
+    /// One mechanism, used by every callback that binds the pipeline. A second path that pushed the
+    /// diagnostic MVP would overwrite captured state, and for an effective shader that declares no
+    /// push constants it would issue a push the layout does not have.
+    void PushConstants() {
+        if (push_mode_ == PushMode::Captured) {
+            vkCmdPushConstants(cmd_, layout_, push_stages_, push_offset_, push_size_,
+                               push_bytes_.data());
+        } else if (push_mode_ == PushMode::Diagnostic) {
+            vkCmdPushConstants(cmd_, layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(mvp_.m),
+                               mvp_.m);
+        }
+        // PushMode::None issues nothing: an effective shader that declares no push constants must
+        // not receive the diagnostic block.
+    }
 
     void BeginFrame() override {
         // The tape carries no SetGraphicsPipeline operation: the bound-shader-state command is not
@@ -479,15 +504,7 @@ public:
             vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1,
                                     &descriptor_set_, 0, nullptr);
         }
-        // The push constants come from the captured state in effective mode. The diagnostic MVP is
-        // a substitute and is pushed only when no captured range was supplied.
-        if (push_size_ != 0) {
-            vkCmdPushConstants(cmd_, layout_, push_stages_, push_offset_, push_size_,
-                               push_bytes_.data());
-        } else {
-            vkCmdPushConstants(cmd_, layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(mvp_.m),
-                               mvp_.m);
-        }
+        PushConstants();
         // The tape carries no BindIndexBuffer operation: the recovered command cluster has no
         // index-buffer binding command, because the PS4 RHI receives the index buffer as an argument
         // to the draw rather than as separate state. The buffer is bound here from the tape's index
@@ -555,7 +572,8 @@ public:
     void SetGraphicsPipeline(u32 pipeline_id) override {
         (void)pipeline_id;
         vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
-        vkCmdPushConstants(cmd_, layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(mvp_.m), mvp_.m);
+        // The same mechanism as BeginFrame. A separate push here would overwrite captured state.
+        PushConstants();
     }
 
     void BindShaderResources(const u32* resources, u32 count) override {
@@ -598,6 +616,10 @@ private:
     bool textured_{};
     /// Whether the pipeline layout requires a descriptor set, independent of diagnostic texturing.
     bool bind_descriptors_{};
+    /// What to push. The mode is explicit so a shader that declares no push constants receives
+    /// nothing, rather than the diagnostic block by default.
+    enum class PushMode : u8 { None, Diagnostic, Captured };
+    PushMode push_mode_{PushMode::Diagnostic};
     /// The captured push-constant bytes, offset, size and stage mask.
     std::vector<u8> push_bytes_;
     u32 push_offset_{};
@@ -1511,7 +1533,7 @@ int main(int argc, char** argv) {
     input_assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
     input_assembly.topology =
         shader_mode_effective
-            ? static_cast<VkPrimitiveTopology>(captured_or(captured.has_topology,
+            ? static_cast<VkPrimitiveTopology>(captured_or(captured.present.topology,
                                                            captured.topology,
                                                            static_cast<u32>(
                                                                VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST),
@@ -1532,40 +1554,59 @@ int main(int argc, char** argv) {
 
     VkPipelineRasterizationStateCreateInfo raster{};
     raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    // Every one of these enums has a legitimate zero value, so presence comes from the package's
+    // explicit flags and never from testing the value against zero.
     raster.polygonMode =
         shader_mode_effective
-            ? static_cast<VkPolygonMode>(captured_or(captured.polygon_mode != 0,
+            ? static_cast<VkPolygonMode>(captured_or(captured.present.polygon_mode,
                                                      captured.polygon_mode,
                                                      static_cast<u32>(VK_POLYGON_MODE_FILL),
                                                      "polygon_mode"))
             : VK_POLYGON_MODE_FILL;
-    // Cull mode zero is a legitimate value, so presence is carried by the package having captured
-    // any pipeline state at all rather than by the value being non-zero.
-    raster.cullMode = shader_mode_effective
-                          ? static_cast<VkCullModeFlags>(captured.cull_mode)
-                          : VK_CULL_MODE_NONE;
-    raster.frontFace = shader_mode_effective
-                           ? static_cast<VkFrontFace>(captured.front_face)
-                           : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    raster.cullMode =
+        shader_mode_effective
+            ? static_cast<VkCullModeFlags>(captured_or(captured.present.cull_mode,
+                                                       captured.cull_mode,
+                                                       static_cast<u32>(VK_CULL_MODE_NONE),
+                                                       "cull_mode"))
+            : VK_CULL_MODE_NONE;
+    raster.frontFace =
+        shader_mode_effective
+            ? static_cast<VkFrontFace>(captured_or(captured.present.front_face,
+                                                   captured.front_face,
+                                                   static_cast<u32>(
+                                                       VK_FRONT_FACE_COUNTER_CLOCKWISE),
+                                                   "front_face"))
+            : VK_FRONT_FACE_COUNTER_CLOCKWISE;
     raster.lineWidth = 1.0f;
 
     VkPipelineMultisampleStateCreateInfo multisample{};
     multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     multisample.rasterizationSamples =
         shader_mode_effective
-            ? static_cast<VkSampleCountFlagBits>(captured_or(captured.samples != 0,
+            ? static_cast<VkSampleCountFlagBits>(captured_or(captured.present.samples,
                                                              captured.samples, 1u, "samples"))
             : VK_SAMPLE_COUNT_1_BIT;
 
     VkPipelineDepthStencilStateCreateInfo depth_state{};
     depth_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     depth_state.depthTestEnable =
-        shader_mode_effective ? (captured.depth_test ? VK_TRUE : VK_FALSE) : VK_TRUE;
+        shader_mode_effective
+            ? (captured_or(captured.present.depth_test, captured.depth_test, true,
+                           "depth_test")
+                   ? VK_TRUE
+                   : VK_FALSE)
+            : VK_TRUE;
     depth_state.depthWriteEnable =
-        shader_mode_effective ? (captured.depth_write ? VK_TRUE : VK_FALSE) : VK_TRUE;
+        shader_mode_effective
+            ? (captured_or(captured.present.depth_write, captured.depth_write, true,
+                           "depth_write")
+                   ? VK_TRUE
+                   : VK_FALSE)
+            : VK_TRUE;
     depth_state.depthCompareOp =
         shader_mode_effective
-            ? static_cast<VkCompareOp>(captured_or(captured.depth_compare_op != 0,
+            ? static_cast<VkCompareOp>(captured_or(captured.present.depth_compare_op,
                                                    captured.depth_compare_op,
                                                    static_cast<u32>(VK_COMPARE_OP_LESS_OR_EQUAL),
                                                    "depth_compare_op"))
@@ -1574,7 +1615,7 @@ int main(int argc, char** argv) {
     VkPipelineColorBlendAttachmentState blend_attachment{};
     // The write mask is captured per attachment. A package that did not capture one keeps the
     // diagnostic all-channels mask, and says so.
-    if (shader_mode_effective && !captured.write_mask.empty()) {
+    if (shader_mode_effective && captured.present.write_mask && !captured.write_mask.empty()) {
         blend_attachment.colorWriteMask = captured.write_mask[0];
     } else {
         if (shader_mode_effective) {
@@ -1586,7 +1627,8 @@ int main(int argc, char** argv) {
     // Blend factors and operations are not captured by the producer, so blending stays disabled
     // rather than being invented. A package that captured blend enable is reported as needing a
     // field the schema does not carry.
-    if (shader_mode_effective && !captured.blend_enable.empty() && captured.blend_enable[0] != 0) {
+    if (shader_mode_effective && captured.present.blend_enable &&
+        !captured.blend_enable.empty() && captured.blend_enable[0] != 0) {
         std::cerr << "the package captured blend enable for attachment 0, but the schema does not "
                      "carry blend factors or operations, so the blend state cannot be reproduced\n";
         return 1;
@@ -2104,7 +2146,8 @@ int main(int argc, char** argv) {
         }
         VulkanSink sink{ctx, cmd, pipeline, pipeline_layout, vertex_buffer, index_buffer,
                         index_width, mvp, descriptor_set, textured_mode, bind_descriptors,
-                        std::move(push_bytes), push_offset, push_size, push_stages};
+                        std::move(push_bytes), push_offset, push_size, push_stages,
+                        /*push_captured=*/shader_mode_effective};
         tape::ExecutionReport report{};
         std::string exec_error;
         if (!tape::Execute(tape, sink, report, exec_error, substitutions)) {
@@ -2282,6 +2325,17 @@ int main(int argc, char** argv) {
         std::cout << "\n";
     } else if (shader_mode_effective) {
         std::cout << "pipeline_state_substituted: none\n";
+    }
+
+    // The execution classification. A run that substitutes original-state fields is not a faithful
+    // original-state replay, and saying so once is more useful than leaving it to be inferred from
+    // the substituted list.
+    if (!shader_mode_effective) {
+        std::cout << "execution_state: diagnostic_substitution\n";
+    } else if (substituted_state.empty()) {
+        std::cout << "execution_state: effective_captured_state\n";
+    } else {
+        std::cout << "execution_state: effective_partial_state\n";
     }
 
     // Validation is reported as a count. Claiming success from the absence of a device loss would

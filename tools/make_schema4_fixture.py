@@ -225,6 +225,23 @@ def main(argv):
         'shader_stages': stages,
         'shader_interfaces': interfaces,
         'pipeline_state': {
+            # Presence is explicit because zero is a legitimate value for every one of these
+            # enums. The fixture captures all of them, so a zero value must survive.
+            'present': {
+                'topology': True,
+                'cull_mode': True,
+                'front_face': True,
+                'polygon_mode': True,
+                'depth_test': True,
+                'depth_write': True,
+                'depth_compare_op': True,
+                'samples': True,
+                'color_formats': True,
+                'depth_format': True,
+                'write_mask': True,
+                'blend_enable': True,
+                'viewport': True,
+            },
             'has_topology': True,
             'topology': 3,
             'cull_mode': 0,

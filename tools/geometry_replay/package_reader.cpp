@@ -398,6 +398,29 @@ bool Read(const std::string& directory, Package& out, std::string& error,
             const auto& entry = doc.at("pipeline_state");
             auto& state = out.pipeline_state;
             state.has_topology = entry.value("has_topology", false);
+            // Presence is read from an explicit block when the producer wrote one. A package that
+            // predates it falls back to the fields the producer always wrote, which is the best
+            // available evidence rather than a guess.
+            if (entry.contains("present")) {
+                const auto& present = entry.at("present");
+                state.present.topology = present.value("topology", false);
+                state.present.cull_mode = present.value("cull_mode", false);
+                state.present.front_face = present.value("front_face", false);
+                state.present.polygon_mode = present.value("polygon_mode", false);
+                state.present.depth_test = present.value("depth_test", false);
+                state.present.depth_write = present.value("depth_write", false);
+                state.present.depth_compare_op = present.value("depth_compare_op", false);
+                state.present.samples = present.value("samples", false);
+                state.present.color_formats = present.value("color_formats", false);
+                state.present.depth_format = present.value("depth_format", false);
+                state.present.write_mask = present.value("write_mask", false);
+                state.present.blend_enable = present.value("blend_enable", false);
+                state.present.viewport = present.value("viewport", false);
+            } else {
+                // A package without the block: the producer always wrote topology, so it is
+                // claimed. The array-backed fields are decided after the arrays are parsed, below.
+                state.present.topology = state.has_topology;
+            }
             state.topology = entry.value("topology", 0u);
             state.cull_mode = entry.value("cull_mode", 0u);
             state.front_face = entry.value("front_face", 0u);
@@ -426,6 +449,13 @@ bool Read(const std::string& directory, Package& out, std::string& error,
             }
             for (const auto& value : entry.value("push_constant_bytes", nlohmann::json::array())) {
                 state.push_constant_bytes.push_back(static_cast<u8>(value.get<u32>()));
+            }
+            // A package without a presence block claims only the array-backed fields it actually
+            // carries. This runs after the arrays are parsed, so the check sees their real size.
+            if (!entry.contains("present")) {
+                state.present.color_formats = !state.color_formats.empty();
+                state.present.write_mask = !state.write_mask.empty();
+                state.present.blend_enable = !state.blend_enable.empty();
             }
         }
 

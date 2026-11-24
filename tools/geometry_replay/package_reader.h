@@ -192,10 +192,34 @@ struct ShaderStage {
     std::vector<u8> effective_bytes;
 };
 
+/// Which pipeline-state fields the package actually captured.
+///
+/// Presence is explicit because zero is a legitimate value for every one of these enums:
+/// `VK_POLYGON_MODE_FILL` is 0, `VK_COMPARE_OP_NEVER` is 0, `VK_PRIMITIVE_TOPOLOGY_POINT_LIST` is 0
+/// and `VK_CULL_MODE_NONE` is 0. Testing a value against zero to decide whether it was captured
+/// would substitute the diagnostic default for exactly the fields the game set to their zero value.
+struct PipelineStatePresent {
+    bool topology : 1;
+    bool cull_mode : 1;
+    bool front_face : 1;
+    bool polygon_mode : 1;
+    bool depth_test : 1;
+    bool depth_write : 1;
+    bool depth_compare_op : 1;
+    bool samples : 1;
+    bool color_formats : 1;
+    bool depth_format : 1;
+    bool write_mask : 1;
+    bool blend_enable : 1;
+    bool viewport : 1;
+};
+
 /// The graphics pipeline state the draw used, as the renderer actually configured it.
 struct PipelineState {
-    /// Whether the topology was captured. Zero is a legitimate Vulkan topology value, so it cannot
-    /// double as a missing-data sentinel.
+    /// Which fields were captured. A field not marked present keeps the diagnostic default and is
+    /// reported as substituted.
+    PipelineStatePresent present{};
+    /// Whether the topology was captured. Kept for compatibility with the producer's own field.
     bool has_topology{};
     u32 topology{};
     u32 cull_mode{};
