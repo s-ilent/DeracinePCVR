@@ -65,6 +65,11 @@ struct Rendered {
     u32 width{};
     u32 height{};
     u32 bytes_per_pixel{};
+    /// The Vulkan format the render used, so a reference of a different format is refused rather
+    /// than compared byte for byte. Two images can both be four bytes per pixel and still not be
+    /// comparable: RGBA8 and BGRA8 differ in channel order, and UNORM and SRGB differ in
+    /// interpretation.
+    u32 format{};
     /// The pixels, tightly packed, in the reference's channel order.
     std::vector<u8> pixels;
 };
@@ -74,7 +79,19 @@ struct Rendered {
 /// param require_pre  When true, a package without a pre-draw image is reported as an incomplete
 ///                    capture rather than compared. A draw whose output depends on what the target
 ///                    held before it cannot be verified without that image.
+///
+/// A caller must set this when the draw's result depends on the attachment's preceding contents:
+/// blending, partial coverage, disabled colour writes, a pass that loads instead of clearing, or a
+/// draw that preserves untouched pixels. Assuming a cleared target in those cases would compare
+/// against a state the draw never saw.
 [[nodiscard]] Comparison Compare(const package::Package& package, const Rendered& rendered,
                                  bool require_pre = false);
+
+/// Whether a draw's result depends on what the attachment held before it.
+///
+/// This is decided from the captured state, not guessed: a draw that blends, writes only some
+/// channels, or covers only part of the target inherits what was there. A draw that clears and
+/// covers everything does not.
+[[nodiscard]] bool DependsOnPriorContents(const package::Package& package);
 
 } // namespace reference

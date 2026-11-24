@@ -2240,9 +2240,17 @@ int main(int argc, char** argv) {
                     produced.width = kWidth;
                     produced.height = kHeight;
                     produced.bytes_per_pixel = 4;
+                    // The replay renders into its own RGBA8 target, so that is the format the
+                    // comparison is against. A reference captured in another format is refused
+                    // rather than compared byte for byte.
+                    produced.format = 37; // VK_FORMAT_R8G8B8A8_UNORM
                     produced.pixels.assign(src, src + kWidth * kHeight * 4);
+                    // A draw whose result depends on what the attachment held before it cannot be
+                    // verified without the pre-draw image. Assuming a cleared target in that case
+                    // would compare against a state the draw never saw.
+                    const bool needs_pre = reference::DependsOnPriorContents(pkg);
                     const reference::Comparison comparison =
-                        reference::Compare(pkg, produced, /*require_pre=*/false);
+                        reference::Compare(pkg, produced, needs_pre);
                     std::cout << "reference_status: "
                               << reference::StatusName(comparison.status) << "\n";
                     if (comparison.status == reference::Status::ExactMatch ||

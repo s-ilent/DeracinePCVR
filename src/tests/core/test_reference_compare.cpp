@@ -141,4 +141,69 @@ TEST(ReferenceCompare, TheErrorMetricsAreComputedOverEveryChannel) {
     EXPECT_NEAR(comparison.mean_absolute_error, 0.25, 1e-9);
 }
 
+TEST(ReferenceCompare, ADifferentFormatOfEqualByteSizeIsIncompatible) {
+    // RGBA8 and BGRA8 are both four bytes per pixel and are not comparable: the channel order
+    // differs, so a byte-for-byte comparison would report a rendering mismatch for a configuration
+    // difference.
+    auto package = MakePackage(4, 4, 4);
+    package.reference.format = 37; // VK_FORMAT_R8G8B8A8_UNORM
+    auto rendered = MakeRendered(package);
+    rendered.format = 44; // VK_FORMAT_B8G8R8A8_UNORM
+    const auto comparison = reference::Compare(package, rendered);
+    EXPECT_EQ(comparison.status, Status::IncompatibleReference);
+    EXPECT_NE(comparison.reason.find("equal byte size"), std::string::npos);
+}
+
+TEST(ReferenceCompare, TheSameFormatCompares) {
+    auto package = MakePackage(4, 4, 4);
+    package.reference.format = 37;
+    auto rendered = MakeRendered(package);
+    rendered.format = 37;
+    const auto comparison = reference::Compare(package, rendered);
+    EXPECT_EQ(comparison.status, Status::ExactMatch);
+}
+
+TEST(ReferenceCompare, AnUnstatedFormatDoesNotBlockTheComparison) {
+    // A caller that did not record its format is not refused: the check is a guard against a known
+    // disagreement, not a requirement that every caller state one.
+    auto package = MakePackage(4, 4, 4);
+    package.reference.format = 37;
+    auto rendered = MakeRendered(package);
+    rendered.format = 0;
+    const auto comparison = reference::Compare(package, rendered);
+    EXPECT_EQ(comparison.status, Status::ExactMatch);
+}
+
+TEST(ReferenceCompare, BlendingMakesTheDrawDependOnPriorContents) {
+    auto package = MakePackage(4, 4, 4);
+    package.pipeline_state.present.blend_enable = true;
+    package.pipeline_state.blend_enable = {1};
+    EXPECT_TRUE(reference::DependsOnPriorContents(package));
+}
+
+TEST(ReferenceCompare, APartialWriteMaskMakesTheDrawDependOnPriorContents) {
+    auto package = MakePackage(4, 4, 4);
+    package.pipeline_state.present.write_mask = true;
+    package.pipeline_state.write_mask = {0x7};
+    EXPECT_TRUE(reference::DependsOnPriorContents(package));
+}
+
+TEST(ReferenceCompare, AFullWriteMaskWithNoBlendDoesNotDependOnPriorContents) {
+    auto package = MakePackage(4, 4, 4);
+    package.pipeline_state.present.write_mask = true;
+    package.pipeline_state.write_mask = {0xF};
+    package.pipeline_state.present.blend_enable = true;
+    package.pipeline_state.blend_enable = {0};
+    package.pipeline_state.present.depth_test = true;
+    package.pipeline_state.depth_test = false;
+    EXPECT_FALSE(reference::DependsOnPriorContents(package));
+}
+
+TEST(ReferenceCompare, ADepthTestMakesTheDrawDependOnPriorContents) {
+    auto package = MakePackage(4, 4, 4);
+    package.pipeline_state.present.depth_test = true;
+    package.pipeline_state.depth_test = true;
+    EXPECT_TRUE(reference::DependsOnPriorContents(package));
+}
+
 } // namespace

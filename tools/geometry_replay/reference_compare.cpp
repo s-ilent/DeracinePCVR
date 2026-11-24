@@ -81,6 +81,17 @@ Comparison Compare(const package::Package& package, const Rendered& rendered, bo
                      std::to_string(captured.bytes_per_pixel);
         return out;
     }
+    // Equal byte size is not comparable representation. RGBA8 and BGRA8 differ in channel order,
+    // and a UNORM and an SRGB format differ in interpretation, so a byte-for-byte comparison across
+    // them would report a rendering mismatch for a configuration difference.
+    if (rendered.format != 0 && captured.format != 0 && rendered.format != captured.format) {
+        out.status = Status::IncompatibleReference;
+        out.reason = "the render used format " + std::to_string(rendered.format) +
+                     " but the reference was captured in format " +
+                     std::to_string(captured.format) +
+                     "; equal byte size does not make two formats comparable";
+        return out;
+    }
 
     const u64 expected = static_cast<u64>(captured.width) * captured.height *
                          captured.bytes_per_pixel;
@@ -132,6 +143,35 @@ Comparison Compare(const package::Package& package, const Rendered& rendered, bo
                      std::to_string(out.compared_pixels) + " pixels differ";
     }
     return out;
+}
+
+bool DependsOnPriorContents(const package::Package& package) {
+    const package::PipelineState& state = package.pipeline_state;
+
+    // Blending reads the destination, so the result depends on what was there.
+    if (state.present.blend_enable) {
+        for (const u32 enable : state.blend_enable) {
+            if (enable != 0) {
+                return true;
+            }
+        }
+    }
+    // A write mask that omits a channel leaves that channel as it was.
+    if (state.present.write_mask) {
+        for (const u32 mask : state.write_mask) {
+            if (mask != 0xF) {
+                return true;
+            }
+        }
+    }
+    // A depth test that does not always pass leaves some pixels untouched.
+    if (state.present.depth_test && state.depth_test) {
+        return true;
+    }
+    // A draw that does not cover the whole target preserves the pixels it misses. The package does
+    // not record coverage, so a reference without a pre-draw image cannot be checked for it; the
+    // caller decides from the geometry it knows.
+    return false;
 }
 
 } // namespace reference
