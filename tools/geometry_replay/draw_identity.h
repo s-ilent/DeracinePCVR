@@ -118,6 +118,9 @@ struct TapeIdentity {
 /// The identity facts a package contributes.
 struct PackageIdentity {
     u64 provenance_id{};
+    /// The execution the package was captured in. A package from a different execution than the
+    /// bridge cannot be joined, however well the addresses agree.
+    u64 execution_id{};
     u64 index_guest_base{};
     u64 index_guest_size{};
     /// Which namespace `index_guest_base` belongs to.
@@ -133,7 +136,44 @@ struct PackageIdentity {
     bool has_index_binding{};
 };
 
+/// The recovered bridge from an original UE4 index-buffer object to the guest allocation.
+///
+/// This is what makes the index-resource comparison meaningful. Without it the tape carries an
+/// object pointer and the package a guest address, and comparing them is nonsense. With it, the
+/// tape side contributes a guest address that was independently resolved from the object, so the
+/// comparison is between two values in the same namespace.
+struct IndexBridge {
+    /// The execution the bridge was recovered in. A bridge from a different execution than the
+    /// package cannot establish a match, however well the addresses agree.
+    u64 execution_id{};
+    /// The original object pointer the RHI invocation was given.
+    u64 original_rhi_object{};
+    bool has_original_rhi_object{};
+    /// The guest allocation the object resolved to.
+    u64 guest_allocation_base{};
+    bool has_guest_allocation_base{};
+    /// The allocation size, when recovered.
+    u64 guest_allocation_size{};
+    bool has_guest_allocation_size{};
+    /// The byte offset into the allocation the draw starts at.
+    u64 allocation_offset{};
+    bool has_allocation_offset{};
+    /// The index element width the object declares.
+    u32 index_element_width{};
+    bool has_index_element_width{};
+    /// A generation counter, when available. Two resources at the same address with different
+    /// generations are different resources.
+    u64 resource_generation{};
+    bool has_resource_generation{};
+    /// How strongly the address is supported.
+    std::string_view evidence;
+};
+
+/// Whether a bridge carries enough to compare.
+[[nodiscard]] bool IsBridgeComparable(const IndexBridge& bridge) noexcept;
+
 /// Attempts the join.
+
 ///
 /// The comparison is deliberately layered, because the fields are not equally strong:
 ///
@@ -152,5 +192,21 @@ struct PackageIdentity {
 /// A field the package does not carry is reported as not comparable rather than as agreeing.
 [[nodiscard]] JoinResult JoinTapeToPackage(const TapeIdentity& tape_identity,
                                            const PackageIdentity& package_identity) noexcept;
+
+/// Attempts the join with the recovered index-resource bridge.
+///
+/// This is the form the capture should use. The bridge resolves the tape's original object pointer
+/// to a guest allocation, so the index-resource comparison is between two guest addresses rather
+/// than between two namespaces.
+///
+/// The bridge is required, not optional. A join that falls back to the object-pointer comparison
+/// when the bridge is absent would be the defect this module exists to prevent, so an absent or
+/// incomparable bridge yields InsufficientEvidence rather than a weaker match.
+///
+/// A bridge from a different execution than the package is rejected outright: the same address in
+/// two processes is not the same resource.
+[[nodiscard]] JoinResult JoinTapeToPackageWithBridge(const TapeIdentity& tape_identity,
+                                                     const PackageIdentity& package_identity,
+                                                     const IndexBridge& bridge) noexcept;
 
 } // namespace tape

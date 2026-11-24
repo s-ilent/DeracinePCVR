@@ -240,4 +240,178 @@ JoinResult JoinTapeToPackage(const TapeIdentity& tape_identity,
     return result;
 }
 
+bool IsBridgeComparable(const IndexBridge& bridge) noexcept {
+    return bridge.has_guest_allocation_base && bridge.guest_allocation_base != 0;
+}
+
+JoinResult JoinTapeToPackageWithBridge(const TapeIdentity& tape_identity,
+                                       const PackageIdentity& package_identity,
+                                       const IndexBridge& bridge) noexcept {
+    JoinResult result{};
+
+    // --- Execution identity -------------------------------------------------------------------
+    // A bridge from a different execution than the package cannot establish a match. The same
+    // address in two processes is not the same resource, and a reused provenance id across runs
+    // is not the same draw.
+    {
+        IdentityField field{};
+        field.name = "execution_id";
+        field.tape_value = Hex(bridge.execution_id);
+        field.package_value = Hex(package_identity.execution_id);
+        field.comparable = bridge.execution_id != 0 && package_identity.execution_id != 0;
+        field.agrees = field.comparable && bridge.execution_id == package_identity.execution_id;
+        result.fields.push_back(field);
+        if (field.comparable && !field.agrees) {
+            result.outcome = JoinOutcome::Mismatched;
+            result.reason =
+                "the bridge and the package were captured in different executions";
+            return result;
+        }
+    }
+
+    // --- Provenance ---------------------------------------------------------------------------
+    {
+        IdentityField field{};
+        field.name = "provenance_id";
+        field.tape_value = Dec(tape_identity.provenance_id);
+        field.package_value = Dec(package_identity.provenance_id);
+        field.comparable = tape_identity.provenance_id != 0 && package_identity.provenance_id != 0;
+        field.agrees = field.comparable &&
+                       tape_identity.provenance_id == package_identity.provenance_id;
+        result.fields.push_back(field);
+        if (field.comparable && !field.agrees) {
+            result.outcome = JoinOutcome::Mismatched;
+            result.reason = "the tape and the package were captured for different draws";
+            return result;
+        }
+    }
+
+    // --- The bridge itself --------------------------------------------------------------------
+    // The bridge must be present and comparable. Falling back to the object-pointer comparison
+    // when it is absent would be the defect this module exists to prevent.
+    if (!IsBridgeComparable(bridge)) {
+        IdentityField field{};
+        field.name = "index_bridge";
+        field.tape_value = "absent";
+        field.package_value = Hex(package_identity.index_guest_base);
+        field.comparable = false;
+        field.agrees = false;
+        result.fields.push_back(field);
+        result.outcome = JoinOutcome::InsufficientEvidence;
+        result.reason =
+            "the original index-buffer object was not resolved to a guest allocation, so the "
+            "index resource cannot be compared";
+        return result;
+    }
+
+    // --- Index resource, now in one namespace -------------------------------------------------
+    {
+        IdentityField field{};
+        field.name = "index_guest_base";
+        field.tape_value = Hex(bridge.guest_allocation_base);
+        field.package_value = Hex(package_identity.index_guest_base);
+        field.comparable = package_identity.index_guest_base != 0;
+        field.agrees = field.comparable &&
+                       bridge.guest_allocation_base == package_identity.index_guest_base;
+        result.fields.push_back(field);
+        if (field.comparable && !field.agrees) {
+            result.outcome = JoinOutcome::Mismatched;
+            result.reason = "the resolved index allocation and the package name different buffers";
+            return result;
+        }
+        if (!field.comparable) {
+            result.outcome = JoinOutcome::InsufficientEvidence;
+            result.reason = "the package carries no index allocation to compare against";
+            return result;
+        }
+    }
+
+    // --- Generation ---------------------------------------------------------------------------
+    // The same address with a different generation is a reused allocation, not the same resource.
+    if (bridge.has_resource_generation && bridge.resource_generation != 0) {
+        IdentityField field{};
+        field.name = "resource_generation";
+        field.tape_value = Dec(bridge.resource_generation);
+        field.package_value = "unknown";
+        field.comparable = false;
+        field.agrees = false;
+        result.fields.push_back(field);
+        result.outcome = JoinOutcome::InsufficientEvidence;
+        result.reason =
+            "the bridge carries a resource generation the package cannot confirm, so an address "
+            "match alone does not establish identity";
+        return result;
+    }
+
+    // --- Element width ------------------------------------------------------------------------
+    if (bridge.has_index_element_width && package_identity.index_element_size != 0) {
+        IdentityField field{};
+        field.name = "index_element_size";
+        field.tape_value = Dec(bridge.index_element_width);
+        field.package_value = Dec(package_identity.index_element_size);
+        field.comparable = true;
+        field.agrees = bridge.index_element_width == package_identity.index_element_size;
+        result.fields.push_back(field);
+        if (!field.agrees) {
+            result.outcome = JoinOutcome::Mismatched;
+            result.reason = "the bridge and the package disagree on the index element width";
+            return result;
+        }
+    }
+
+    // --- Range --------------------------------------------------------------------------------
+    // The draw must read inside the allocation. An address match with a range that runs past the
+    // end is not a usable identity.
+    if (bridge.has_guest_allocation_size && bridge.guest_allocation_size != 0 &&
+        package_identity.index_guest_size != 0) {
+        const u64 offset = bridge.has_allocation_offset ? bridge.allocation_offset : 0;
+        const u64 required = static_cast<u64>(package_identity.index_count) *
+                             (package_identity.index_element_size != 0
+                                  ? package_identity.index_element_size
+                                  : 1);
+        IdentityField field{};
+        field.name = "index_range";
+        field.tape_value = Dec(offset + required);
+        field.package_value = Dec(bridge.guest_allocation_size);
+        field.comparable = true;
+        field.agrees = offset <= bridge.guest_allocation_size &&
+                       required <= bridge.guest_allocation_size - offset;
+        result.fields.push_back(field);
+        if (!field.agrees) {
+            result.outcome = JoinOutcome::Mismatched;
+            result.reason = "the draw reads outside the resolved index allocation";
+            return result;
+        }
+    }
+
+    // --- Derived draw -------------------------------------------------------------------------
+    // A consistency check, not identity. Two different draws can share every one of these.
+    const auto consistency = [&result](std::string_view name, u64 tape_value, u64 package_value,
+                                       bool comparable) {
+        IdentityField field{};
+        field.name = name;
+        field.tape_value = Dec(tape_value);
+        field.package_value = Dec(package_value);
+        field.comparable = comparable;
+        field.agrees = comparable && tape_value == package_value;
+        result.fields.push_back(field);
+        if (comparable && !field.agrees) {
+            result.derived_consistent = false;
+            result.derived_disagreements.push_back(name);
+        }
+    };
+    consistency("index_count", tape_identity.derived_index_count, package_identity.index_count,
+                package_identity.has_index_binding);
+    consistency("first_index", tape_identity.start_index, package_identity.first_index,
+                package_identity.has_index_binding);
+    consistency("instance_count", tape_identity.num_instances, package_identity.instance_count,
+                package_identity.has_index_binding);
+    consistency("first_instance", tape_identity.first_instance, package_identity.first_instance,
+                package_identity.has_index_binding);
+
+    result.outcome = JoinOutcome::Joined;
+    result.reason.clear();
+    return result;
+}
+
 } // namespace tape

@@ -25,6 +25,7 @@
 #include "core/loader/elf.h"
 #include "core/memory.h"
 #include "core/module.h"
+#include "core/index_identity.h"
 #include "core/rhi_command_capture.h"
 #include "core/rhi_entry_probe_contract.h"
 
@@ -400,6 +401,69 @@ static void CaptureEntryImpl(const GuestEntryRegisterFrame* frame, void* user_da
             // The index-buffer resource is the entry's second argument.
             record.rhi_index_resource_lo = static_cast<u32>(event.integer_arguments[1]);
             record.rhi_index_resource_hi = static_cast<u32>(event.integer_arguments[1] >> 32);
+
+            // Resolve the original UE4 index-buffer object to the guest GPU address the draw will
+            // consume, when the identity observer is enabled.
+            //
+            // The object layout is recovered from this implementation, not from a public UE4
+            // header: the RHI receives an interface pointer, the resource base is that pointer
+            // minus 0x68, and the GPU address is at +0x20 or +0x40 depending on a thread-identity
+            // check the implementation performs. Both slots are read and the selected one is
+            // recorded, because recording only one would be wrong for whichever thread took the
+            // other path.
+            if (IndexIdentity::IsEnabled() && state->memory != nullptr) {
+                IndexIdentity::OriginalIndexResourceIdentity identity{};
+                identity.execution_id = IndexIdentity::ExecutionId();
+                identity.provenance_id = id;
+                identity.original_rhi_object = event.integer_arguments[1];
+                identity.has_original_rhi_object = identity.original_rhi_object != 0;
+
+                if (identity.has_original_rhi_object) {
+                    const VAddr resource_base =
+                        static_cast<VAddr>(identity.original_rhi_object) -
+                        IndexIdentity::ObjectLayout::InterfaceOffset;
+                    identity.resource_base = resource_base;
+                    identity.has_resource_base = true;
+
+                    // The element-width indicator: zero means 16-bit, non-zero means 32-bit.
+                    u64 width_word{};
+                    if (ReadGuestWord(*state->memory,
+                                      resource_base +
+                                          IndexIdentity::ObjectLayout::ElementWidthOffset,
+                                      width_word)) {
+                        identity.index_element_width =
+                            (width_word & 0xFFFFFFFFull) != 0 ? 4u : 2u;
+                        identity.has_index_element_width = true;
+                    }
+
+                    // Both address slots. The implementation selects one; the observer records
+                    // whichever holds a plausible guest address, and names the slot it used.
+                    u64 address_a{};
+                    u64 address_b{};
+                    const bool have_a = ReadGuestWord(
+                        *state->memory,
+                        resource_base + IndexIdentity::ObjectLayout::AddressOffsetA, address_a);
+                    const bool have_b = ReadGuestWord(
+                        *state->memory,
+                        resource_base + IndexIdentity::ObjectLayout::AddressOffsetB, address_b);
+
+                    if (have_a && address_a != 0) {
+                        identity.guest_allocation_base = address_a;
+                        identity.has_guest_allocation_base = true;
+                        identity.address_slot = IndexIdentity::AddressSlot::Primary;
+                        identity.address_evidence =
+                            IndexIdentity::EvidenceClass::RuntimeObserved;
+                    } else if (have_b && address_b != 0) {
+                        identity.guest_allocation_base = address_b;
+                        identity.has_guest_allocation_base = true;
+                        identity.address_slot = IndexIdentity::AddressSlot::Secondary;
+                        identity.address_evidence =
+                            IndexIdentity::EvidenceClass::RuntimeObserved;
+                    }
+                }
+
+                IndexIdentity::NoteIdentity(identity);
+            }
 
             // Connect this invocation to the deferred UE4 command that issued it, when there is
             // one. A direct RHI call that bypassed the recovered wrapper leaves these zero, which

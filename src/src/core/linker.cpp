@@ -28,6 +28,7 @@
 #include "core/linker.h"
 #include "core/rhi_command_capture.h"
 #include "core/semantic_tape.h"
+#include "core/index_identity.h"
 #include "core/shader_param_capture.h"
 #include "core/vertex_input_capture.h"
 #include "core/rhi_entry_probe.h"
@@ -542,6 +543,9 @@ void Linker::Execute(const std::vector<std::string>& args) {
     // The vertex-input snapshot is its own opt-in and only reads the environment.
     VertexInputCapture::TryInstall();
     ShaderParamCapture::TryInstall();
+    // The original index-resource observer is its own opt-in and only reads the environment.
+    IndexIdentity::TryInstallBeforeGuestThread(
+        *module, Common::ElfInfo::Instance().GameSerial(), Common::ElfInfo::Instance().AppVer());
     // The semantic tape is read-only: it observes the existing capture records and installs no new
     // guest entry point, so the game's rendering path is untouched.
     SemanticTape::TryInstallBeforeGuestThread(
