@@ -397,10 +397,51 @@ bool WritePackage(const Package& package, const std::string& directory) noexcept
         }
         json << "  ],\n";
 
+        // The descriptor interface of each effective stage.
+        json << "  \"shader_interfaces\": [\n";
+        for (size_t i = 0; i < package.shader_interfaces.size(); ++i) {
+            const auto& interface = package.shader_interfaces[i];
+            json << "    {\n";
+            json << "      \"program_hash\": " << interface.program_hash << ",\n";
+            json << "      \"permutation_index\": " << interface.permutation_index << ",\n";
+            json << "      \"permutation_hash\": " << interface.permutation_hash << ",\n";
+            json << "      \"hardware_stage\": " << interface.hardware_stage << ",\n";
+            json << "      \"logical_stage\": " << interface.logical_stage << ",\n";
+            json << "      \"patched\": " << (interface.patched ? "true" : "false") << ",\n";
+            json << "      \"push_constant_offset\": " << interface.push_constant_offset
+                 << ",\n";
+            json << "      \"push_constant_size\": " << interface.push_constant_size << ",\n";
+            json << "      \"push_constant_stage_flags\": "
+                 << interface.push_constant_stage_flags << ",\n";
+            json << "      \"unified_binding_count\": " << interface.unified_binding_count
+                 << ",\n";
+            json << "      \"descriptors\": [\n";
+            for (size_t d = 0; d < interface.descriptors.size(); ++d) {
+                const auto& descriptor = interface.descriptors[d];
+                json << "        {\n";
+                json << "          \"set\": " << descriptor.set << ",\n";
+                json << "          \"binding\": " << descriptor.binding << ",\n";
+                json << "          \"descriptor_class\": " << descriptor.descriptor_class
+                     << ",\n";
+                json << "          \"count\": " << descriptor.count << ",\n";
+                json << "          \"stage_flags\": " << descriptor.stage_flags << ",\n";
+                json << "          \"guest_resource_index\": " << descriptor.guest_resource_index
+                     << ",\n";
+                json << "          \"written\": " << (descriptor.written ? "true" : "false")
+                     << "\n";
+                json << "        }" << (d + 1 < interface.descriptors.size() ? "," : "") << "\n";
+            }
+            json << "      ]\n";
+            json << "    }" << (i + 1 < package.shader_interfaces.size() ? "," : "") << "\n";
+        }
+        json << "  ],\n";
+
         // The graphics pipeline state the draw used.
         {
             const auto& state = package.pipeline_state;
             json << "  \"pipeline_state\": {\n";
+            json << "    \"has_topology\": " << (state.has_topology ? "true" : "false")
+                 << ",\n";
             json << "    \"topology\": " << state.topology << ",\n";
             json << "    \"cull_mode\": " << state.cull_mode << ",\n";
             json << "    \"front_face\": " << state.front_face << ",\n";

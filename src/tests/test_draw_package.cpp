@@ -466,15 +466,44 @@ Core::DrawPackage::ShaderStage MakeStage(u32 logical_stage, u64 program_hash, u3
 }
 
 /// A package that carries everything the original-shader claim needs.
+/// A descriptor interface for one stage, declaring the uniform buffer the fixture binds.
+Core::DrawPackage::ShaderInterface MakeInterface(u64 program_hash, u32 perm_idx,
+                                                 u32 logical_stage) {
+    Core::DrawPackage::ShaderInterface interface{};
+    interface.program_hash = program_hash;
+    interface.permutation_index = perm_idx;
+    interface.permutation_hash = HashCombine(program_hash, static_cast<u64>(perm_idx));
+    interface.hardware_stage = logical_stage == 3 ? 1u : 0u;
+    interface.logical_stage = logical_stage;
+    interface.patched = false;
+    interface.push_constant_offset = 0;
+    interface.push_constant_size = 0;
+    interface.push_constant_stage_flags = 1u << logical_stage;
+    interface.unified_binding_count = 1;
+    Core::DrawPackage::ShaderDescriptor descriptor{};
+    descriptor.set = 0;
+    descriptor.binding = 0;
+    descriptor.descriptor_class = 1; // uniform buffer
+    descriptor.count = 1;
+    descriptor.stage_flags = 1u << logical_stage;
+    descriptor.guest_resource_index = 0;
+    descriptor.written = false;
+    interface.descriptors.push_back(descriptor);
+    return interface;
+}
+
 Package MakeOriginalShaderPackage() {
     auto package = MakeValidPackage();
     AddGeometry(package);
     package.readiness.geometry_ready = true;
     package.shader_stages.push_back(MakeStage(3, 0x1111, 0));
     package.shader_stages.push_back(MakeStage(0, 0x2222, 0));
+    package.shader_interfaces.push_back(MakeInterface(0x1111, 0, 3));
+    package.shader_interfaces.push_back(MakeInterface(0x2222, 0, 0));
     package.readiness.shader_binaries_ready = true;
     package.readiness.shader_bindings_ready = true;
     package.readiness.shader_parameters_ready = true;
+    package.pipeline_state.has_topology = true;
     package.pipeline_state.topology = 4;
     package.pipeline_state.color_formats = {37};
     package.pipeline_state.push_constant_size = 0;
@@ -557,8 +586,9 @@ TEST(DrawPackageOriginalShader, RejectsAPushConstantRangeThatDoesNotMatchItsByte
 }
 
 TEST(DrawPackageOriginalShader, RejectsPipelineStateWithoutTopology) {
+    // Zero is a legitimate topology, so the presence flag is what marks it missing.
     auto package = MakeOriginalShaderPackage();
-    package.pipeline_state.topology = 0;
+    package.pipeline_state.has_topology = false;
     std::string error;
     EXPECT_FALSE(ValidatePackage(package, error));
 }
@@ -599,6 +629,93 @@ TEST(DrawPackageOriginalShader, AVersionTwoPackageIsRefused) {
     // reinterpreting it would let it claim readiness it never established.
     auto package = MakeValidPackage();
     package.schema_version = 2;
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Descriptor interface (schema 4)
+//
+// These cover the check that replaced "some binding exists": the effective modules' required
+// resources must actually be available.
+// ---------------------------------------------------------------------------------------------
+
+TEST(DrawPackageInterface, ACompleteInterfaceIsAccepted) {
+    auto package = MakeOriginalShaderPackage();
+    std::string error;
+    EXPECT_TRUE(ValidatePackage(package, error)) << error;
+}
+
+TEST(DrawPackageInterface, BindingsWithoutAnInterfaceAreRejected) {
+    auto package = MakeOriginalShaderPackage();
+    package.shader_interfaces.clear();
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+    EXPECT_NE(error.find("no descriptor interface"), std::string::npos) << error;
+}
+
+TEST(DrawPackageInterface, AStageWithoutAnInterfaceIsRejected) {
+    auto package = MakeOriginalShaderPackage();
+    package.shader_interfaces.pop_back();
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+    EXPECT_NE(error.find("no descriptor interface for its permutation"), std::string::npos)
+        << error;
+}
+
+TEST(DrawPackageInterface, ADescriptorWithNoCapturedResourceIsRejected) {
+    // The interface declares a binding the package has no resource for. That is the defect the
+    // old check could not see: a binding existed, but not the one the module needs.
+    auto package = MakeOriginalShaderPackage();
+    package.shader_interfaces[0].descriptors[0].binding = 9;
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+    EXPECT_NE(error.find("no captured resource"), std::string::npos) << error;
+}
+
+TEST(DrawPackageInterface, AZeroDescriptorCountIsRejected) {
+    auto package = MakeOriginalShaderPackage();
+    package.shader_interfaces[0].descriptors[0].count = 0;
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+    EXPECT_NE(error.find("zero descriptor count"), std::string::npos) << error;
+}
+
+TEST(DrawPackageInterface, ASamplerNeedsNoCapturedBuffer) {
+    // A sampler descriptor legitimately has no buffer, so it must not be required to resolve.
+    auto package = MakeOriginalShaderPackage();
+    Core::DrawPackage::ShaderDescriptor sampler{};
+    sampler.set = 0;
+    sampler.binding = 5;
+    sampler.descriptor_class = 5; // sampler
+    sampler.count = 1;
+    sampler.stage_flags = 1u << 0;
+    package.shader_interfaces[1].descriptors.push_back(sampler);
+    std::string error;
+    EXPECT_TRUE(ValidatePackage(package, error)) << error;
+}
+
+TEST(DrawPackageInterface, ZeroTopologyIsAcceptedWhenPresenceIsDeclared) {
+    // Zero is a legitimate Vulkan topology value. The presence flag is what distinguishes it from
+    // missing data.
+    auto package = MakeOriginalShaderPackage();
+    package.pipeline_state.topology = 0;
+    package.pipeline_state.has_topology = true;
+    std::string error;
+    EXPECT_TRUE(ValidatePackage(package, error)) << error;
+}
+
+TEST(DrawPackageInterface, MissingTopologyPresenceIsRejected) {
+    auto package = MakeOriginalShaderPackage();
+    package.pipeline_state.has_topology = false;
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+    EXPECT_NE(error.find("no topology"), std::string::npos) << error;
+}
+
+TEST(DrawPackageInterface, AVersionThreePackageIsRefused) {
+    auto package = MakeOriginalShaderPackage();
+    package.schema_version = 3;
     std::string error;
     EXPECT_FALSE(ValidatePackage(package, error));
 }

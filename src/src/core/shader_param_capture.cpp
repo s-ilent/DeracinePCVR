@@ -21,6 +21,7 @@
 #include "core/draw_package.h"
 #include "core/reference_output.h"
 #include "core/shader_binary_capture.h"
+#include "core/shader_interface_capture.h"
 #include "core/texture_capture.h"
 
 namespace Core::ShaderParamCapture {
@@ -1287,12 +1288,49 @@ void WriteFirstPackage(const char* directory) noexcept {
                 const bool have_vs = add_stage(draw.vs_hash, 3);
                 const bool have_ps = add_stage(draw.ps_hash, 0);
                 package.readiness.shader_binaries_ready = have_vs && have_ps;
+
+                // The descriptor interface of each effective stage, keyed by permutation hash.
+                const auto add_interface = [&](u64 permutation_hash) {
+                    Core::ShaderInterface::Interface captured{};
+                    if (!Core::ShaderInterface::FindByPermutationHash(permutation_hash,
+                                                                      captured)) {
+                        return false;
+                    }
+                    DrawPackage::ShaderInterface out{};
+                    out.program_hash = captured.program_hash;
+                    out.permutation_index = captured.permutation_index;
+                    out.permutation_hash = captured.permutation_hash;
+                    out.hardware_stage = captured.hardware_stage;
+                    out.logical_stage = captured.logical_stage;
+                    out.patched = captured.patched;
+                    out.push_constant_offset = captured.push_constant.offset;
+                    out.push_constant_size = captured.push_constant.size;
+                    out.push_constant_stage_flags = captured.push_constant.stage_flags;
+                    out.unified_binding_count = captured.unified_binding_count;
+                    for (u32 d = 0; d < captured.descriptor_count; ++d) {
+                        const auto& descriptor = captured.descriptors[d];
+                        DrawPackage::ShaderDescriptor entry{};
+                        entry.set = descriptor.set;
+                        entry.binding = descriptor.binding;
+                        entry.descriptor_class = static_cast<u32>(descriptor.cls);
+                        entry.count = descriptor.count;
+                        entry.stage_flags = descriptor.stage_flags;
+                        entry.guest_resource_index = descriptor.guest_resource_index;
+                        entry.written = descriptor.written;
+                        out.descriptors.push_back(entry);
+                    }
+                    package.shader_interfaces.push_back(std::move(out));
+                    return true;
+                };
+                add_interface(draw.vs_hash);
+                add_interface(draw.ps_hash);
             }
 
             // The graphics pipeline state the draw used.
             {
                 const auto& in = draw.pipeline_state;
                 auto& out = package.pipeline_state;
+                out.has_topology = true;
                 out.topology = in.topology;
                 out.cull_mode = in.cull_mode;
                 out.front_face = in.front_face;

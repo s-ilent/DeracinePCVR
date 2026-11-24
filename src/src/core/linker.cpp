@@ -29,6 +29,7 @@
 #include "core/rhi_command_capture.h"
 #include "core/reference_output.h"
 #include "core/shader_binary_capture.h"
+#include "core/shader_interface_capture.h"
 #include "core/shader_param_capture.h"
 #include "core/vertex_input_capture.h"
 #include "core/rhi_entry_probe.h"
@@ -545,6 +546,7 @@ void Linker::Execute(const std::vector<std::string>& args) {
     ShaderParamCapture::TryInstall();
     // The shader binary capture is its own opt-in and only reads the environment.
     ShaderBinaryCapture::TryInstall();
+    ShaderInterface::TryInstall();
     ReferenceOutput::TryInstall();
 
     main_thread.Run([this, module, &args](std::stop_token) {

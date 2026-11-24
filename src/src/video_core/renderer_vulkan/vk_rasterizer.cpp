@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/debug.h"
+#include "common/sha256.h"
 #include "core/emulator_settings.h"
 #include "core/known_title.h"
 #include "core/memory.h"
@@ -263,13 +264,14 @@ static std::pair<u32, u32> GetDrawOffsets(
     return {vertex_offset, instance_offset};
 }
 
-bool Rasterizer::CaptureColorTarget(Core::ReferenceOutput::ReferenceImage& out) {
+Core::ReferenceOutput::CaptureStatus Rasterizer::CaptureColorTarget(
+    Core::ReferenceOutput::ReferenceImage& out, u64 provenance_id, bool is_pre) {
     // The first colour attachment is the one a single-target draw writes. A draw with several
     // targets would need each captured, which this phase does not attempt: the selected candidate
     // has one.
     auto& [image_id, desc] = cb_descs[0];
     if (!image_id) {
-        return false;
+        return Core::ReferenceOutput::CaptureStatus::NoColorTarget;
     }
     auto& image = texture_cache.GetImage(image_id);
     const auto& image_view = texture_cache.FindRenderTarget(image_id, desc);
@@ -279,7 +281,14 @@ bool Rasterizer::CaptureColorTarget(Core::ReferenceOutput::ReferenceImage& out) 
     const u32 width = image.info.size.width;
     const u32 height = image.info.size.height;
     if (width == 0 || height == 0) {
-        return false;
+        return Core::ReferenceOutput::CaptureStatus::NoColorTarget;
+    }
+
+    // A multisampled attachment would need a resolve before it can be read as pixels. This capture
+    // does not resolve, so it reports the limitation rather than copying a sample plane and
+    // presenting it as the image.
+    if (image.info.num_samples > 1) {
+        return Core::ReferenceOutput::CaptureStatus::Multisampled;
     }
 
     // Bytes per pixel for the formats this capture supports. A format outside this set is reported
@@ -297,20 +306,45 @@ bool Rasterizer::CaptureColorTarget(Core::ReferenceOutput::ReferenceImage& out) 
         bytes_per_pixel = 8;
         break;
     default:
-        return false;
+        return Core::ReferenceOutput::CaptureStatus::UnsupportedFormat;
     }
 
     const u64 byte_size = static_cast<u64>(width) * height * bytes_per_pixel;
-    if (byte_size == 0 || byte_size > Core::ReferenceOutput::MaxReferenceBytes) {
-        return false;
+    if (byte_size == 0) {
+        return Core::ReferenceOutput::CaptureStatus::NoColorTarget;
+    }
+    // An oversize capture fails explicitly. It is never cropped, downscaled or truncated: a
+    // reference that is not the whole attachment cannot be compared pixel for pixel, and silently
+    // producing a smaller image would make the comparison meaningless.
+    if (byte_size > Core::ReferenceOutput::MaxBytes()) {
+        return Core::ReferenceOutput::CaptureStatus::Oversize;
     }
 
-    auto& download_buffer = buffer_cache.GetUtilityBuffer(VideoCore::MemoryUsage::Download);
-    const auto [download, offset] = download_buffer.Map(byte_size);
-    download_buffer.Commit();
+    // A dedicated host-visible staging buffer per capture, rather than the shared download utility
+    // buffer. Two reasons: the pre-draw and post-draw copies must not overwrite each other, and the
+    // shared buffer's Commit() invalidates before the copy executes, which is the wrong order for
+    // non-coherent memory. A coherent allocation needs no invalidate at all.
+    VkBuffer staging_buffer{};
+    VmaAllocation staging_allocation{};
+    VmaAllocationInfo staging_info{};
+    const VkBufferCreateInfo buffer_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = byte_size,
+        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    const VmaAllocationCreateInfo alloc_info = {
+        .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
+                 VMA_ALLOCATION_CREATE_MAPPED_BIT,
+        .usage = VMA_MEMORY_USAGE_AUTO,
+    };
+    if (vmaCreateBuffer(instance.GetAllocator(), &buffer_info, &alloc_info, &staging_buffer,
+                        &staging_allocation, &staging_info) != VK_SUCCESS) {
+        return Core::ReferenceOutput::CaptureStatus::AllocationFailed;
+    }
 
     const vk::BufferImageCopy copy = {
-        .bufferOffset = offset,
+        .bufferOffset = 0,
         .bufferRowLength = 0,
         .bufferImageHeight = 0,
         .imageSubresource =
@@ -332,16 +366,45 @@ bool Rasterizer::CaptureColorTarget(Core::ReferenceOutput::ReferenceImage& out) 
                  .layer = image_view.info.range.base.layer},
         .extent = {.levels = 1, .layers = 1},
     };
-    image.DownloadScoped(std::span{&copy, 1}, download_buffer.Handle(), offset, byte_size, range);
+    image.DownloadScoped(std::span{&copy, 1}, staging_buffer, 0, byte_size, range);
+
+    // The copy is recorded, not executed. Reading the staging buffer here would read whatever it
+    // held before the GPU ran, so the readback is deferred until the scheduler has passed the tick
+    // the copy was recorded at. The allocation is owned by the deferred callback, which is what
+    // keeps it alive until the CPU read.
+    const u64 transfer_id = Core::ReferenceOutput::NextTransferId();
+    Core::ReferenceOutput::NoteCapturePending(provenance_id, is_pre, transfer_id, width, height,
+                                              static_cast<u32>(format), bytes_per_pixel);
+
+    const auto* mapped = static_cast<const u8*>(staging_info.pMappedData);
+    scheduler.DeferPriorityOperation(
+        [provenance_id, is_pre, transfer_id, byte_size, mapped, staging_buffer, staging_allocation,
+         allocator = instance.GetAllocator()]() mutable {
+            std::vector<u8> bytes(static_cast<size_t>(byte_size));
+            std::memcpy(bytes.data(), mapped, static_cast<size_t>(byte_size));
+            std::string sha256;
+            {
+                sha256::SHA256 hasher;
+                hasher.update(bytes.data(), bytes.size());
+                const auto digest = hasher.final();
+                static constexpr char kHex[] = "0123456789abcdef";
+                sha256.reserve(64);
+                for (const u8 byte : digest) {
+                    sha256.push_back(kHex[byte >> 4]);
+                    sha256.push_back(kHex[byte & 0x0F]);
+                }
+            }
+            Core::ReferenceOutput::CompleteCapture(provenance_id, is_pre, transfer_id,
+                                                   std::move(bytes), std::move(sha256));
+            vmaDestroyBuffer(allocator, staging_buffer, staging_allocation);
+        });
 
     out = {};
     out.width = width;
     out.height = height;
     out.format = static_cast<u32>(format);
     out.bytes_per_pixel = bytes_per_pixel;
-    out.bytes.resize(byte_size);
-    std::memcpy(out.bytes.data(), download, byte_size);
-    return true;
+    return Core::ReferenceOutput::CaptureStatus::Pending;
 }
 
 void Rasterizer::EliminateFastClear() {
@@ -524,19 +587,6 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
         return;
     }
 
-    // The colour attachment contents before this draw, so a consumer can start from the state the
-    // draw actually inherited. Taken after BeginRendering, which is where the target is bound and
-    // its layout is settled, and before the draw is emitted.
-    if (Core::ReferenceOutput::IsEnabled()) {
-        const u64 provenance_id = Core::RhiEntryProbe::CurrentDrawProvenanceId();
-        if (provenance_id != 0) {
-            Core::ReferenceOutput::ReferenceImage reference{};
-            if (CaptureColorTarget(reference)) {
-                Core::ReferenceOutput::NotePreDraw(provenance_id, reference);
-            }
-        }
-    }
-
     {
         const FrameStats::CallTimer timer{FrameStats::Call::BindVertices};
         buffer_cache.BindVertexBuffers(*pipeline, buffer_barriers);
@@ -558,6 +608,39 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     scheduler.NoteDraw();
     FrameStats::Draw();
     QualityDiag::NoteDraw();
+
+    // The colour attachment contents this draw inherits.
+    //
+    // This runs after scheduler.BeginRendering, not after BeginRendering(pipeline). The distinction
+    // matters: BeginRendering(pipeline) only constructs the render state, while
+    // scheduler.BeginRendering is what records the Vulkan render pass and therefore what executes
+    // the attachment load operation. A capture taken before it would read the attachment as it was
+    // before the pass's clear, which is not what the draw inherits.
+    //
+    // When the pass clears the attachment, the inherited contents are the clear value, not the
+    // image's previous contents. That case is reported as unsupported rather than captured: the
+    // clear is already recorded into the same command buffer, so a copy recorded after it reads the
+    // cleared image and a copy recorded before it reads the wrong state. The honest answer is that
+    // this configuration has no capturable pre-draw image.
+    if (Core::ReferenceOutput::IsEnabled()) {
+        const u64 provenance_id = Core::RhiEntryProbe::CurrentDrawProvenanceId();
+        if (provenance_id != 0) {
+            const bool pass_clears_color = state.color_attachments[0].is_clear != 0;
+            if (pass_clears_color) {
+                Core::ReferenceOutput::NoteCaptureFailure(
+                    provenance_id, /*is_pre=*/true,
+                    Core::ReferenceOutput::CaptureStatus::UnsupportedFormat);
+            } else {
+                Core::ReferenceOutput::ReferenceImage reference{};
+                const auto status =
+                    CaptureColorTarget(reference, provenance_id, /*is_pre=*/true);
+                if (status != Core::ReferenceOutput::CaptureStatus::Pending) {
+                    Core::ReferenceOutput::NoteCaptureFailure(provenance_id, /*is_pre=*/true,
+                                                              status);
+                }
+            }
+        }
+    }
 
     const auto& vs_info = pipeline->GetStage(Shader::LogicalStage::Vertex);
     const auto& fetch_shader = pipeline->GetFetchShader();
@@ -731,14 +814,14 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
             }
         }
 
-        // The colour attachment contents before and after the draw, so a consumer can start from
-        // the state the draw actually inherited rather than from a cleared target. The copy is
-        // scoped to the subresource the draw writes and restores its state, so it does not change
-        // what the game renders.
+        // The colour attachment contents after the draw. The copy is scoped to the subresource the
+        // draw writes and restores its state, so it does not change what the game renders. The
+        // readback is deferred until the GPU has completed the copy.
         if (Core::ReferenceOutput::IsEnabled()) {
             Core::ReferenceOutput::ReferenceImage reference{};
-            if (CaptureColorTarget(reference)) {
-                Core::ReferenceOutput::NotePostDraw(provenance_id, reference);
+            const auto status = CaptureColorTarget(reference, provenance_id, /*is_pre=*/false);
+            if (status != Core::ReferenceOutput::CaptureStatus::Pending) {
+                Core::ReferenceOutput::NoteCaptureFailure(provenance_id, /*is_pre=*/false, status);
             }
         }
 
@@ -1106,7 +1189,6 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
         } else {
             cmdbuf.drawIndexedIndirect(buffer->Handle(), base, max_count, stride);
         }
-    } else {
         ASSERT(sizeof(VkDrawIndirectCommand) == stride);
 
         if (count_address != 0) {

@@ -21,9 +21,18 @@ add_executable(deracine_scene_replay main.cpp)
 add_executable(deracine_textured_replay textured_replay.cpp)
 # The original-shader replay: executes the game's own translated shaders from a captured package.
 add_executable(deracine_original_shader_replay original_shader_replay.cpp)
+# The original-shader pipeline: builds and executes a graphics pipeline from shader modules and
+# their verified descriptor interface. This is the executable that would run a captured draw.
+add_executable(deracine_original_shader_pipeline
+    original_shader_pipeline.cpp
+    spirv_interface.cpp
+)
+# The reference-output synchronization fixture: proves the deferred readback contract on a real GPU.
+add_executable(deracine_reference_sync_test reference_sync_test.cpp)
 
 set(REPLAY_TARGETS deracine_scene_replay deracine_textured_replay
-                   deracine_original_shader_replay)
+                   deracine_original_shader_replay deracine_original_shader_pipeline
+                   deracine_reference_sync_test)
 
 # Prefer the vendored headers when the tree has them, so the build does not depend on a system SDK.
 set(VULKAN_HEADERS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../src/externals/vulkan-headers/include")

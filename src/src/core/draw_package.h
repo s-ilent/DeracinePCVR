@@ -32,7 +32,11 @@ namespace DrawPackage {
 /// Version 3 adds the effective shader binaries and the pipeline state needed to execute the draw
 /// with its original shaders. A version 2 package is refused rather than reinterpreted, because its
 /// readiness flags did not distinguish "the shader binaries exist" from "the draw can run on them".
-inline constexpr u32 SchemaVersion = 3;
+/// Version 4 adds the descriptor interface of each effective shader permutation, and replaces the
+/// zero-as-sentinel topology check with an explicit presence flag. A version 3 package is refused
+/// rather than reinterpreted, because its readiness flags could not distinguish "a binding exists"
+/// from "the effective module's required resources are all available".
+inline constexpr u32 SchemaVersion = 4;
 
 /// Opt-in for writing a private draw package. Separate from the capture flags so a package is only
 /// produced when explicitly asked for.
@@ -202,8 +206,46 @@ struct ShaderStage {
     std::vector<u8> gcn_bytes;
 };
 
+/// One descriptor the effective module declares, as the production layout allocated it.
+struct ShaderDescriptor {
+    u32 set{};
+    u32 binding{};
+    /// The descriptor class, in the vocabulary the SPIR-V uses.
+    u32 descriptor_class{};
+    u32 count{1};
+    /// The shader stages that can see this binding, as a Vulkan stage-flags mask.
+    u32 stage_flags{};
+    /// The guest shader-resource index this came from, or 0xFFFFFFFF when it did not.
+    u32 guest_resource_index{0xFFFFFFFFu};
+    bool written{};
+};
+
+/// The descriptor interface of one effective shader permutation.
+///
+/// The identity is (program hash, permutation index), matching the binary capture. One program can
+/// produce permutations with different resource interfaces, so a lookup by program hash alone is
+/// insufficient.
+struct ShaderInterface {
+    u64 program_hash{};
+    u32 permutation_index{};
+    u64 permutation_hash{};
+    u32 hardware_stage{};
+    u32 logical_stage{};
+    bool patched{};
+    std::vector<ShaderDescriptor> descriptors;
+    /// The push-constant block this stage declares.
+    u32 push_constant_offset{};
+    u32 push_constant_size{};
+    u32 push_constant_stage_flags{};
+    /// The number of unified bindings the stage consumed.
+    u32 unified_binding_count{};
+};
+
 /// The graphics pipeline state the draw used, as the renderer actually configured it.
 struct PipelineState {
+    /// Whether the topology was captured. Zero is a legitimate Vulkan topology value, so it cannot
+    /// double as a missing-data sentinel.
+    bool has_topology{};
     /// Vulkan primitive topology.
     u32 topology{};
     /// Cull mode and front-face convention.
@@ -413,6 +455,8 @@ struct Package {
 
     /// The effective shader stages of this draw, one per stage the pipeline used.
     std::vector<ShaderStage> shader_stages;
+    /// The descriptor interface of each effective stage, keyed by permutation hash.
+    std::vector<ShaderInterface> shader_interfaces;
     /// The graphics pipeline state the draw used.
     PipelineState pipeline_state;
     /// The reference output around the draw.
@@ -784,9 +828,51 @@ struct Package {
                 error = "shader binding readiness claimed without shader binaries";
                 return false;
             }
-            if (package.bindings.empty()) {
-                error = "shader binding readiness claimed with no bindings";
+            // A binding existing is not the same as the effective modules' required resources being
+            // available. Every stage must carry an interface, and every descriptor that interface
+            // declares must resolve to a captured binding.
+            if (package.shader_interfaces.empty()) {
+                error = "shader binding readiness claimed with no descriptor interface";
                 return false;
+            }
+            for (const auto& stage : package.shader_stages) {
+                bool found = false;
+                for (const auto& interface : package.shader_interfaces) {
+                    if (interface.permutation_hash == stage.permutation_hash) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    error = "a shader stage has no descriptor interface for its permutation";
+                    return false;
+                }
+            }
+            for (const auto& interface : package.shader_interfaces) {
+                for (const auto& descriptor : interface.descriptors) {
+                    if (descriptor.count == 0) {
+                        error = "a descriptor interface declares a zero descriptor count";
+                        return false;
+                    }
+                    // A buffer or image descriptor must resolve to a captured binding. A sampler
+                    // may legitimately have no buffer, so it is not required to.
+                    if (descriptor.descriptor_class == 1 || descriptor.descriptor_class == 2 ||
+                        descriptor.descriptor_class == 3 || descriptor.descriptor_class == 4 ||
+                        descriptor.descriptor_class == 6) {
+                        bool resolved = false;
+                        for (const auto& binding : package.bindings) {
+                            if (binding.vk_binding == descriptor.binding) {
+                                resolved = true;
+                                break;
+                            }
+                        }
+                        if (!resolved) {
+                            error = "a descriptor interface declares a binding with no captured "
+                                    "resource";
+                            return false;
+                        }
+                    }
+                }
             }
         }
 
@@ -806,7 +892,9 @@ struct Package {
         }
 
         if (package.readiness.pipeline_state_ready_original) {
-            if (package.pipeline_state.topology == 0) {
+            // Presence is explicit. Zero is a legitimate Vulkan topology value, so it cannot be
+            // used as a missing-data sentinel.
+            if (!package.pipeline_state.has_topology) {
                 error = "pipeline state readiness claimed with no topology";
                 return false;
             }

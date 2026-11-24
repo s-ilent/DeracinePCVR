@@ -354,8 +354,28 @@ def main(argv):
         package["pipeline_state"]["push_constant_size"] = 16
         package["pipeline_state"]["push_constant_bytes"] = []
 
+    def interface_missing(package, blob):
+        package["shader_interfaces"] = []
+
+    def interface_stage_missing(package, blob):
+        if package.get("shader_interfaces"):
+            package["shader_interfaces"] = package["shader_interfaces"][:1]
+
+    def interface_binding_unresolved(package, blob):
+        for interface in package.get("shader_interfaces", []):
+            for descriptor in interface.get("descriptors", []):
+                descriptor["binding"] = 99
+                return
+
+    def interface_zero_count(package, blob):
+        for interface in package.get("shader_interfaces", []):
+            for descriptor in interface.get("descriptors", []):
+                descriptor["count"] = 0
+                return
+
     def pipeline_state_without_topology(package, blob):
-        package["pipeline_state"]["topology"] = 0
+        # Zero is a legitimate Vulkan topology, so the presence flag is what marks it missing.
+        package["pipeline_state"]["has_topology"] = False
 
     def reference_without_post(package, blob):
         package["reference_output"]["post_sha256"] = ""
@@ -374,6 +394,10 @@ def main(argv):
     case("original ready without pipeline", original_ready_without_pipeline)
     case("original ready without reference", original_ready_without_reference)
     case("push constant range mismatch", push_constant_range_mismatch)
+    case("interface missing", interface_missing)
+    case("interface stage missing", interface_stage_missing)
+    case("interface binding unresolved", interface_binding_unresolved)
+    case("interface zero count", interface_zero_count)
     case("pipeline state without topology", pipeline_state_without_topology)
     case("reference without post", reference_without_post)
     case("reference without extent", reference_without_extent)

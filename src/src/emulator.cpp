@@ -47,6 +47,7 @@
 #include "core/rhi_entry_probe.h"
 #include "core/reference_output.h"
 #include "core/shader_binary_capture.h"
+#include "core/shader_interface_capture.h"
 #include "core/shader_param_capture.h"
 #include "core/vertex_input_capture.h"
 #include "core/memory.h"
@@ -107,6 +108,7 @@ void Emulator::Shutdown() {
     Core::VertexInputCapture::ExportVertexInputs();
     Core::ShaderParamCapture::ExportShaderParams();
     Core::ShaderBinaryCapture::ExportBinaries();
+    Core::ShaderInterface::ExportInterfaces();
     Core::ReferenceOutput::ExportReferences();
     Common::Log::Flush();
     if (controllers) {

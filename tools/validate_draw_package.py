@@ -19,7 +19,7 @@ import sys
 FNV_OFFSET = 0xCBF29CE484222325
 FNV_PRIME = 0x100000001B3
 MASK64 = (1 << 64) - 1
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Vulkan formats the capture can produce for vertex input, with their component count and byte
 # width. A format outside this table is rejected rather than guessed at.
@@ -435,8 +435,27 @@ def main(argv: list[str]) -> int:
     if readiness.get("shader_bindings_ready"):
         if not readiness.get("shader_binaries_ready"):
             return fail("shader binding readiness claimed without shader binaries")
-        if not bindings:
-            return fail("shader binding readiness claimed with no bindings")
+        # A binding existing is not the same as the effective modules' required resources being
+        # available. Every stage must carry an interface, and every descriptor that interface
+        # declares must resolve to a captured binding.
+        interfaces = package.get("shader_interfaces", [])
+        if not interfaces:
+            return fail("shader binding readiness claimed with no descriptor interface")
+        interface_hashes = {i.get("permutation_hash", 0) for i in interfaces}
+        for stage in stages:
+            if stage.get("permutation_hash", 0) not in interface_hashes:
+                return fail("a shader stage has no descriptor interface for its permutation")
+        captured_bindings = {b.get("vk_binding", 0) for b in bindings}
+        for interface in interfaces:
+            for descriptor in interface.get("descriptors", []):
+                if not descriptor.get("count"):
+                    return fail("a descriptor interface declares a zero descriptor count")
+                # A buffer or image descriptor must resolve to a captured binding. A sampler may
+                # legitimately have no buffer.
+                if descriptor.get("descriptor_class") in (1, 2, 3, 4, 6):
+                    if descriptor.get("binding") not in captured_bindings:
+                        return fail(
+                            "a descriptor interface declares a binding with no captured resource")
 
     if readiness.get("shader_parameters_ready"):
         if not readiness.get("shader_bindings_ready"):
@@ -447,7 +466,8 @@ def main(argv: list[str]) -> int:
                         "not match its bytes")
 
     if readiness.get("pipeline_state_ready_original"):
-        if not pipeline_state.get("topology"):
+        # Presence is explicit: zero is a legitimate Vulkan topology value.
+        if not pipeline_state.get("has_topology"):
             return fail("pipeline state readiness claimed with no topology")
         if not pipeline_state.get("color_formats"):
             return fail("pipeline state readiness claimed with no colour attachment format")
