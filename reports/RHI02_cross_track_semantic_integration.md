@@ -37,19 +37,24 @@ Result categories used throughout:
 
 Run against the real SC-10S resource package with a synthetic tape fixture, validation enabled:
 
-| Case | Executed draw | Image hash | Validation |
-| --- | --- | --- | --- |
-| A baseline | 1101 indices, 2 instances | 16502619428972027710 | 0 |
-| A2 baseline, instance view | 1101 indices, 2 instances | 12787758644946534384 | 0 |
-| B `NumPrimitives` 367→200 | 600 indices | 15575859710782580447 | 0 |
-| C derived count corrupted | refused: `derived_inconsistent` | — | — |
-| D `NumInstances` 2→1 | 1 instance | 3231696310514719174 | 0 |
-| E `FirstInstance` 0→3 | first instance 3 | 7102317032020622509 | 0 |
-| F `StartIndex` 0→168, 600 indices | first index 168 | 927865855109694692 | 0 |
-| G `BaseVertexIndex` 0→−7 from index 7 | vertex offset −7 | 1986557011826621981 | 0 |
-| H `PrimitiveType` 0→2 | refused by the derivation | — | — |
-| I texturing disabled | identical to A | 15954340755637218007 | 0 |
-| J package identity changed | refused before GPU | — | — |
+| Case | Executed draw | Image hash | Validation | Provenance |
+| --- | --- | --- | --- | --- |
+| A baseline | 1101 indices, 2 instances | 16502619428972027710 | 0 | `synthetic_fixture` |
+| A2 baseline, instance view | 1101 indices, 2 instances | 12787758644946534384 | 0 | `synthetic_fixture` |
+| B `NumPrimitives` 367→200 | 600 indices | 15575859710782580447 | 0 | `synthetic_fixture` |
+| C derived count corrupted | refused: `derived_inconsistent` | — | — | — |
+| D `NumInstances` 2→1 | 1 instance | 3231696310514719174 | 0 | `synthetic_fixture` |
+| E `FirstInstance` 0→3 | first instance 3 | 7102317032020622509 | 0 | `synthetic_fixture` |
+| F `StartIndex` 0→168, 600 indices | first index 168 | 927865855109694692 | 0 | `synthetic_fixture` |
+| G `BaseVertexIndex` 0→−7 from index 7 | vertex offset −7 | 1986557011826621981 | 0 | `synthetic_fixture` |
+| H `PrimitiveType` 0→2 | refused by the derivation | — | — | — |
+| I texturing disabled | identical to A | 15954340755637218007 | 0 | `synthetic_fixture` |
+| J package identity changed | refused before GPU | — | — | `rejected` |
+| K matcher fixture, unchanged | joins | 16502619428972027710 | 0 | `synthetic_fixture` |
+
+K exists so J's rejection is shown to be caused by the mutation rather than by the fixture. Without
+it, J could pass for the wrong reason: a fixture with no comparable identity is refused regardless of
+what the package says.
 
 B, F and G change the image through the semantic payload alone. I holds the tape fixed and changes
 only the sampling, and its draw arguments are identical to A. J is the test that prevents two
@@ -347,35 +352,66 @@ Prioritised, distinguishing the kind of gap:
 | Priority | Blocker | Kind |
 | --- | --- | --- |
 | 1 | No capture has produced a semantic tape and a resource package from one execution | Missing evidence |
-| 2 | The tape's index identity and the package's index identity may be in different domains | Missing evidence |
-| 3 | Descriptor set layout classification is not captured | Missing implementation |
-| 4 | Effective shader state at the draw boundary is not recovered | Missing implementation |
-| 5 | Texture and sampler descriptor writers are not established | Missing evidence |
-| 6 | SC-11's original-shader replay has never executed | Unexecuted runtime verification |
-| 7 | SC-11's reference-output oracle has never run against the game | Unexecuted runtime verification |
-| 8 | Render targets are substituted, not recovered | Missing implementation |
-| 9 | Multi-draw state-difference tracking does not exist | Missing implementation |
-| 10 | Whole-frame command classes are absent | Missing implementation |
+| 2 | The two exporters select their draw independently, so one run does not guarantee one draw | Missing evidence |
+| 3 | The tape's index identity and the package's index identity are in different domains | Missing evidence |
+| 4 | Descriptor set layout classification is not captured | Missing implementation |
+| 5 | Effective shader state at the draw boundary is not recovered | Missing implementation |
+| 6 | Texture and sampler descriptor writers are not established | Missing evidence |
+| 7 | SC-11's original-shader replay has never executed | Unexecuted runtime verification |
+| 8 | SC-11's reference-output oracle has never run against the game | Unexecuted runtime verification |
+| 9 | Render targets are substituted, not recovered | Missing implementation |
+| 10 | Multi-draw state-difference tracking does not exist | Missing implementation |
+| 11 | Whole-frame command classes are absent | Missing implementation |
 
-### The identity-domain warning
+### The identity-domain blocker
 
-This is the most important unresolved item after the capture itself.
+This is an acceptance blocker, not a warning, and it is now enforced in code.
 
 The tape records the index resource as the RHI invocation argument, which is an original UE4
 `FRHIIndexBuffer` object pointer. The package records the guest GPU address of the index buffer.
 **These are not the same domain.** Their numeric equality or inequality is not evidence either way.
 
-The current `draw_identity` join compares `index_guest_base` on both sides. For the synthetic fixture
-that works because the fixture was built from the package. For a genuine capture it may compare an
-object pointer against a GPU address and produce a meaningless mismatch, or worse, a meaningless
-match.
+`IndexDomain` now tags both sides, and `JoinTapeToPackage` refuses to compare across namespaces. A
+cross-domain pair reports `insufficient_evidence` with both domains named. An unknown domain cannot
+establish the join either.
 
-The fix is an independently established object-to-buffer relationship: the original UE4 index-buffer
-object's guest allocation, resolved through the RHI's own resource tracking, compared against the
-GPU address the draw consumed. That relationship is not yet captured.
+The synthetic fixture was corrected because it had been built the wrong way. It previously copied the
+package's guest address into the tape, which made the identity check pass for the wrong reason: the
+exact circularity this milestone exists to prevent. It now records no index identity and declares the
+UE4-object domain, so the join reports insufficient evidence and the replay refuses to run without an
+explicit `--synthetic-fixture` flag.
+
+The synthetic label relaxes only the requirement for an original identity to exist. **A positive
+mismatch is always fatal**, synthetic or not, so two captures that disagree cannot be executed
+together under any label.
+
+The remaining fix is an independently established object-to-buffer relationship: the original UE4
+index-buffer object's guest allocation, resolved through the RHI's own resource tracking, compared
+against the GPU address the draw consumed. That relationship is not captured, and the runbook names
+it as the smallest implementation that would close the gap.
 
 **The matcher must not be weakened to make existing packages pass.** If the domains differ, the
 correct outcome is `insufficient_evidence`, not a fabricated join.
+
+### The selection blocker
+
+The two exporters select their draw independently.
+
+| Exporter | Selection |
+| --- | --- |
+| Semantic tape | `SHADPS4_DERACINE_SEMANTIC_TAPE_DRAW` if set, otherwise the last recorded draw |
+| Resource package | scores every captured draw on geometry completeness, writes the first that validates |
+
+Setting both output flags to one directory therefore does not guarantee they describe the same draw.
+The tape defaults to the last recorded draw; the package writes the first draw that validates.
+
+An explicit `SHADPS4_DERACINE_SEMANTIC_TAPE_DRAW` is required, and it must be the provenance id the
+package actually wrote. That is only knowable after the package exists, so the capture is two-phase.
+
+**Pinning the draw is a selection mechanism, not evidence.** It makes the two exporters agree on
+which draw to describe. It does not establish that they observed the same operation. The independent
+identity check is what must establish the correspondence, and that check is blocked by the domain
+problem above.
 
 ## 14. The genuine capture experiment
 
