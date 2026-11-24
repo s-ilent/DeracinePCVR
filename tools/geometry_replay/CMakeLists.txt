@@ -22,9 +22,13 @@ add_executable(deracine_textured_replay textured_replay.cpp)
 
 # The semantic-tape replay. Same dependency discipline as the diagnostic replay: the Vulkan loader,
 # the C++ standard library and a JSON parser, nothing from the emulator.
-add_executable(deracine_tape_replay tape_replay.cpp tape.cpp)
+add_executable(deracine_tape_replay tape_replay.cpp tape.cpp draw_identity.cpp)
 
 set(REPLAY_TARGETS deracine_scene_replay deracine_textured_replay deracine_tape_replay)
+
+# The identity join is pure logic with no Vulkan dependency, so its tests live in the emulator's
+# test tree, which already provides GTest. Keeping them out of this project means this project
+# still links nothing but the Vulkan loader and the C++ standard library.
 
 # Prefer the vendored headers when the tree has them, so the build does not depend on a system SDK.
 set(VULKAN_HEADERS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../src/externals/vulkan-headers/include")
