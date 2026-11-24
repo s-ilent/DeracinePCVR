@@ -1,0 +1,9 @@
+# External Vulkan memory mapping ownership — 2026-11-24
+
+Pinned NRI: 06ff6f643777e72eda88bc6fb8d56267b85d872f. [MemoryVK.hpp lines 2–30](https://github.com/NVIDIA-RTX/NRI/blob/06ff6f643777e72eda88bc6fb8d56267b85d872f/Source/VK/MemoryVK.hpp#L2-L30): external memory creation sets nonownership, retains the supplied mapping or maps host-visible memory when no pointer is supplied. Destruction returns early for nonowned memory, including mappings created by this path. This is source evidence, not a GPU test. [Lines 41–85](https://github.com/NVIDIA-RTX/NRI/blob/06ff6f643777e72eda88bc6fb8d56267b85d872f/Source/VK/MemoryVK.hpp#L41-L85) distinguish VMA alias-capable allocations and direct allocations.
+
+Proposed policy: host allocator owns mapping and allocation separately; pass a valid mapping covering the imported range, keep it alive through wrapper use and GPU retirement, unmap once at host teardown. Do not import an already mapped allocation with a null pointer. Confirm pointer offset convention before using suballocations. Noncoherent flush/invalidate obligations remain separate. OpenXR images are not host-owned allocations.
+
+Falsifiable test: allocate host-visible memory, map externally, import with pointer, destroy wrapper, verify host access and unmap. Separately import initially unmapped memory with null pointer, destroy wrapper, explicitly unmap then remap; instrument Vulkan dispatch to count map/unmap calls. Test nonzero aligned offset and noncoherent visibility separately. No GPU execution this run.
+
+Foundation verified 6b359f520b9f41f854b2aac41bb74526f6c60e87; main e2f981c40cba7c8490177c20c179cb3608cc1442. Initial web retrieval failed: Failed to fetch restricted URL; authenticated commit retrieval succeeded. Native renderer only; no emulator integration or game assets.
