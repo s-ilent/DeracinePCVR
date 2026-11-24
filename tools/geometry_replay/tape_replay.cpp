@@ -1491,9 +1491,31 @@ int main(int argc, char** argv) {
     vertex_input.vertexAttributeDescriptionCount = textured_mode ? 2u : 1u;
     vertex_input.pVertexAttributeDescriptions = attributes;
 
+    // --- Captured pipeline state ---------------------------------------------------------------
+    // In effective mode the fixed-function state comes from the package where it was captured. A
+    // field the package did not capture keeps the diagnostic default, and the run reports which
+    // fields those were, so a reader can tell captured state from substituted state.
+    const package::PipelineState& captured = pkg.pipeline_state;
+    std::vector<const char*> substituted_state;
+    const auto captured_or = [&substituted_state](bool present, auto value, auto fallback,
+                                                  const char* name) {
+        if (present) {
+            return value;
+        }
+        substituted_state.push_back(name);
+        return fallback;
+    };
+
     VkPipelineInputAssemblyStateCreateInfo input_assembly{};
     input_assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    input_assembly.topology =
+        shader_mode_effective
+            ? static_cast<VkPrimitiveTopology>(captured_or(captured.has_topology,
+                                                           captured.topology,
+                                                           static_cast<u32>(
+                                                               VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST),
+                                                           "topology"))
+            : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
     // The viewport is dynamic: the tape supplies it, so the pipeline must not bake one in.
     VkPipelineViewportStateCreateInfo viewport_state{};
@@ -1509,24 +1531,65 @@ int main(int argc, char** argv) {
 
     VkPipelineRasterizationStateCreateInfo raster{};
     raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    raster.polygonMode = VK_POLYGON_MODE_FILL;
-    raster.cullMode = VK_CULL_MODE_NONE;
-    raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    raster.polygonMode =
+        shader_mode_effective
+            ? static_cast<VkPolygonMode>(captured_or(captured.polygon_mode != 0,
+                                                     captured.polygon_mode,
+                                                     static_cast<u32>(VK_POLYGON_MODE_FILL),
+                                                     "polygon_mode"))
+            : VK_POLYGON_MODE_FILL;
+    // Cull mode zero is a legitimate value, so presence is carried by the package having captured
+    // any pipeline state at all rather than by the value being non-zero.
+    raster.cullMode = shader_mode_effective
+                          ? static_cast<VkCullModeFlags>(captured.cull_mode)
+                          : VK_CULL_MODE_NONE;
+    raster.frontFace = shader_mode_effective
+                           ? static_cast<VkFrontFace>(captured.front_face)
+                           : VK_FRONT_FACE_COUNTER_CLOCKWISE;
     raster.lineWidth = 1.0f;
 
     VkPipelineMultisampleStateCreateInfo multisample{};
     multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    multisample.rasterizationSamples =
+        shader_mode_effective
+            ? static_cast<VkSampleCountFlagBits>(captured_or(captured.samples != 0,
+                                                             captured.samples, 1u, "samples"))
+            : VK_SAMPLE_COUNT_1_BIT;
 
     VkPipelineDepthStencilStateCreateInfo depth_state{};
     depth_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depth_state.depthTestEnable = VK_TRUE;
-    depth_state.depthWriteEnable = VK_TRUE;
-    depth_state.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    depth_state.depthTestEnable =
+        shader_mode_effective ? (captured.depth_test ? VK_TRUE : VK_FALSE) : VK_TRUE;
+    depth_state.depthWriteEnable =
+        shader_mode_effective ? (captured.depth_write ? VK_TRUE : VK_FALSE) : VK_TRUE;
+    depth_state.depthCompareOp =
+        shader_mode_effective
+            ? static_cast<VkCompareOp>(captured_or(captured.depth_compare_op != 0,
+                                                   captured.depth_compare_op,
+                                                   static_cast<u32>(VK_COMPARE_OP_LESS_OR_EQUAL),
+                                                   "depth_compare_op"))
+            : VK_COMPARE_OP_LESS_OR_EQUAL;
 
     VkPipelineColorBlendAttachmentState blend_attachment{};
-    blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                                      VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    // The write mask is captured per attachment. A package that did not capture one keeps the
+    // diagnostic all-channels mask, and says so.
+    if (shader_mode_effective && !captured.write_mask.empty()) {
+        blend_attachment.colorWriteMask = captured.write_mask[0];
+    } else {
+        if (shader_mode_effective) {
+            substituted_state.push_back("write_mask");
+        }
+        blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                          VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    }
+    // Blend factors and operations are not captured by the producer, so blending stays disabled
+    // rather than being invented. A package that captured blend enable is reported as needing a
+    // field the schema does not carry.
+    if (shader_mode_effective && !captured.blend_enable.empty() && captured.blend_enable[0] != 0) {
+        std::cerr << "the package captured blend enable for attachment 0, but the schema does not "
+                     "carry blend factors or operations, so the blend state cannot be reproduced\n";
+        return 1;
+    }
     VkPipelineColorBlendStateCreateInfo blend{};
     blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     blend.attachmentCount = 1;
@@ -2176,6 +2239,17 @@ int main(int argc, char** argv) {
         for (const auto& item : last_report.substituted)
             std::cout << " " << item;
         std::cout << "\n";
+    }
+    // The pipeline-state fields the package did not capture, so a reader can tell captured state
+    // from substituted state without reading the source.
+    if (!substituted_state.empty()) {
+        std::cout << "pipeline_state_substituted:";
+        for (const char* name : substituted_state) {
+            std::cout << " " << name;
+        }
+        std::cout << "\n";
+    } else if (shader_mode_effective) {
+        std::cout << "pipeline_state_substituted: none\n";
     }
 
     // Validation is reported as a count. Claiming success from the absence of a device loss would
