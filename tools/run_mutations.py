@@ -161,28 +161,43 @@ def main(argv):
 
     # --- F: start index ------------------------------------------------------------------------
     def mutate_start_index(tape):
+        # The index buffer holds 1101 elements, so a nonzero start must shorten the draw to stay
+        # inside it. 168 + 600 = 768, which is within the buffer, and every index in that window is
+        # at least 7 so the base-vertex case below can also be exercised.
         for op in tape["operations"]:
             if op["kind"] == "DrawIndexed":
                 op["draw"]["start_index"] = 168
+                op["draw"]["num_primitives"] = 200
                 op["derived"]["first_index"] = 168
+                op["derived"]["index_count"] = 600
                 op["derived"]["index_byte_offset"] = 168 * 2
 
     work = prepare(os.path.join(work_root, "f-start-index"), base_tape, package_dir,
                    mutate_tape=mutate_start_index)
     code, out = run(replay, work, ["--substitute-render-targets"])
-    record("F StartIndex 0 -> 168", code, parse(out))
+    record("F StartIndex 0 -> 168, 600 indices", code, parse(out),
+           "168 + 600 = 768, inside the 1101-element index buffer")
 
     # --- G: negative base vertex ---------------------------------------------------------------
     def mutate_base_vertex(tape):
+        # A negative base vertex is only valid when every fetched index is at least its magnitude.
+        # The window starting at 7 has a minimum index of 7, so -7 addresses vertex 0 and stays
+        # inside the 807-vertex stream.
         for op in tape["operations"]:
             if op["kind"] == "DrawIndexed":
+                op["draw"]["start_index"] = 7
+                op["draw"]["num_primitives"] = 200
                 op["draw"]["base_vertex_index"] = -7
+                op["derived"]["first_index"] = 7
+                op["derived"]["index_count"] = 600
+                op["derived"]["index_byte_offset"] = 7 * 2
                 op["derived"]["vertex_offset"] = -7
 
     work = prepare(os.path.join(work_root, "g-base-vertex"), base_tape, package_dir,
                    mutate_tape=mutate_base_vertex)
     code, out = run(replay, work, ["--substitute-render-targets"])
-    record("G BaseVertexIndex 0 -> -7 (signed)", code, parse(out))
+    record("G BaseVertexIndex 0 -> -7 from StartIndex 7", code, parse(out),
+           "the window's minimum index is 7, so -7 addresses vertex 0")
 
     # --- H: unsupported topology ---------------------------------------------------------------
     def mutate_topology(tape):

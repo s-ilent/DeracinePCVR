@@ -15,6 +15,7 @@
 // emulator, no guest address space.
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -28,6 +29,7 @@
 
 #include <vulkan/vulkan.h>
 
+#include "draw_bounds.h"
 #include "draw_identity.h"
 #include "package_reader.h"
 
@@ -292,6 +294,22 @@ const u32 kTapeInstidFragSpv[] = {
     0x0000003b, 0x00000002, 0x00070050, 0x00000007, 0x00000040, 0x0000003d, 0x0000003e, 0x0000003f,
     0x0000003c, 0x0003003e, 0x00000037, 0x00000040, 0x000100fd, 0x00010038,
 };
+
+/// Counts Vulkan validation errors. The replay reports the count rather than claiming validation
+/// success from the absence of a device loss, which is not the same thing.
+std::atomic<u64> g_validation_errors{0};
+
+VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+                                             VkDebugUtilsMessageTypeFlagsEXT,
+                                             const VkDebugUtilsMessengerCallbackDataEXT* data,
+                                             void*) {
+    if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
+        g_validation_errors.fetch_add(1, std::memory_order_relaxed);
+        std::cerr << "validation error: " << (data->pMessageIdName ? data->pMessageIdName : "")
+                  << " " << (data->pMessage ? data->pMessage : "") << "\n";
+    }
+    return VK_FALSE;
+}
 
 /// Diagnostic shaders. Not the game's shaders, and the report says so.
 const u32 kVertSpv[] = {
@@ -883,6 +901,39 @@ int main(int argc, char** argv) {
     std::cout << "geometry: vertices=" << vertex_count << " index_elements=" << indices.size()
               << " stride=" << stride << " scale=" << scale << "\n";
 
+    // --- Draw bounds ---------------------------------------------------------------------------
+    // A mutation that reads past the end of a buffer proves nothing: with robust buffer access the
+    // draw still executes and returns zeros, so the test would appear to pass while exercising an
+    // invalid draw. The range is checked against the resources the draw actually binds, before any
+    // GPU work.
+    {
+        bounds::DrawRange range{};
+        range.index_elements = indices.size();
+        range.vertex_count = vertex_count;
+        for (const auto& operation : tape.operations) {
+            if (operation.kind != tape::OpKind::DrawIndexed)
+                continue;
+            range.first_index = operation.derived.first_index;
+            range.index_count = operation.derived.index_count;
+            range.base_vertex = operation.derived.vertex_offset;
+            break;
+        }
+        const bounds::Check check = bounds::CheckDraw(range, indices);
+        std::cout << "bounds: first_index=" << range.first_index
+                  << " index_count=" << range.index_count
+                  << " base_vertex=" << range.base_vertex
+                  << " index_elements=" << range.index_elements
+                  << " vertex_count=" << range.vertex_count << "\n";
+        if (!check.valid) {
+            std::cerr << "draw is out of bounds: " << check.reason << "\n";
+            std::cerr << "  refusing before GPU execution rather than relying on robust buffer "
+                         "access to hide an invalid fetch\n";
+            return 1;
+        }
+        std::cout << "bounds: ok max_index=" << check.max_index
+                  << " vertex_range=[" << check.min_vertex << "," << check.max_vertex << "]\n";
+    }
+
     // --- Vulkan setup --------------------------------------------------------------------------
     ReplayContext ctx{};
     VkApplicationInfo app{};
@@ -890,12 +941,51 @@ int main(int argc, char** argv) {
     app.pApplicationName = "deracine_tape_replay";
     app.apiVersion = VK_API_VERSION_1_1;
 
+    // Validation is opt-in through the environment, so a normal run is unaffected. When it is on,
+    // the layer and the debug-utils extension are both requested and the messenger is installed
+    // after instance creation.
+    const char* validation_env = std::getenv("DERACINE_REPLAY_VALIDATION");
+    const bool want_validation = validation_env != nullptr && validation_env[0] == '1';
+    const char* layers[] = {"VK_LAYER_KHRONOS_validation"};
+    const char* extensions[] = {VK_EXT_DEBUG_UTILS_EXTENSION_NAME};
+
     VkInstanceCreateInfo instance_info{};
     instance_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     instance_info.pApplicationInfo = &app;
+    if (want_validation) {
+        instance_info.enabledLayerCount = 1;
+        instance_info.ppEnabledLayerNames = layers;
+        instance_info.enabledExtensionCount = 1;
+        instance_info.ppEnabledExtensionNames = extensions;
+    }
     if (vkCreateInstance(&instance_info, nullptr, &ctx.instance) != VK_SUCCESS) {
         std::cerr << "vkCreateInstance failed\n";
         return 1;
+    }
+
+    VkDebugUtilsMessengerEXT messenger{};
+    if (want_validation) {
+        const auto create_messenger = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
+            vkGetInstanceProcAddr(ctx.instance, "vkCreateDebugUtilsMessengerEXT"));
+        if (create_messenger == nullptr) {
+            std::cerr << "validation requested but vkCreateDebugUtilsMessengerEXT is absent\n";
+            return 1;
+        }
+        VkDebugUtilsMessengerCreateInfoEXT messenger_info{};
+        messenger_info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+        messenger_info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT |
+                                         VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT;
+        messenger_info.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                                     VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                                     VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+        messenger_info.pfnUserCallback = DebugCallback;
+        if (create_messenger(ctx.instance, &messenger_info, nullptr, &messenger) != VK_SUCCESS) {
+            std::cerr << "vkCreateDebugUtilsMessengerEXT failed\n";
+            return 1;
+        }
+        std::cout << "validation: enabled\n";
+    } else {
+        std::cout << "validation: disabled (set DERACINE_REPLAY_VALIDATION=1 to enable)\n";
     }
 
     u32 device_count = 0;
@@ -935,10 +1025,16 @@ int main(int argc, char** argv) {
     queue_info.queueCount = 1;
     queue_info.pQueuePriorities = &priority;
 
+    // The captured sampler requests anisotropy, so the feature must be enabled on the device.
+    // Requesting it without enabling it is a validation error and the sampler is invalid.
+    VkPhysicalDeviceFeatures enabled_features{};
+    enabled_features.samplerAnisotropy = VK_TRUE;
+
     VkDeviceCreateInfo device_info{};
     device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     device_info.queueCreateInfoCount = 1;
     device_info.pQueueCreateInfos = &queue_info;
+    device_info.pEnabledFeatures = &enabled_features;
     if (vkCreateDevice(ctx.physical, &device_info, nullptr, &ctx.device) != VK_SUCCESS) {
         std::cerr << "vkCreateDevice failed\n";
         return 1;
@@ -1028,7 +1124,14 @@ int main(int argc, char** argv) {
         view_info.image = image;
         view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
         view_info.format = format;
-        view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        // A depth-only format must be viewed through the depth aspect. Using the colour aspect is a
+        // validation error and the attachment cannot be used as a depth target.
+        const bool is_depth = format == VK_FORMAT_D32_SFLOAT ||
+                              format == VK_FORMAT_D32_SFLOAT_S8_UINT ||
+                              format == VK_FORMAT_D24_UNORM_S8_UINT;
+        const VkImageAspectFlags aspect =
+            is_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+        view_info.subresourceRange = {aspect, 0, 1, 0, 1};
         return vkCreateImageView(ctx.device, &view_info, nullptr, &view) == VK_SUCCESS;
     };
 
@@ -1505,11 +1608,9 @@ int main(int argc, char** argv) {
             vkUpdateDescriptorSets(ctx.device, 1, &write, 0, nullptr);
         }
 
-        rp_begin.pClearValues = clears;
-        vkCmdBeginRenderPass(cmd, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
-
-        // The texture upload happens inside the render pass recording, before the draw, so the
-        // image is in a sampled layout when the shader reads it.
+        // The texture upload is recorded before the render pass begins. A buffer-to-image copy and
+        // its layout barriers cannot be issued inside a subpass, so doing it there is a validation
+        // error and the image would not be in a sampled layout when the shader reads it.
         if (textured_mode) {
             const auto& sub = textured->subresources.front();
             VkImageMemoryBarrier to_dst{};
@@ -1538,6 +1639,9 @@ int main(int argc, char** argv) {
                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr,
                                  1, &to_shader);
         }
+
+        rp_begin.pClearValues = clears;
+        vkCmdBeginRenderPass(cmd, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
 
         VulkanSink sink{ctx, cmd, pipeline, pipeline_layout, vertex_buffer, index_buffer,
                         index_width, mvp, descriptor_set, textured_mode};
@@ -1676,6 +1780,13 @@ int main(int argc, char** argv) {
         for (const auto& item : last_report.substituted)
             std::cout << " " << item;
         std::cout << "\n";
+    }
+
+    // Validation is reported as a count. Claiming success from the absence of a device loss would
+    // not be the same claim.
+    if (want_validation) {
+        std::cout << "validation: errors=" << g_validation_errors.load(std::memory_order_relaxed)
+                  << "\n";
     }
 
     std::cout << "\n-- provenance separation --\n";
