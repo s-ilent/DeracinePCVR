@@ -1714,6 +1714,38 @@ gtest_discover_tests(shadps4_shader_param_capture_contract_test
 # ===========================================================================
 # Deracine draw-package schema and validator
 # ===========================================================================
+# ===========================================================================
+# Texture capture snapshot accounting
+# ===========================================================================
+
+# texture_capture.cpp logs nothing and reads no emulator state, so the test links only the
+# translation unit itself. Pulling in the logging stack would drag the whole emulator through
+# common/thread.h for no benefit.
+add_executable(shadps4_texture_capture_accounting_test
+    core/test_texture_capture_accounting.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/texture_capture.cpp
+)
+
+target_include_directories(shadps4_texture_capture_accounting_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_compile_features(shadps4_texture_capture_accounting_test PRIVATE cxx_std_23)
+target_compile_definitions(shadps4_texture_capture_accounting_test PRIVATE NOMINMAX)
+
+target_link_libraries(shadps4_texture_capture_accounting_test PRIVATE
+    GTest::gtest_main
+)
+
+list(APPEND TEST_TARGETS shadps4_texture_capture_accounting_test)
+
+gtest_discover_tests(shadps4_texture_capture_accounting_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)
+
 add_executable(shadps4_draw_package_test
     test_draw_package.cpp
 )

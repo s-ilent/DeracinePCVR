@@ -8,14 +8,13 @@
 #include <cstring>
 #include <mutex>
 
-#include "common/logging/log.h"
-
 namespace Core::TextureCapture {
 
 namespace {
 
 struct State {
     std::atomic<bool> enabled{};
+    std::atomic<int> forced_enabled{-1};
     std::mutex mutex;
     std::vector<ImageRecord> images;
     std::vector<SamplerRecord> samplers;
@@ -60,8 +59,14 @@ bool Enabled() noexcept {
         }
         return value[0] == '1' && value[1] == '\0';
     }();
-    g_state.enabled.store(enabled, std::memory_order_relaxed);
-    return enabled;
+    const int forced = g_state.forced_enabled.load(std::memory_order_relaxed);
+    const bool answer = forced < 0 ? enabled : forced != 0;
+    g_state.enabled.store(answer, std::memory_order_relaxed);
+    return answer;
+}
+
+void SetEnabledForTesting(int enabled) noexcept {
+    g_state.forced_enabled.store(enabled, std::memory_order_relaxed);
 }
 
 u64 NextTransferId() noexcept {

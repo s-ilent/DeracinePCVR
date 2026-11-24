@@ -233,4 +233,8 @@ void EndDraw() noexcept;
 /// Test seam: clears the collector. Not called by the emulator.
 void ResetForTesting() noexcept;
 
+/// Test seam: forces the observation on or off, so a test does not depend on the environment.
+/// Passing a negative value restores the environment-derived answer.
+void SetEnabledForTesting(int enabled) noexcept;
+
 } // namespace Core::TextureCapture
