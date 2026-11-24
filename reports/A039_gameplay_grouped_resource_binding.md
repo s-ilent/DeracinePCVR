@@ -1,8 +1,13 @@
 # A-039 — Gameplay grouped-resource binding recovery
 
 **Result: the grouped resource-object binding path is exercised during real gameplay, and one
-complete chain is proven from shader declaration through the selected guest object to the resolved
-virtual provider target.**
+chain is proven from the active shader through the selected guest object to the resolved virtual
+provider target.**
+
+> **Corrected in A-040.** The original headline said "from shader declaration". The fixture does
+> not carry parsed GNM declarations or slot-map entries, so the declaration-to-grouped-binding join
+> is not established. The chain is proven from the *shader identity* to the provider target, not
+> from a declaration.
 
 A-038R found the grouped binder never dispatched on the title screen. That was a bounded result
 about that scene, not about the game. In the classroom it dispatches constantly.
@@ -47,22 +52,31 @@ wrong.
 
 ## 2. The proven chain
 
+> **Corrected in A-040.** The worked example below originally mixed addresses from two different
+> captures and misattributed a stage record. It now uses one complete record from the committed
+> `a039-gameplay-7` fixture, and the stage-record claim is removed because the fixture does not
+> carry stage data. See `reports/A040_provider_descriptor_recovery.md` §2 for the correction.
+
+One complete record from `a039-gameplay-7` (fixture sequence 5):
+
 ```
-Shader bac57337904948a7
-  ↓  context+0x468 → shader state → +0x200 primary resource → +0x1D8 stage record
-  ↓  stage record: size 196, program 0x2000068600 → OrbShdr trailer
-Original GNM declaration and logical API slot
+Shader bac57337904948a7   (resolved via context+0x468 → shader state → +0x1D8 stage record)
   ↓
 Grouped binding entry 0x02000000  (api_slot 0, object_index 0, group 2)
-  ↓  pending 0x00000004, group 2 = lowest set bit
-Cached group 0x100b9d91c0 → object array 0x100f2eeb60
+  ↓  dirty 0x000fffff & mask 0x00000004 = pending 0x00000004; group 2 = lowest set bit
+Cached group 0x1005327710 → object array 0x100f2eeb60
   ↓  array[0]
-Selected guest object 0x100b9cfc80
+Selected guest object 0x100536fc80
   ↓  vptr 0x803ee1590 (RVA 0x03EE1590)
 Virtual +0x38 target 0x800cf9e20 (RVA 0x0CF9E20)
 ```
 
 Every edge is an observed value read at the binder's entry, not an inference from co-occurrence.
+
+**What this chain does not include.** The fixture records the shader hash and the packed binding
+entry, but not the parsed GNM declarations or slot-map entries. The declaration-to-grouped-binding
+join is therefore **not** established by A-039, and the headline above does not claim it. A-040
+recovers the provider-to-descriptor half; the declaration join remains open.
 
 ### Verification of each edge
 
