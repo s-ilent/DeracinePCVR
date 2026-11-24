@@ -57,6 +57,13 @@ $env:SHADPS4_VR_REFRESH_RATE = '120'
 $env:SHADPS4_XR_PAUSE = '0'
 $env:SHADPS4_DBG_AUTOPRESS = '1'
 
+# The capture session. Both are required: TryInstall() needs the enable flag and the
+# directory, and without them no canonical session identity is initialised. The
+# original-mode replay then cannot establish that the package, tape and bridge came
+# from one execution, and refuses the join.
+$env:SHADPS4_DERACINE_CAPTURE_SESSION = '1'
+$env:SHADPS4_DERACINE_CAPTURE_SESSION_DIR = $out
+
 # Provenance and the identity bridge. The bridge is what connects the original UE4
 # index-buffer object to the guest allocation, and without it the join cannot be made.
 $env:SHADPS4_DERACINE_RHI_PROBE = '1'
@@ -110,9 +117,13 @@ built from a package, and using it here would conceal exactly the failure this r
 | `textures.bin` | captured texture bytes |
 | `tape.json` | schema 2 semantic tape with session identity |
 | `index_bridge.json` | the original-object-to-guest-allocation bridge |
-| `manifest.json` | schema 2 selection and verification record |
-| `stage_*.spv` | effective shader modules |
+| `session.json` | schema 2 selection and verification record |
+| `stage_*.spv` | effective shader modules, one per captured stage |
 | `reference_post.bin` | the post-draw reference image |
+| `reference_pre.bin` | the pre-draw reference image, **only when that capture succeeded** |
+
+`reference_pre.bin` is optional. A pass that clears its colour attachment has no capturable
+pre-draw image, and the capture reports that rather than writing a file. Do not require it.
 
 ## Validation
 
@@ -144,6 +155,23 @@ python tools\test_validator_adversarial.py $out
 | `draw is out of bounds` | the captured draw exceeds its buffers | the capture is inconsistent |
 | `reference_status: exact_match` | the render matched the captured reference | the strongest available result |
 
+## Failure outcomes
+
+Each of these is a distinct, reportable result. None of them is a partial success.
+
+| Outcome | What it means | Where it appears |
+| --- | --- | --- |
+| No original command | the deferred draw was not observed | `DERACINE_SEMANTIC_TAPE_NONE` in the log |
+| No matching resource package | no draw had verified host content | `DERACINE_DRAW_PACKAGE_NONE` |
+| No index bridge | the observer recorded nothing | `bridge: missing` from the replay |
+| Unknown address-slot predicate | the thread-dependent predicate was indeterminate | `preliminary_identity_check` in `session.json` |
+| Missing effective shader module | the stage carries no bytes | `effective shader resolution failed: missing_module` |
+| Missing descriptor mapping | a declared descriptor has no captured binding | `missing_binding` |
+| Incomplete push constants | the declared range exceeds the captured bytes | `the push-constant range exceeds the capture capacity` |
+| Unsupported pipeline state | a field the renderer cannot apply faithfully | `unsupported_original_state` |
+| Missing reference image | the package carries none | `reference_status: missing_reference` |
+| Pixel mismatch | the render differs from the reference | `reference_status: pixel_mismatch` |
+
 ## What a successful run would prove
 
 That one original UE4 indexed draw's semantic payload, its resource package and its index bridge
@@ -152,6 +180,18 @@ effective shader modules, its captured descriptors, its captured push constants 
 pipeline state, producing an image that matches the captured reference.
 
 ## What it would not prove
+
+**The colour attachment format is not reproduced.** The replay renders into its own RGBA8 target.
+The producer records the guest's packed data and number format, not a Vulkan enum, and no verified
+conversion exists. A run that reports `effective_captured_state` has applied every captured field it
+could, and the attachment format is not one of them.
+
+**Blending is unsupported.** Blend factors and operations are not captured. A package that captured
+blend enable is refused rather than having a blend state invented.
+
+**An original shader executing is not the same as matching the original image.** Those are separate
+achievements and the report keeps them separate.
+
 
 Whole-frame execution, original material reproduction beyond the captured state, OpenXR integration,
 or that the renderer is correct for draws other than the one captured.
@@ -162,7 +202,7 @@ Keep these privately, outside the repository. Do not commit game bytes.
 
 | Artifact | Why |
 | --- | --- |
-| `package.json`, `tape.json`, `index_bridge.json`, `manifest.json` | the join |
+| `package.json`, `tape.json`, `index_bridge.json`, `session.json` | the join |
 | `shad_log.txt` | the exporter's own record of what it selected |
 | replay stdout | the join outcome and the executed draw |
 | `reference_post.bin` | the comparison target |

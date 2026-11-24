@@ -441,6 +441,37 @@ bool WritePackage(const Package& package, const std::string& directory) noexcept
         {
             const auto& state = package.pipeline_state;
             json << "  \"pipeline_state\": {\n";
+            // Presence is written explicitly because zero is a legitimate value for every one of
+            // these enums. A consumer that decided presence from the value would substitute the
+            // diagnostic default for exactly the fields the game set to their zero value.
+            json << "    \"present\": {\n";
+            json << "      \"topology\": " << (state.present.topology ? "true" : "false")
+                 << ",\n";
+            json << "      \"cull_mode\": " << (state.present.cull_mode ? "true" : "false")
+                 << ",\n";
+            json << "      \"front_face\": " << (state.present.front_face ? "true" : "false")
+                 << ",\n";
+            json << "      \"polygon_mode\": "
+                 << (state.present.polygon_mode ? "true" : "false") << ",\n";
+            json << "      \"depth_test\": " << (state.present.depth_test ? "true" : "false")
+                 << ",\n";
+            json << "      \"depth_write\": " << (state.present.depth_write ? "true" : "false")
+                 << ",\n";
+            json << "      \"depth_compare_op\": "
+                 << (state.present.depth_compare_op ? "true" : "false") << ",\n";
+            json << "      \"samples\": " << (state.present.samples ? "true" : "false")
+                 << ",\n";
+            json << "      \"color_formats\": "
+                 << (state.present.color_formats ? "true" : "false") << ",\n";
+            json << "      \"depth_format\": "
+                 << (state.present.depth_format ? "true" : "false") << ",\n";
+            json << "      \"write_mask\": " << (state.present.write_mask ? "true" : "false")
+                 << ",\n";
+            json << "      \"blend_enable\": "
+                 << (state.present.blend_enable ? "true" : "false") << ",\n";
+            json << "      \"viewport\": " << (state.present.viewport ? "true" : "false")
+                 << "\n";
+            json << "    },\n";
             json << "    \"has_topology\": " << (state.has_topology ? "true" : "false")
                  << ",\n";
             json << "    \"topology\": " << state.topology << ",\n";

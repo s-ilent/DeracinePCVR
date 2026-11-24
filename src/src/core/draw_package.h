@@ -249,9 +249,32 @@ struct ShaderInterface {
 };
 
 /// The graphics pipeline state the draw used, as the renderer actually configured it.
+/// Which pipeline-state fields the capture actually recorded.
+///
+/// Presence is explicit because zero is a legitimate value for every one of these enums:
+/// `VK_POLYGON_MODE_FILL` is 0, `VK_COMPARE_OP_NEVER` is 0, `VK_PRIMITIVE_TOPOLOGY_POINT_LIST` is 0
+/// and `VK_CULL_MODE_NONE` is 0. Deciding presence from the value would substitute a diagnostic
+/// default for exactly the fields the game set to their zero value.
+struct PipelineStatePresent {
+    bool topology{};
+    bool cull_mode{};
+    bool front_face{};
+    bool polygon_mode{};
+    bool depth_test{};
+    bool depth_write{};
+    bool depth_compare_op{};
+    bool samples{};
+    bool color_formats{};
+    bool depth_format{};
+    bool write_mask{};
+    bool blend_enable{};
+    bool viewport{};
+};
+
 struct PipelineState {
-    /// Whether the topology was captured. Zero is a legitimate Vulkan topology value, so it cannot
-    /// double as a missing-data sentinel.
+    /// Which fields were captured.
+    PipelineStatePresent present{};
+    /// Whether the topology was captured. Kept for compatibility with the existing field.
     bool has_topology{};
     /// Vulkan primitive topology.
     u32 topology{};
@@ -902,12 +925,18 @@ struct Package {
 
         if (package.readiness.pipeline_state_ready_original) {
             // Presence is explicit. Zero is a legitimate Vulkan topology value, so it cannot be
-            // used as a missing-data sentinel.
-            if (!package.pipeline_state.has_topology) {
+            // used as a missing-data sentinel. The presence flags are the authority; the older
+            // `has_topology` field is accepted as a fallback for a package written before they
+            // existed.
+            const bool topology_present =
+                package.pipeline_state.present.topology || package.pipeline_state.has_topology;
+            if (!topology_present) {
                 error = "pipeline state readiness claimed with no topology";
                 return false;
             }
-            if (package.pipeline_state.color_formats.empty()) {
+            const bool formats_present = package.pipeline_state.present.color_formats ||
+                                         !package.pipeline_state.color_formats.empty();
+            if (!formats_present) {
                 error = "pipeline state readiness claimed with no colour attachment format";
                 return false;
             }

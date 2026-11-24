@@ -1335,6 +1335,20 @@ void WriteFirstPackage(const char* directory) noexcept {
             {
                 const auto& in = draw.pipeline_state;
                 auto& out = package.pipeline_state;
+                // Presence is recorded explicitly. Zero is a legitimate value for every one of
+                // these enums, so a consumer cannot decide presence from the value: it must be told.
+                // The capture records these fields unconditionally from the live pipeline key, so
+                // each is present when the draw was captured at all.
+                out.present.topology = true;
+                out.present.cull_mode = true;
+                out.present.front_face = true;
+                out.present.polygon_mode = true;
+                out.present.depth_test = true;
+                out.present.depth_write = true;
+                out.present.depth_compare_op = true;
+                out.present.samples = true;
+                out.present.depth_format = true;
+                out.present.viewport = true;
                 out.has_topology = true;
                 out.topology = in.topology;
                 out.cull_mode = in.cull_mode;
@@ -1350,6 +1364,11 @@ void WriteFirstPackage(const char* directory) noexcept {
                     out.blend_enable.push_back(in.blend_enable[i]);
                     out.write_mask.push_back(in.write_mask[i]);
                 }
+                // The array-backed fields are present only when the capture recorded an entry for
+                // them. An empty array is absent, not a zero value.
+                out.present.color_formats = !out.color_formats.empty();
+                out.present.blend_enable = !out.blend_enable.empty();
+                out.present.write_mask = !out.write_mask.empty();
                 out.viewport_x = in.viewport_x;
                 out.viewport_y = in.viewport_y;
                 out.viewport_width = in.viewport_width;
@@ -1357,15 +1376,33 @@ void WriteFirstPackage(const char* directory) noexcept {
                 out.viewport_min_depth = in.viewport_min_depth;
                 out.viewport_max_depth = in.viewport_max_depth;
                 out.push_constant_offset = in.push_constant_offset;
-                out.push_constant_size = in.push_constant_size;
-                out.push_constant_bytes.resize(in.push_constant_size);
-                if (in.push_constant_size != 0) {
-                    std::memcpy(out.push_constant_bytes.data(), in.push_constant_words,
-                                std::min<size_t>(in.push_constant_size,
-                                                 sizeof(in.push_constant_words)));
+                // The declared size must fit the captured words. Resizing to the declared size and
+                // copying the smaller of the two leaves a zero-filled tail that was never captured
+                // from the draw, and the replay would then accept fabricated parameters as genuine
+                // captured state. An oversized range is reported rather than truncated.
+                constexpr size_t kPushConstantCapacity = sizeof(in.push_constant_words);
+                const bool push_constants_fit = in.push_constant_size <= kPushConstantCapacity;
+                if (push_constants_fit) {
+                    out.push_constant_size = in.push_constant_size;
+                    out.push_constant_bytes.assign(
+                        reinterpret_cast<const u8*>(in.push_constant_words),
+                        reinterpret_cast<const u8*>(in.push_constant_words) +
+                            in.push_constant_size);
+                } else {
+                    // The range is not representable. The size is recorded so a reader can see what
+                    // was asked for, but no bytes are claimed: a partial block presented as complete
+                    // would be worse than an absent one.
+                    out.push_constant_size = 0;
+                    out.push_constant_bytes.clear();
+                    package.readiness.limitation =
+                        "the push-constant range exceeds the capture capacity";
                 }
+
+                // Readiness is evidence-based, not value-based. Zero is a legitimate value for
+                // every one of these enums, so presence comes from the explicit flags the capture
+                // recorded rather than from testing a value against zero.
                 package.readiness.pipeline_state_ready_original =
-                    out.topology != 0 && !out.color_formats.empty();
+                    out.present.topology && out.present.color_formats && push_constants_fit;
             }
 
             // The reference output around the draw, when it was captured.
