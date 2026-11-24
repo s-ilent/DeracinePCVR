@@ -17,6 +17,7 @@
 #include <tuple>
 
 #include "common/logging/log.h"
+#include "core/capture_session.h"
 #include "core/draw_package.h"
 #include "core/texture_capture.h"
 
@@ -666,6 +667,9 @@ void WriteFirstPackage(const char* directory) noexcept {
             DrawPackage::Package package{};
             package.scene = "classroom-title";
             package.provenance_id = draw.provenance_id;
+            // The one capture session identity, so the package can be shown to come from the same
+            // execution as the tape and the index bridge.
+            package.session_id = Core::CaptureSession::SessionId();
             package.pipeline_hash = draw.pipeline_hash;
             package.vs_hash = draw.vs_hash;
             package.ps_hash = draw.ps_hash;

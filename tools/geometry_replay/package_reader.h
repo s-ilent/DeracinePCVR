@@ -122,6 +122,8 @@ struct Readiness {
 
 struct Package {
     u32 schema_version{};
+    /// The capture session the package was exported in. Zero for a legacy package.
+    u64 session_id{};
     u64 provenance_id{};
     bool is_indexed{};
     std::vector<Resource> resources;

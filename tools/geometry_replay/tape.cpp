@@ -116,6 +116,9 @@ bool ReadTape(const std::string& directory, Tape& out, std::string& error) {
         out.schema_version = json.at("schema_version").get<u32>();
         out.scene = json.value("scene", "");
         out.provenance_id = json.at("provenance_id").get<u64>();
+        // A version 1 tape carries no session identity. It is read as zero, which the join treats
+        // as insufficient evidence rather than defaulting to another artifact's session.
+        out.session_id = json.value("session_id", 0ull);
         out.image_sha256 = json.value("image_sha256", "");
         out.module_base = json.value("module_base", 0ull);
         out.submission_id = json.value("submission_id", 0ull);
@@ -241,7 +244,8 @@ DerivedDraw DeriveDraw(const DrawPayload& payload, u32 index_element_size) {
 }
 
 Problem ValidateTape(const Tape& tape) {
-    if (tape.schema_version != kSchemaVersion)
+    if (tape.schema_version != kSchemaVersion &&
+        tape.schema_version != kLegacySchemaVersion)
         return Problem::SchemaMismatch;
 
     // The capacity contract is enforced on read as well as on write.

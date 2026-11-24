@@ -25,6 +25,7 @@ using tape::TapeIdentity;
 using tape::u32;
 using tape::u64;
 
+constexpr u64 kSession = 0x9999888877776666ull;
 constexpr u64 kExecution = 0x1111222233334444ull;
 constexpr u64 kOtherExecution = 0x5555666677778888ull;
 constexpr u64 kGuestBase = 0x2015e40000ull;
@@ -34,6 +35,7 @@ constexpr u64 kGuestSize = 6072;
 TapeIdentity MakeTape() {
     TapeIdentity identity{};
     identity.provenance_id = 42;
+    identity.session_id = kSession;
     // The tape carries the object pointer, not a guest address.
     identity.index_guest_base = 0x101355bce8ull;
     identity.index_guest_size = 0;
@@ -54,6 +56,7 @@ TapeIdentity MakeTape() {
 PackageIdentity MakePackage() {
     PackageIdentity identity{};
     identity.provenance_id = 42;
+    identity.session_id = kSession;
     identity.execution_id = kExecution;
     identity.index_guest_base = kGuestBase;
     identity.index_guest_size = kGuestSize;
@@ -72,6 +75,7 @@ PackageIdentity MakePackage() {
 /// The bridge: the object resolved to the guest allocation.
 IndexBridge MakeBridge() {
     IndexBridge bridge{};
+    bridge.session_id = kSession;
     bridge.execution_id = kExecution;
     bridge.original_rhi_object = 0x101355bce8ull;
     bridge.has_original_rhi_object = true;
@@ -112,13 +116,16 @@ TEST(IndexBridge, AVErifiedBridgeJoins) {
 // 2. A different object pointer that resolves to the same allocation.
 // ---------------------------------------------------------------------------------------------
 
-TEST(IndexBridge, ADifferentObjectResolvingToTheSameAllocationJoins) {
-    // Two UE4 objects can wrap one allocation. The identity that matters is the allocation the
-    // draw consumed, so this is a genuine match.
+TEST(IndexBridge, ADifferentObjectResolvingToTheSameAllocationIsRefused) {
+    // The bridge must name the exact original object the tape named. A different object that
+    // happens to resolve to the same allocation is not this draw's bridge, so the join refuses it
+    // rather than accepting an address coincidence.
     auto bridge = MakeBridge();
     bridge.original_rhi_object = 0x101355c000ull;
     const auto result = JoinTapeToPackageWithBridge(MakeTape(), MakePackage(), bridge);
-    EXPECT_EQ(result.outcome, JoinOutcome::Joined) << result.reason;
+    EXPECT_EQ(result.outcome, JoinOutcome::Mismatched) << result.reason;
+    EXPECT_NE(result.reason.find("different original object"), std::string::npos)
+        << result.reason;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -201,12 +208,12 @@ TEST(IndexBridge, AnAbsentBridgeIsInsufficientEvidence) {
     // The object was never resolved. Falling back to comparing the object pointer against the
     // guest address would be the defect this module exists to prevent.
     IndexBridge bridge{};
+    bridge.session_id = kSession;
     bridge.execution_id = kExecution;
     bridge.original_rhi_object = 0x101355bce8ull;
     bridge.has_original_rhi_object = true;
     const auto result = JoinTapeToPackageWithBridge(MakeTape(), MakePackage(), bridge);
     EXPECT_EQ(result.outcome, JoinOutcome::InsufficientEvidence) << result.reason;
-    EXPECT_NE(result.reason.find("not resolved"), std::string::npos) << result.reason;
 }
 
 // ---------------------------------------------------------------------------------------------

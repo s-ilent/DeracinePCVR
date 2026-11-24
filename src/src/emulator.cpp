@@ -114,9 +114,12 @@ void Emulator::Shutdown() {
         capture_dir != nullptr && *capture_dir != '\0') {
         Core::IndexIdentity::ExportSidecar(capture_dir);
     }
-    Core::CaptureSession::ExportManifest();
     // The tape reads the command capture and the draw package, so it must run after both.
     Core::SemanticTape::ExportTape();
+    // The selection runs last: it reads the package, the tape and the bridge from disk, so all
+    // three must exist first. Writing the manifest before them would let it claim a selection that
+    // had not been made.
+    Core::CaptureSession::FinalizeSelection();
     Common::Log::Flush();
     if (controllers) {
         controllers->ResetLightbarColors();

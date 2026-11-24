@@ -9,31 +9,6 @@ It resolves the RHI-02 proof obligation: that a captured UE4 semantic command an
 resource package describe the same draw, established from **one** game execution through a verified
 original index-resource bridge.
 
-## Why the previous design was unsound
-
-The earlier runbook captured a resource package in one launch, read its `provenance_id`, then
-launched the game again to export a tape pinned to that id.
-
-A provenance id is a per-execution record ordinal. The same id in a second process names a different
-draw. The two-launch design could not establish that the tape and the package described the same
-execution, however carefully the id was copied.
-
-It is replaced by a single execution in which every observer runs, all artifacts carry one session
-id, and the compatible pair is selected at export time.
-
-## The identity problem this runbook must solve
-
-The two sides record the index resource in different namespaces:
-
-| Side | Value | Namespace |
-| --- | --- | --- |
-| Tape | `rhi_index_resource` from the RHI invocation argument | original UE4 `FRHIIndexBuffer` object pointer |
-| Package | `index_binding.guest_base` | guest GPU virtual address |
-
-Their numeric equality is not evidence. The bridge that resolves one into the other is recovered
-from the indexed-draw implementation at `0x0CBB9C0` and is described in
-`reports/RHI02IR_production_identity_correction.md`.
-
 ## Prerequisites
 
 | Item | Value |
@@ -57,13 +32,13 @@ Verify before running:
 The index observer refuses to install unless the RHI entry probe installed, and the probe installs
 only after verifying that hash. Setting the index flag alone on an unapproved build does nothing.
 
-## One execution, all observers
+## One bounded execution
 
 Every flag below is opt-in and default OFF. All of them run in the same process.
 
 ```powershell
-# A fresh output directory. Never reuse an existing capture.
-$out = "M:\Development\Deracine-work\_build\rhi02ir-capture-<timestamp>"
+# A fresh private capture directory. Never reuse an existing capture.
+$out = "M:\Development\Deracine-work\_build\rhi02ir2-capture-<timestamp>"
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 
 # The capture session. This generates the one session id every exporter records.
@@ -75,7 +50,7 @@ $env:SHADPS4_DERACINE_RHI_PROBE = "1"
 $env:SHADPS4_DERACINE_RHI_PROBE_AFTER = "33"
 $env:SHADPS4_DERACINE_DRAW_PROVENANCE = "1"
 
-# The original index-resource bridge. This is the observer that resolves the UE4 object.
+# The original index-resource bridge.
 $env:SHADPS4_DERACINE_INDEX_IDENTITY = "1"
 
 # Geometry and shader parameters.
@@ -85,11 +60,9 @@ $env:SHADPS4_DERACINE_SHADER_PARAMS = "1"
 # The resource package.
 $env:SHADPS4_DERACINE_DRAW_PACKAGE = $out
 
-# The semantic command capture.
+# The semantic command capture and tape.
 $env:SHADPS4_DERACINE_CMD_CAPTURE = "1"
 $env:SHADPS4_DERACINE_CMD_CAPTURE_AFTER = "33"
-
-# The semantic tape, exported from the already observed command.
 $env:SHADPS4_DERACINE_SEMANTIC_TAPE = "1"
 $env:SHADPS4_DERACINE_SEMANTIC_TAPE_DIR = $out
 
@@ -98,54 +71,63 @@ $env:SHADPS4_EXIT_AFTER = "75"
 $env:SHADPS4_CLEAN_EXIT = "1"
 ```
 
-## Expected files
+## Expected artifacts
 
-| File | Written by |
-| --- | --- |
-| `session.json` | the capture session |
-| `package.json`, `resources.bin` | the resource package exporter |
-| `tape.json` | the semantic tape exporter |
-| `index_bridge.json` | the index identity observer |
-| `shad_log.txt` | the emulator log |
-
-## What each observer records
-
-| Observer | Artifact | Identity it carries |
+| File | Schema | Written by |
 | --- | --- | --- |
-| Capture session | `session.json` | `session_id` |
-| RHI entry probe | provenance records | `provenance_id`, execution id |
-| Index identity | `index_bridge.json` | `session_id`, `execution_id`, `provenance_id`, object, selected address, both candidates, predicate state |
-| Command capture | `DERACINE_CMD_CAPTURE` lines | command list, payload, capture sequence |
-| Resource package | `package.json` | `provenance_id`, `index_binding.guest_base` |
+| `session.json` | 1 | the capture session, last |
+| `package.json` | 3 | the resource package exporter |
+| `resources.bin` | — | the resource package exporter |
+| `tape.json` | 2 | the semantic tape exporter |
+| `index_bridge.json` | 1 | the index identity observer |
+| `shad_log.txt` | — | the emulator log |
 
-## Verifying the shared session
+A package at schema 2 or a tape at schema 1 predates session provenance. It is readable for
+diagnostic replay but cannot qualify as a verified original capture.
+
+## Session finalization
+
+`CaptureSession::FinalizeSelection()` runs **last**, after the package, tape and bridge are written.
+It reads all three from disk, checks that they share one session and one provenance, and writes the
+decision into `session.json`. The manifest is written last because it records a decision about
+artifacts that must already exist.
+
+## Inspecting the selection
 
 ```powershell
 Get-Content "$out\session.json"
-Select-String -Path "$out\shad_log.txt" -Pattern "DERACINE_INDEX_IDENTITY_SUMMARY"
-Select-String -Path "$out\shad_log.txt" -Pattern "DERACINE_CAPTURE_SESSION_INSTALL"
+Select-String -Path "$out\shad_log.txt" -Pattern "DERACINE_CAPTURE_SELECTION"
 ```
 
-The `session_id` in `session.json` must equal the one in the install line. A mismatch means the
-directory contains artifacts from more than one run and must be discarded.
+The `selection.outcome` field is one of:
 
-## Bridge-aware identity validation
+| Outcome | Meaning |
+| --- | --- |
+| `selected` | the artifacts share a session, a provenance and an address |
+| `no_package` | the resource package was not written |
+| `no_tape` | the semantic tape was not written |
+| `no_bridge` | the index bridge sidecar was not written |
+| `missing_session` | an artifact carries no session identity |
+| `session_mismatch` | the artifacts were not written in one session |
+| `provenance_mismatch` | the artifacts describe different draws |
+| `bridge_unresolved` | the bridge did not resolve a guest address |
+| `address_mismatch` | the resolved allocation and the package disagree |
+
+## Bridge-aware validation
 
 ```powershell
-# The package must validate on its own.
 python tools/validate_draw_package.py $out
-
-# The bridge must name the selected draw and carry a selected address.
 Get-Content "$out\index_bridge.json"
 ```
 
 A candidate is usable only when all of these hold:
 
-1. `index_bridge.json` has a record for the package's `provenance_id`.
-2. That record has `has_selected_guest_address: true`.
-3. Its `selected_guest_address` equals the package's `index_binding.guest_base`.
-4. Its `original_rhi_object` equals the tape's `rhi_index_resource`.
-5. Its `session_id` equals `session.json`'s.
+1. `session.json` has `selection.selected: true`.
+2. `session.json`'s `session_id` equals the one in `package.json`, `tape.json` and
+   `index_bridge.json`.
+3. The bridge record for the package's `provenance_id` has `has_selected_guest_address: true`.
+4. Its `selected_guest_address` equals the package's `index_binding.guest_base`.
+5. Its `original_rhi_object` equals the tape's index resource.
 6. Its `predicate_determinable` is `true`.
 7. The package validates.
 
@@ -155,25 +137,31 @@ A candidate is usable only when all of these hold:
 .\build-geometry-replay-rel\deracine_tape_replay.exe $out tape
 ```
 
-The replay reads `index_bridge.json` and calls the bridge-aware matcher. It refuses original-mode
-execution unless the bridge is complete and verified. A run without `--synthetic-fixture` that
-cannot establish the bridge exits non-zero with `insufficient_evidence`.
+The replay reads all four artifacts and calls the bridge-aware matcher. It refuses original-mode
+execution unless every check passes. A run without `--synthetic-fixture` that cannot establish the
+bridge exits non-zero.
 
 ## Failure classification
 
 | Condition | Meaning | Action |
 | --- | --- | --- |
-| `bridge: missing` | no sidecar was written | check `SHADPS4_DERACINE_INDEX_IDENTITY` and the session directory |
-| `has_selected_guest_address: false` | the predicate could not be evaluated | the address is unknown; do not claim a match |
-| `predicate_determinable: false` | a predicate input was unreadable | the slot is unknown; do not claim a match |
-| `selected_guest_address` differs from the package | different resources | reject the pair |
-| `original_rhi_object` differs from the tape | the bridge resolved a different object | reject the pair |
-| two `session_id` values | mixed runs | discard and re-capture |
-| `identity: rejected` | positive disagreement | the replay refuses |
+| `session: manifest_missing` | no `session.json` | check the session flags |
+| `bridge: missing` | no sidecar | check `SHADPS4_DERACINE_INDEX_IDENTITY` |
+| `has_selected_guest_address: false` | the predicate could not be evaluated | do not claim a match |
+| `predicate_determinable: false` | a predicate input was unreadable | do not claim a match |
+| `identity: mismatched` | a positive disagreement | the replay refuses |
 | `identity: insufficient_evidence` | no verified bridge | the replay refuses |
+| `identity rejected: ... different original object` | the bridge resolved another object | reject |
+| `identity rejected: ... different sessions` | mixed runs | discard and re-capture |
 
 **Do not substitute another draw.** A failure artifact that names the unresolved edge is more
 useful than a package and a tape that happen to validate separately.
+
+## Evidence retained for unresolved candidates
+
+When the selection fails, `session.json` records the outcome and the reason, and the three
+artifacts remain in the directory. Keep them: they name which edge failed, which is what a later
+investigation needs.
 
 ## Cleanup
 

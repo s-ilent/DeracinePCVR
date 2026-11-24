@@ -122,6 +122,7 @@ bool WritePackage(const Package& package, const std::string& directory) noexcept
         json << "  \"schema_version\": " << package.schema_version << ",\n";
         json << "  \"scene\": \"" << EscapeJson(package.scene) << "\",\n";
         json << "  \"provenance_id\": " << package.provenance_id << ",\n";
+    json << "  \"session_id\": " << package.session_id << ",\n";
         json << "  \"pipeline\": {\n";
         json << "    \"pipeline_hash\": " << package.pipeline_hash << ",\n";
         json << "    \"vs_hash\": " << package.vs_hash << ",\n";

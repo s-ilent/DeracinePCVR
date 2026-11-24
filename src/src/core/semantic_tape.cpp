@@ -23,6 +23,7 @@
 #include "core/rhi_command_capture.h"
 #include "core/rhi_command_capture_contract.h"
 #include "core/rhi_entry_probe.h"
+#include "core/capture_session.h"
 #include "core/semantic_tape_contract.h"
 
 namespace Core::SemanticTape {
@@ -231,6 +232,9 @@ TapeState g_state{};
     }
 
     tape.scene = "classroom-title";
+    // The one capture session identity, so the tape can be shown to come from the same execution as
+    // the package and the index bridge.
+    tape.session_id = CaptureSession::SessionId();
     tape.image_sha256 = g_state.image_sha256;
     tape.module_base = g_state.module_base;
     error.clear();
@@ -282,6 +286,7 @@ TapeState g_state{};
     out << "  \"schema_version\": " << tape.schema_version << ",\n";
     out << "  \"scene\": \"" << EscapeJson(tape.scene) << "\",\n";
     out << "  \"provenance_id\": " << tape.provenance_id << ",\n";
+    out << "  \"session_id\": " << tape.session_id << ",\n";
     out << "  \"image_sha256\": \"" << EscapeJson(tape.image_sha256) << "\",\n";
     out << "  \"module_base\": " << tape.module_base << ",\n";
     out << "  \"submission_id\": " << tape.submission_id << ",\n";

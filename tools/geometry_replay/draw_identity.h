@@ -96,6 +96,9 @@ enum class IndexDomain : u8 {
 /// The identity facts a tape contributes.
 struct TapeIdentity {
     u64 provenance_id{};
+    /// The capture session the tape was exported in. A verified-original join requires this to be
+    /// non-zero and equal to the package's, the bridge's and the manifest's.
+    u64 session_id{};
     /// The index-buffer value the RHI invocation was given, in whatever domain it was recorded.
     u64 index_guest_base{};
     u64 index_guest_size{};
@@ -118,6 +121,8 @@ struct TapeIdentity {
 /// The identity facts a package contributes.
 struct PackageIdentity {
     u64 provenance_id{};
+    /// The capture session the package was exported in.
+    u64 session_id{};
     /// The execution the package was captured in. A package from a different execution than the
     /// bridge cannot be joined, however well the addresses agree.
     u64 execution_id{};
@@ -143,6 +148,8 @@ struct PackageIdentity {
 /// tape side contributes a guest address that was independently resolved from the object, so the
 /// comparison is between two values in the same namespace.
 struct IndexBridge {
+    /// The capture session the bridge was recorded in.
+    u64 session_id{};
     /// The execution the bridge was recovered in. A bridge from a different execution than the
     /// package cannot establish a match, however well the addresses agree.
     u64 execution_id{};

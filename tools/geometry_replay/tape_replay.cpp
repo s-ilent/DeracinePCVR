@@ -642,6 +642,29 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // --- Read the session manifest -------------------------------------------------------------
+    //
+    // The manifest carries the session identity the exporters were given. Reading it here lets the
+    // replay check that every artifact claims the same execution, rather than trusting that they
+    // do because they sit in one directory.
+    u64 manifest_session_id = 0;
+    {
+        const auto manifest_path = std::filesystem::path{directory} / "session.json";
+        std::ifstream manifest_file{manifest_path};
+        if (!manifest_file) {
+            std::cout << "session: manifest_missing\n";
+        } else {
+            nlohmann::json manifest;
+            try {
+                manifest_file >> manifest;
+                manifest_session_id = manifest.value("session_id", 0ull);
+                std::cout << "session: manifest_id=" << manifest_session_id << "\n";
+            } catch (const std::exception& e) {
+                std::cout << "session: manifest_unreadable (" << e.what() << ")\n";
+            }
+        }
+    }
+
     // --- Read the original index-resource bridge -----------------------------------------------
     //
     // The bridge is the independent observation that resolves the original UE4 index-buffer object
@@ -753,6 +776,7 @@ int main(int argc, char** argv) {
     // outcome is reported. A mismatch is refused before any GPU work.
     {
         tape::TapeIdentity tape_identity{};
+        tape_identity.session_id = tape.session_id;
         tape_identity.provenance_id = tape.provenance_id;
         for (const auto& resource : tape.resources) {
             if (resource.kind == tape::ResourceKind::IndexBuffer) {
@@ -790,6 +814,11 @@ int main(int argc, char** argv) {
 
         tape::PackageIdentity package_identity{};
         package_identity.provenance_id = pkg.provenance_id;
+        package_identity.session_id = pkg.session_id;
+        // The execution id comes from the bridge, which is the only artifact that records it. A
+        // package that carries no execution id is compared against the bridge's, not against a
+        // value invented here.
+        package_identity.execution_id = 0;
         package_identity.index_guest_base = pkg.index.guest_base;
         package_identity.index_guest_size = pkg.index.guest_size;
         // The package records the guest GPU address the draw consumed.
@@ -814,6 +843,7 @@ int main(int argc, char** argv) {
 
         tape::IndexBridge index_bridge{};
         if (have_bridge) {
+            index_bridge.session_id = bridge_record.session_id;
             index_bridge.execution_id = bridge_record.execution_id;
             index_bridge.original_rhi_object = bridge_record.original_rhi_object;
             index_bridge.has_original_rhi_object = bridge_record.has_original_rhi_object;
@@ -831,14 +861,28 @@ int main(int argc, char** argv) {
             index_bridge.evidence = bridge_record.address_evidence;
         }
 
-        // The bridge must name the same original object the tape recorded. A bridge that resolved
-        // a different object is not this draw's bridge, however well the addresses agree.
-        if (have_bridge && index_bridge.has_original_rhi_object &&
-            tape_identity.index_guest_base != 0 &&
-            index_bridge.original_rhi_object != tape_identity.index_guest_base) {
-            std::cout << "identity: bridge_object_mismatch bridge="
-                      << index_bridge.original_rhi_object
-                      << " tape=" << tape_identity.index_guest_base << "\n";
+        // The original-object correspondence is enforced inside the matcher, so a caller cannot
+        // obtain a join from a bridge that resolved a different object. The matcher reports it as
+        // a positive mismatch, which the gate below treats as fatal.
+
+        // The manifest must name the same session as the tape and the package. A manifest from a
+        // different run means the directory holds artifacts from more than one execution.
+        //
+        // A missing manifest session is fatal in original mode: without it the directory cannot be
+        // shown to hold one execution's artifacts, which is the whole point of the manifest. A
+        // synthetic fixture is exempt because it is explicitly not claiming original provenance.
+        if (!synthetic_fixture) {
+            if (manifest_session_id == 0) {
+                std::cerr << "identity rejected: the session manifest carries no session identity, "
+                             "so the directory cannot be shown to hold one execution's artifacts\n";
+                return 1;
+            }
+            if (tape.session_id != 0 && manifest_session_id != tape.session_id) {
+                std::cerr << "identity rejected: the session manifest names session "
+                          << manifest_session_id << " but the tape names " << tape.session_id
+                          << "\n";
+                return 1;
+            }
         }
 
         const tape::JoinResult join =

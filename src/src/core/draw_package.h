@@ -27,7 +27,13 @@ namespace DrawPackage {
 /// Version 2 adds geometry and replaces the single `replay_ready` flag with explicit readiness
 /// dimensions. A version 1 package is rejected rather than reinterpreted, because its
 /// `replay_ready` meant shader-buffer completeness only.
-inline constexpr u32 SchemaVersion = 2;
+/// Version 3 adds the capture session identity, so a package can be shown to come from the same
+/// execution as the semantic tape and the index bridge. A version 2 package is refused in
+/// verified-original mode because it carries no session provenance.
+///
+/// RHI-03 plans a schema 4 for the original-shader pipeline. That version must carry this field
+/// too; see docs/research/RHI02IR2_RHI03_HANDOFF.md.
+inline constexpr u32 SchemaVersion = 3;
 
 /// Opt-in for writing a private draw package. Separate from the capture flags so a package is only
 /// produced when explicitly asked for.
@@ -270,6 +276,8 @@ struct Package {
     u32 schema_version{SchemaVersion};
     std::string scene;
     u64 provenance_id{};
+    /// The capture session this package was exported in. Read from the one CaptureSession identity.
+    u64 session_id{};
     u64 pipeline_hash{};
     u64 vs_hash{};
     u64 ps_hash{};

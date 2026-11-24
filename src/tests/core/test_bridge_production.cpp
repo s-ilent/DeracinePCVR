@@ -139,6 +139,7 @@ Record MakeRecord() {
 TapeIdentity MakeTape() {
     TapeIdentity identity{};
     identity.provenance_id = 42;
+    identity.session_id = kSession;
     identity.index_guest_base = kObject;
     identity.index_domain = tape::IndexDomain::Ue4Object;
     identity.index_element_size = 2;
@@ -156,6 +157,7 @@ TapeIdentity MakeTape() {
 PackageIdentity MakePackage() {
     PackageIdentity identity{};
     identity.provenance_id = 42;
+    identity.session_id = kSession;
     identity.execution_id = kExecution;
     identity.index_guest_base = kGuestBase;
     identity.index_guest_size = kGuestSize;
@@ -174,6 +176,7 @@ PackageIdentity MakePackage() {
 /// Converts a persisted record into the matcher's bridge, exactly as the replay does.
 IndexBridge ToBridge(const Record& record) {
     IndexBridge bridge{};
+    bridge.session_id = record.session_id;
     bridge.execution_id = record.execution_id;
     bridge.original_rhi_object = record.original_rhi_object;
     bridge.has_original_rhi_object = record.has_original_rhi_object;

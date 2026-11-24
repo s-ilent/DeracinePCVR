@@ -44,6 +44,9 @@ bool Read(const std::string& directory, Package& out, std::string& error) {
     try {
         out.schema_version = doc.at("schema_version").get<u32>();
         out.provenance_id = doc.at("provenance_id").get<u64>();
+    // A version 2 package carries no session identity. It is read as zero, which the join treats as
+    // insufficient evidence rather than defaulting to another artifact's session.
+    out.session_id = doc.value("session_id", 0ull);
         out.is_indexed = doc.at("pipeline").value("is_indexed", false);
 
         for (const auto& entry : doc.at("resources")) {
