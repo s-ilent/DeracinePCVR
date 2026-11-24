@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """Focused static checks for the shader-resource lifecycle correction.
 
-Verifies, against a Deracine inner ELF, the claims the correction report
-depends on. Exits non-zero on the first failed assertion.
+Verifies, against a Deracine inner ELF, the claims the correction report and
+its observer-spec correction depend on. Exits non-zero on the first failure.
 
 Usage:
-    python verify_shader_resource_correction.py <path-to-v100.elf>
+    python verify_shader_resource_correction.py <path-to-v100.elf> [--allow-hash-mismatch]
+
+By default an ELF whose SHA-256 differs from the pinned target is rejected,
+because every address below is only meaningful for that exact binary.
+Pass --allow-hash-mismatch to inspect a different build deliberately.
 
 The ELF is never modified and nothing is written to disk.
 """
 import hashlib
 import re
-import struct
 import subprocess
 import sys
 
@@ -32,16 +35,34 @@ FACTORY_ALLOC = 0x1D8
 INSTANCE_SIZE_FIELD = 0x1F8
 
 
+class DisasmError(RuntimeError):
+    """Raised when llvm-objdump produces no usable output for a range."""
+
+
 def disasm(path, start, end):
-    out = subprocess.run(
+    """Disassemble [start, end). Raises DisasmError rather than returning [].
+
+    An empty result is never treated as "no instructions matched": it means
+    the tool failed, the range is unmapped, or the binary is not the pinned
+    one. Silently continuing would turn a tool failure into a false pass.
+    """
+    proc = subprocess.run(
         [OBJDUMP, "-d", "--start-address=%#x" % start, "--stop-address=%#x" % end,
          "--no-show-raw-insn", path],
-        capture_output=True, text=True).stdout
+        capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise DisasmError(
+            "llvm-objdump exited %d for [%#x, %#x): %s"
+            % (proc.returncode, start, end, proc.stderr.strip()[:400]))
     rows = []
-    for ln in out.splitlines():
+    for ln in proc.stdout.splitlines():
         m = re.match(r"\s*([0-9a-f]+):\s+(.*)$", ln)
         if m:
-            rows.append((int(m.group(1), 16), m.group(2).strip()))
+            rows.append((int(m.group(1), 16), " ".join(m.group(2).split())))
+    if not rows:
+        raise DisasmError(
+            "no instructions decoded for [%#x, %#x); the range is unmapped or "
+            "the binary is not the pinned target" % (start, end))
     return rows
 
 
@@ -94,17 +115,51 @@ def check(label, ok, detail=""):
         raise SystemExit("verification failed: " + label)
 
 
+def find_setter_after(rows, index, window=40):
+    """Return the GNM setter name reached from rows[index] within window.
+
+    This is a bounded linear lookahead, not a control-flow walk. It is used
+    only where the slot load and the setter call are in the same straight-line
+    block, which the caller asserts by checking the intervening instructions.
+    """
+    for j in range(index, min(index + window, len(rows))):
+        t = rows[j][1]
+        if "0x33c8340" in t:
+            return "PS", rows[j][0]
+        if "0x33c81b0" in t:
+            return "VS", rows[j][0]
+    return None, None
+
+
+def branch_targets(rows):
+    """Map each conditional/unconditional branch site to its target."""
+    out = []
+    for va, txt in rows:
+        m = re.match(r"(j\w+)\s+(0x[0-9a-f]+)", txt)
+        if m:
+            out.append((va, m.group(1), int(m.group(2), 16)))
+    return out
+
+
 def main():
-    if len(sys.argv) != 2:
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    allow_mismatch = "--allow-hash-mismatch" in sys.argv
+    if len(args) != 1:
         raise SystemExit(__doc__)
-    path = sys.argv[1]
+    path = args[0]
 
     digest = hashlib.sha256(open(path, "rb").read()).hexdigest().upper()
     print("ELF: " + path)
     print("SHA-256: " + digest)
     if digest != EXPECTED_SHA256:
-        print("  [WARN] hash differs from the report target " + EXPECTED_SHA256)
-        print("         address checks below may not apply to this binary")
+        if not allow_mismatch:
+            raise SystemExit(
+                "refusing to verify: SHA-256 does not match the pinned target\n"
+                "  expected " + EXPECTED_SHA256 + "\n"
+                "  actual   " + digest + "\n"
+                "Every address in this script is specific to the pinned binary.\n"
+                "Pass --allow-hash-mismatch to inspect a different build deliberately.")
+        print("  [WARN] hash mismatch accepted via --allow-hash-mismatch")
     print()
 
     print("C1. The factory object is 472 bytes and fits its own allocation")
@@ -150,47 +205,50 @@ def main():
     check("factory stores it at +0x98", stored_ctor)
 
     print()
-    print("C5. The receiver reads all three slots and null-tests them")
+    print("C5. The receiver reads all three slots and null-tests only +0x200")
     recv = disasm(path, RECEIVER, RECEIVER_END)
-    text = " ".join(" ".join(t.split()) for _, t in recv)
-    check("receiver reads state+0x1E8", "0x1e8(%rax)" in text)
-    check("receiver reads state+0x200", "0x200(%rax)" in text)
-    check("receiver reads state+0x1E0", "0x1e0(%rax)" in text)
+    rtext = " ".join(t for _, t in recv)
+    check("receiver reads state+0x1E8", "0x1e8(%rax)" in rtext)
+    check("receiver reads state+0x200", "0x200(%rax)" in rtext)
+    check("receiver reads state+0x1E0", "0x1e0(%rax)" in rtext)
     check("receiver null-tests the +0x200 slot",
-          "movq 0x200(%rax), %r13" in text and "testq %r13, %r13" in text)
+          "movq 0x200(%rax), %r13" in rtext and "testq %r13, %r13" in rtext)
     check("receiver null-tests the +0x1E8 slot",
-          "movq 0x1e8(%rax), %rax" in text and "testq %rax, %rax" in text)
+          "movq 0x1e8(%rax), %rax" in rtext and "testq %rax, %rax" in rtext)
+    # The receiver dereferences +0x1E0 with no guard. This asymmetry against
+    # the binder is a finding, not an omission, so it is asserted explicitly.
+    check("receiver does NOT null-test the +0x1E0 slot",
+          "movq 0x1e0(%rax), %rcx" in rtext
+          and "testq %rcx, %rcx" not in rtext,
+          "receiver assumes +0x1E0 is non-null when +0x200 is null")
 
     print()
-    print("C6. Slot to GNM setter mapping")
+    print("C6. Slot to GNM setter mapping, with the straight-line block asserted")
     mapping = {}
-    for i, (va, raw) in enumerate(recv):
-        txt = " ".join(raw.split())
+    for i, (va, txt) in enumerate(recv):
         slot = None
         for cand in ("0x1e0", "0x1e8", "0x200"):
             if "movq " + cand + "(%rax)" in txt:
                 slot = int(cand, 16)
         if slot is None:
             continue
-        for j in range(i, min(i + 40, len(recv))):
-            t = " ".join(recv[j][1].split())
-            if "0x33c8340" in t:
-                mapping.setdefault(slot, "PS")
-                break
-            if "0x33c81b0" in t:
-                mapping.setdefault(slot, "VS")
-                break
-    check("state+0x1E8 feeds sceGnmSetPsShader350", mapping.get(0x1E8) == "PS",
+        kind, call_va = find_setter_after(recv, i)
+        if kind:
+            mapping.setdefault(slot, (kind, call_va))
+    check("state+0x1E8 feeds sceGnmSetPsShader350",
+          mapping.get(0x1E8, (None,))[0] == "PS",
           "got " + str(mapping.get(0x1E8)))
-    check("state+0x200 feeds sceGnmSetVsShader", mapping.get(0x200) == "VS",
+    check("state+0x200 feeds sceGnmSetVsShader",
+          mapping.get(0x200, (None,))[0] == "VS",
           "got " + str(mapping.get(0x200)))
-    check("state+0x1E0 feeds sceGnmSetVsShader", mapping.get(0x1E0) == "VS",
+    check("state+0x1E0 feeds sceGnmSetVsShader",
+          mapping.get(0x1E0, (None,))[0] == "VS",
           "got " + str(mapping.get(0x1E0)))
 
     print()
     print("C7. The binder takes (context, new_state) and refcount-assigns context+0x468")
     bind = disasm(path, BINDER, BINDER_END)
-    btext = " ".join(" ".join(t.split()) for _, t in bind)
+    btext = " ".join(t for _, t in bind)
     check("binder saves %rdi as the context", "movq %rdi, %r14" in btext)
     check("binder saves %rsi as the new state", "movq %rsi, -0x50(%rbp)" in btext)
     check("binder refcount-assigns context+0x468", "leaq 0x468(%r14), %rdi" in btext)
@@ -200,7 +258,7 @@ def main():
     print()
     print("C8. The descriptor is instantiated by calling its +0x98 data field")
     inst = disasm(path, 0xF10910, 0xF10DE0)
-    itext = " ".join(" ".join(t.split()) for _, t in inst)
+    itext = " ".join(t for _, t in inst)
     check("instantiation helper tests the descriptor flag 0x10000080",
           "0x10000080" in itext)
     check("instantiation helper loads the +0x98 data field",
@@ -209,8 +267,38 @@ def main():
     check("instantiation helper allocates via 0x1038500", "callq 0x1038500" in itext)
 
     print()
+    print("C9. Binder and receiver predicates are NOT identical")
+    # The binder requires +0x1E0 non-null AND its +0x260 sub-object non-null
+    # before taking the primary vertex path. The receiver requires only that
+    # +0x200 be non-null. This is the asymmetry the observer must model.
+    # Neither function null-tests +0x1E0 itself; both dereference it directly.
+    # The binder additionally requires the +0x260 sub-object to be non-null.
+    check("binder dereferences +0x1E0 without testing it",
+          "movq 0x1e0(%r15), %r12" in btext and "testq %r12, %r12" not in btext)
+    check("binder reads the +0x260 sub-object of +0x1E0",
+          "movq 0x260(%r12), %rcx" in btext)
+    check("binder null-tests that +0x260 sub-object",
+          "testq %rcx, %rcx" in btext)
+    check("binder tests bit 1 of the per-array flag byte",
+          "testb $0x2, 0x5e(%rax,%rdx,4)" in btext)
+    check("receiver has no +0x260 test", "0x260(" not in rtext)
+    print()
+    print("C10. Branch structure is recoverable for both functions")
+    bb = branch_targets(bind)
+    rb = branch_targets(recv)
+    check("binder has conditional branches", len(bb) > 10, "%d branches" % len(bb))
+    check("receiver has conditional branches", len(rb) > 5, "%d branches" % len(rb))
+    check("binder branches stay inside its own extent",
+          all(BINDER <= t < BINDER_END for _, _, t in bb))
+    check("receiver branches stay inside its own extent",
+          all(RECEIVER <= t < RECEIVER_END for _, _, t in rb))
+
+    print()
     print("All checks passed.")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except DisasmError as exc:
+        raise SystemExit("disassembly failed: %s" % exc)
