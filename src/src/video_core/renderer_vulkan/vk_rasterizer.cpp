@@ -263,6 +263,87 @@ static std::pair<u32, u32> GetDrawOffsets(
     return {vertex_offset, instance_offset};
 }
 
+bool Rasterizer::CaptureColorTarget(Core::ReferenceOutput::ReferenceImage& out) {
+    // The first colour attachment is the one a single-target draw writes. A draw with several
+    // targets would need each captured, which this phase does not attempt: the selected candidate
+    // has one.
+    auto& [image_id, desc] = cb_descs[0];
+    if (!image_id) {
+        return false;
+    }
+    auto& image = texture_cache.GetImage(image_id);
+    const auto& image_view = texture_cache.FindRenderTarget(image_id, desc);
+
+    // The extent and format live on the image, not the view: the view describes which subresource
+    // is addressed, and the image describes what that subresource is.
+    const u32 width = image.info.size.width;
+    const u32 height = image.info.size.height;
+    if (width == 0 || height == 0) {
+        return false;
+    }
+
+    // Bytes per pixel for the formats this capture supports. A format outside this set is reported
+    // rather than guessed, because a wrong stride would produce a plausible-looking wrong image.
+    const auto format = image.info.pixel_format;
+    u32 bytes_per_pixel = 0;
+    switch (format) {
+    case vk::Format::eR8G8B8A8Unorm:
+    case vk::Format::eR8G8B8A8Srgb:
+    case vk::Format::eB8G8R8A8Unorm:
+    case vk::Format::eB8G8R8A8Srgb:
+        bytes_per_pixel = 4;
+        break;
+    case vk::Format::eR16G16B16A16Sfloat:
+        bytes_per_pixel = 8;
+        break;
+    default:
+        return false;
+    }
+
+    const u64 byte_size = static_cast<u64>(width) * height * bytes_per_pixel;
+    if (byte_size == 0 || byte_size > Core::ReferenceOutput::MaxReferenceBytes) {
+        return false;
+    }
+
+    auto& download_buffer = buffer_cache.GetUtilityBuffer(VideoCore::MemoryUsage::Download);
+    const auto [download, offset] = download_buffer.Map(byte_size);
+    download_buffer.Commit();
+
+    const vk::BufferImageCopy copy = {
+        .bufferOffset = offset,
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
+        .imageSubresource =
+            {
+                .aspectMask = vk::ImageAspectFlagBits::eColor,
+                .mipLevel = image_view.info.range.base.level,
+                .baseArrayLayer = image_view.info.range.base.layer,
+                .layerCount = 1,
+            },
+        .imageOffset = {0, 0, 0},
+        .imageExtent = {width, height, 1},
+    };
+
+    // Scoped to the subresource being read, and restored to the state it was found in, so the copy
+    // does not change what the game renders. This is the SC-10S discipline applied to a render
+    // target rather than a sampled image.
+    const VideoCore::SubresourceRange range{
+        .base = {.level = image_view.info.range.base.level,
+                 .layer = image_view.info.range.base.layer},
+        .extent = {.levels = 1, .layers = 1},
+    };
+    image.DownloadScoped(std::span{&copy, 1}, download_buffer.Handle(), offset, byte_size, range);
+
+    out = {};
+    out.width = width;
+    out.height = height;
+    out.format = static_cast<u32>(format);
+    out.bytes_per_pixel = bytes_per_pixel;
+    out.bytes.resize(byte_size);
+    std::memcpy(out.bytes.data(), download, byte_size);
+    return true;
+}
+
 void Rasterizer::EliminateFastClear() {
     auto& col_buf = liverpool->regs.color_buffers[0];
     if (!col_buf || !col_buf.info.fast_clear) {
@@ -443,6 +524,19 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
         return;
     }
 
+    // The colour attachment contents before this draw, so a consumer can start from the state the
+    // draw actually inherited. Taken after BeginRendering, which is where the target is bound and
+    // its layout is settled, and before the draw is emitted.
+    if (Core::ReferenceOutput::IsEnabled()) {
+        const u64 provenance_id = Core::RhiEntryProbe::CurrentDrawProvenanceId();
+        if (provenance_id != 0) {
+            Core::ReferenceOutput::ReferenceImage reference{};
+            if (CaptureColorTarget(reference)) {
+                Core::ReferenceOutput::NotePreDraw(provenance_id, reference);
+            }
+        }
+    }
+
     {
         const FrameStats::CallTimer timer{FrameStats::Call::BindVertices};
         buffer_cache.BindVertexBuffers(*pipeline, buffer_barriers);
@@ -608,14 +702,10 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
         snapshot.num_indices = liverpool->regs.num_indices;
         snapshot.num_instances = liverpool->regs.num_instances.NumInstances();
         snapshot.is_indexed = is_indexed;
-        {
-            const auto& key = pipeline->GetGraphicsKey();
-            snapshot.pipeline_hash = std::hash<GraphicsPipelineKey>{}(key);
-            snapshot.vs_hash =
-                key.stage_hashes[static_cast<u32>(Shader::LogicalStage::Vertex)];
-            snapshot.ps_hash =
-                key.stage_hashes[static_cast<u32>(Shader::LogicalStage::Fragment)];
-        }
+        const auto& key = pipeline->GetGraphicsKey();
+        snapshot.pipeline_hash = std::hash<GraphicsPipelineKey>{}(key);
+        snapshot.vs_hash = key.stage_hashes[static_cast<u32>(Shader::LogicalStage::Vertex)];
+        snapshot.ps_hash = key.stage_hashes[static_cast<u32>(Shader::LogicalStage::Fragment)];
 
         // The push-constant block the renderer will submit, captured as raw words.
         const auto* push_bytes = reinterpret_cast<const u32*>(&push_data);
@@ -638,6 +728,58 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
             out.push_data_words = push_words;
             for (u32 r = 0; r < push_words; ++r) {
                 out.push_data[r] = push_bytes[r];
+            }
+        }
+
+        // The colour attachment contents before and after the draw, so a consumer can start from
+        // the state the draw actually inherited rather than from a cleared target. The copy is
+        // scoped to the subresource the draw writes and restores its state, so it does not change
+        // what the game renders.
+        if (Core::ReferenceOutput::IsEnabled()) {
+            Core::ReferenceOutput::ReferenceImage reference{};
+            if (CaptureColorTarget(reference)) {
+                Core::ReferenceOutput::NotePostDraw(provenance_id, reference);
+            }
+        }
+
+        // The graphics pipeline state the draw used. These are the values the renderer configured,
+        // not a reconstruction: the pipeline key and the live viewport are both in scope here.
+        {
+            auto& state = snapshot.pipeline_state;
+            state.topology = static_cast<u32>(key.prim_type);
+            state.polygon_mode = static_cast<u32>(key.polygon_mode);
+            state.samples = key.num_samples;
+            state.depth_format = static_cast<u32>(key.z_format);
+            state.color_format_count =
+                std::min<u32>(key.num_color_attachments, 8u);
+            for (u32 i = 0; i < state.color_format_count; ++i) {
+                // The pipeline key carries the guest's data and number format, not a Vulkan format.
+                // Both are recorded so a consumer can derive the host format the same way the
+                // renderer did, rather than being handed a value it cannot check.
+                state.color_formats[i] =
+                    (static_cast<u32>(key.color_buffers[i].data_format) & 0x3Fu) |
+                    ((static_cast<u32>(key.color_buffers[i].num_format) & 0x0Fu) << 6);
+                state.blend_enable[i] = key.blend_controls[i].enable ? 1u : 0u;
+                state.write_mask[i] = static_cast<u32>(key.write_masks[i]);
+            }
+            state.depth_test = static_cast<bool>(regs.depth_control.depth_enable);
+            state.depth_write = static_cast<bool>(regs.depth_control.depth_write_enable);
+            state.depth_compare_op = static_cast<u32>(regs.depth_control.depth_func);
+            // The viewport the draw used, from the live register state. The bounds are stored as a
+            // scale and an offset per axis, so the extent is twice the scale and the origin is the
+            // offset minus the scale.
+            const auto& viewport = regs.viewports[0];
+            state.viewport_x = viewport.xoffset - viewport.xscale;
+            state.viewport_y = viewport.yoffset - viewport.yscale;
+            state.viewport_width = viewport.xscale * 2.0f;
+            state.viewport_height = viewport.yscale * 2.0f;
+            state.viewport_min_depth = viewport.zoffset;
+            state.viewport_max_depth = viewport.zoffset + viewport.zscale;
+            state.push_constant_offset = 0;
+            state.push_constant_size = push_words * sizeof(u32);
+            state.push_constant_word_count = push_words;
+            for (u32 r = 0; r < push_words && r < 16; ++r) {
+                state.push_constant_words[r] = push_bytes[r];
             }
         }
 

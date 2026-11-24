@@ -19,7 +19,7 @@ import sys
 FNV_OFFSET = 0xCBF29CE484222325
 FNV_PRIME = 0x100000001B3
 MASK64 = (1 << 64) - 1
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Vulkan formats the capture can produce for vertex input, with their component count and byte
 # width. A format outside this table is rejected rather than guessed at.
@@ -31,6 +31,17 @@ FORMATS = {
     97: (4, 2, "R16G16B16A16_SFLOAT"),
     83: (2, 2, "R16G16_SFLOAT"),
 }
+
+
+def hash_combine(seed: int, value: int) -> int:
+    """Mirror of the C++ HashCombine, so a permutation hash can be checked independently.
+
+    The identity of a compiled shader is (program hash, permutation index), and the pipeline key
+    carries their combination. A stage whose permutation hash is not that combination is
+    internally inconsistent, which is what a mis-associated module looks like.
+    """
+    mask = 0xFFFFFFFFFFFFFFFF
+    return (seed ^ (value + 0x9E3779B9 + ((seed << 12) & mask) + (seed >> 4))) & mask
 
 
 def fnv1a(data: bytes) -> int:
@@ -383,6 +394,78 @@ def main(argv: list[str]) -> int:
                     "pipeline_state_ready"):
             if not readiness.get(key):
                 return fail(f"full draw readiness claimed without {key}")
+
+    # --- original-shader dimensions -----------------------------------------------------------
+    #
+    # Each is derived from what the package actually carries. The point of the separate flags is
+    # that a package can hold the shader binaries and still be unable to run them, and collapsing
+    # them into one flag is what lets a package claim readiness it never established.
+    stages = package.get("shader_stages", [])
+    pipeline_state = package.get("pipeline_state", {})
+    reference = package.get("reference_output", {})
+
+    if readiness.get("shader_binaries_ready"):
+        if not stages:
+            return fail("shader binary readiness claimed with no shader stages")
+        has_vertex = False
+        has_fragment = False
+        for stage in stages:
+            if not stage.get("effective_sha256"):
+                return fail("shader stage has no effective module hash")
+            if not stage.get("effective_byte_length"):
+                return fail("shader stage has no effective module bytes")
+            perm_hash = stage.get("permutation_hash", 0)
+            if not perm_hash:
+                return fail("shader stage has no permutation hash")
+            expected = hash_combine(stage.get("program_hash", 0),
+                                    stage.get("permutation_index", 0))
+            if perm_hash != expected:
+                return fail(
+                    f"shader stage permutation hash {perm_hash:#x} is not the combination of "
+                    f"program hash {stage.get('program_hash', 0):#x} and permutation index "
+                    f"{stage.get('permutation_index', 0)}")
+            if stage.get("logical_stage") == 3:
+                has_vertex = True
+            elif stage.get("logical_stage") == 0:
+                has_fragment = True
+        if not has_vertex or not has_fragment:
+            return fail("shader binary readiness claimed without both a vertex and a fragment "
+                        "stage")
+
+    if readiness.get("shader_bindings_ready"):
+        if not readiness.get("shader_binaries_ready"):
+            return fail("shader binding readiness claimed without shader binaries")
+        if not bindings:
+            return fail("shader binding readiness claimed with no bindings")
+
+    if readiness.get("shader_parameters_ready"):
+        if not readiness.get("shader_bindings_ready"):
+            return fail("shader parameter readiness claimed without binding readiness")
+        size = pipeline_state.get("push_constant_size", 0)
+        if size and len(pipeline_state.get("push_constant_bytes", [])) != size:
+            return fail("shader parameter readiness claimed with a push-constant range that does "
+                        "not match its bytes")
+
+    if readiness.get("pipeline_state_ready_original"):
+        if not pipeline_state.get("topology"):
+            return fail("pipeline state readiness claimed with no topology")
+        if not pipeline_state.get("color_formats"):
+            return fail("pipeline state readiness claimed with no colour attachment format")
+
+    if readiness.get("reference_output_ready"):
+        if not reference.get("post_sha256"):
+            return fail("reference output readiness claimed with no post-draw reference")
+        if not reference.get("width") or not reference.get("height"):
+            return fail("reference output readiness claimed with no extent")
+
+    if readiness.get("original_shader_replay_ready"):
+        for key in ("shader_binaries_ready", "shader_bindings_ready",
+                    "shader_parameters_ready", "pipeline_state_ready_original",
+                    "reference_output_ready"):
+            if not readiness.get(key):
+                return fail(f"original shader replay readiness claimed without {key}")
+        if not readiness.get("geometry_ready"):
+            return fail("original shader replay readiness claimed without geometry")
 
     total = sum(r.get("byte_length", 0) for r in resources)
     print(

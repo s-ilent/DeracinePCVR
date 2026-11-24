@@ -428,4 +428,178 @@ TEST(DrawPackageValidator, RejectsSchemaVersionOne) {
     EXPECT_FALSE(ValidatePackage(package, error));
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// Original-shader readiness
+//
+// These cover the dimensions SC-11 adds. The point of each is that a package cannot claim it can
+// run the draw on its original shaders while one of the inputs is missing.
+// ---------------------------------------------------------------------------------------------
+
+/// A shader stage whose permutation hash is the combination of its program hash and index, which
+/// is what the pipeline key carries.
+Core::DrawPackage::ShaderStage MakeStage(u32 logical_stage, u64 program_hash, u32 perm_idx) {
+    Core::DrawPackage::ShaderStage stage{};
+    stage.logical_stage = logical_stage;
+    stage.hardware_stage = logical_stage == 3 ? 1u : 0u;
+    stage.program_hash = program_hash;
+    stage.permutation_index = perm_idx;
+    stage.permutation_hash = HashCombine(program_hash, static_cast<u64>(perm_idx));
+    stage.patched = false;
+    stage.entry_point = "main";
+    // Four SPIR-V words is enough to exercise the length and hash checks.
+    stage.effective_bytes = {0x03, 0x02, 0x23, 0x07, 0x00, 0x00, 0x01, 0x00,
+                             0x0B, 0x00, 0x0D, 0x00, 0x01, 0x00, 0x00, 0x00};
+    stage.effective_byte_length = stage.effective_bytes.size();
+    sha256::SHA256 hasher;
+    hasher.update(stage.effective_bytes.data(), stage.effective_bytes.size());
+    const auto digest = hasher.final();
+    static constexpr char kHex[] = "0123456789abcdef";
+    stage.effective_sha256.clear();
+    for (const u8 byte : digest) {
+        stage.effective_sha256.push_back(kHex[byte >> 4]);
+        stage.effective_sha256.push_back(kHex[byte & 0x0F]);
+    }
+    stage.generated_sha256 = stage.effective_sha256;
+    stage.effective_file = "shader.spv";
+    return stage;
+}
+
+/// A package that carries everything the original-shader claim needs.
+Package MakeOriginalShaderPackage() {
+    auto package = MakeValidPackage();
+    AddGeometry(package);
+    package.readiness.geometry_ready = true;
+    package.shader_stages.push_back(MakeStage(3, 0x1111, 0));
+    package.shader_stages.push_back(MakeStage(0, 0x2222, 0));
+    package.readiness.shader_binaries_ready = true;
+    package.readiness.shader_bindings_ready = true;
+    package.readiness.shader_parameters_ready = true;
+    package.pipeline_state.topology = 4;
+    package.pipeline_state.color_formats = {37};
+    package.pipeline_state.push_constant_size = 0;
+    package.readiness.pipeline_state_ready_original = true;
+    package.reference_output.width = 64;
+    package.reference_output.height = 64;
+    package.reference_output.post_sha256 = "abc";
+    package.readiness.reference_output_ready = true;
+    package.readiness.original_shader_replay_ready = true;
+    return package;
+}
+
+TEST(DrawPackageOriginalShader, AcceptsACompleteOriginalShaderPackage) {
+    auto package = MakeOriginalShaderPackage();
+    std::string error;
+    EXPECT_TRUE(ValidatePackage(package, error)) << error;
+}
+
+TEST(DrawPackageOriginalShader, RejectsBinariesWithoutBothStages) {
+    auto package = MakeOriginalShaderPackage();
+    package.shader_stages.pop_back(); // drop the fragment stage
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+    EXPECT_NE(error.find("both a vertex and a fragment"), std::string::npos) << error;
+}
+
+TEST(DrawPackageOriginalShader, RejectsAStageWithNoEffectiveHash) {
+    auto package = MakeOriginalShaderPackage();
+    package.shader_stages[0].effective_sha256.clear();
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+}
+
+TEST(DrawPackageOriginalShader, RejectsAStageWithNoBytes) {
+    auto package = MakeOriginalShaderPackage();
+    package.shader_stages[0].effective_byte_length = 0;
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+}
+
+TEST(DrawPackageOriginalShader, RejectsAPermutationHashThatDoesNotMatchItsParts) {
+    // The identity is (program hash, permutation index). A hash that is not their combination is
+    // internally inconsistent, which is what a mis-associated module looks like.
+    auto package = MakeOriginalShaderPackage();
+    package.shader_stages[0].permutation_hash = 0xDEADBEEF;
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+    EXPECT_NE(error.find("permutation hash"), std::string::npos) << error;
+}
+
+TEST(DrawPackageOriginalShader, RejectsBytesThatDoNotMatchTheirHash) {
+    auto package = MakeOriginalShaderPackage();
+    package.shader_stages[0].effective_bytes[0] ^= 0xFF;
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+    EXPECT_NE(error.find("content hash"), std::string::npos) << error;
+}
+
+TEST(DrawPackageOriginalShader, RejectsBindingsWithoutBinaries) {
+    auto package = MakeOriginalShaderPackage();
+    package.readiness.shader_binaries_ready = false;
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+}
+
+TEST(DrawPackageOriginalShader, RejectsParametersWithoutBindings) {
+    auto package = MakeOriginalShaderPackage();
+    package.readiness.shader_bindings_ready = false;
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+}
+
+TEST(DrawPackageOriginalShader, RejectsAPushConstantRangeThatDoesNotMatchItsBytes) {
+    auto package = MakeOriginalShaderPackage();
+    package.pipeline_state.push_constant_size = 16;
+    package.pipeline_state.push_constant_bytes.clear();
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+    EXPECT_NE(error.find("push-constant"), std::string::npos) << error;
+}
+
+TEST(DrawPackageOriginalShader, RejectsPipelineStateWithoutTopology) {
+    auto package = MakeOriginalShaderPackage();
+    package.pipeline_state.topology = 0;
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+}
+
+TEST(DrawPackageOriginalShader, RejectsReferenceOutputWithoutAPostImage) {
+    auto package = MakeOriginalShaderPackage();
+    package.reference_output.post_sha256.clear();
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+}
+
+TEST(DrawPackageOriginalShader, RejectsTheStrongestClaimWhenOneDimensionIsMissing) {
+    // Each dimension in turn: the strongest claim must fail when any one is absent.
+    const auto check = [](auto mutate) {
+        auto package = MakeOriginalShaderPackage();
+        mutate(package);
+        std::string error;
+        return !ValidatePackage(package, error);
+    };
+    EXPECT_TRUE(check([](Package& p) { p.readiness.shader_binaries_ready = false; }));
+    EXPECT_TRUE(check([](Package& p) { p.readiness.shader_bindings_ready = false; }));
+    EXPECT_TRUE(check([](Package& p) { p.readiness.shader_parameters_ready = false; }));
+    EXPECT_TRUE(check([](Package& p) { p.readiness.pipeline_state_ready_original = false; }));
+    EXPECT_TRUE(check([](Package& p) { p.readiness.reference_output_ready = false; }));
+    EXPECT_TRUE(check([](Package& p) { p.readiness.geometry_ready = false; }));
+}
+
+TEST(DrawPackageOriginalShader, RejectsTheStrongestClaimWithoutGeometry) {
+    auto package = MakeOriginalShaderPackage();
+    package.readiness.geometry_ready = false;
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+    EXPECT_NE(error.find("without geometry"), std::string::npos) << error;
+}
+
+TEST(DrawPackageOriginalShader, AVersionTwoPackageIsRefused) {
+    // The schema bump is deliberate: a version 2 package did not distinguish these dimensions, so
+    // reinterpreting it would let it claim readiness it never established.
+    auto package = MakeValidPackage();
+    package.schema_version = 2;
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+}
 } // namespace

@@ -1027,6 +1027,10 @@ set(CORE src/core/aerolib/stubs.cpp
           src/core/rhi_command_capture.h
           src/core/rhi_entry_probe.cpp
     src/core/draw_package.cpp
+    src/core/reference_output.cpp
+    src/core/reference_output.h
+    src/core/shader_binary_capture.cpp
+    src/core/shader_binary_capture.h
     src/core/shader_param_capture.cpp
     src/core/texture_capture.cpp
     src/core/vertex_input_capture.cpp

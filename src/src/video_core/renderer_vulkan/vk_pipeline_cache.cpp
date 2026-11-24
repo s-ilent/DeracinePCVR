@@ -14,6 +14,7 @@
 #include "common/path_util.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
+#include "core/shader_binary_capture.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/fma_split_diag.h"
 #include "shader_recompiler/info.h"
@@ -712,6 +713,25 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
         module = CompileSPV(*patch, instance.GetDevice());
     } else {
         module = CompileSPV(spv, instance.GetDevice());
+    }
+
+    // Retain the effective module for this permutation, when the capture is enabled.
+    //
+    // This runs here rather than at the draw because this is the only point where the GCN words,
+    // the generated SPIR-V and the patch decision are all in scope together. The identity is
+    // (program hash, permutation index): the program hash alone is not unique, because one program
+    // compiles to several permutations whose specialization depends on runtime state, resource
+    // shapes and binding allocation.
+    if (Core::ShaderBinaryCapture::IsEnabled()) {
+        Core::ShaderBinaryCapture::ShaderIdentity identity{};
+        identity.program_hash = info.pgm_hash;
+        identity.permutation_index = static_cast<u32>(perm_idx);
+        identity.permutation_hash = HashCombine(info.pgm_hash, static_cast<u64>(perm_idx));
+        identity.hardware_stage = static_cast<u32>(info.stage);
+        identity.logical_stage = static_cast<u32>(info.l_stage);
+        Core::ShaderBinaryCapture::NoteCompiledShader(
+            identity, code, spv, is_patched ? std::span<const u32>{*patch} : std::span<const u32>{},
+            is_patched);
     }
 
     RegisterShaderBinary(std::move(spv), info.pgm_hash, perm_idx);

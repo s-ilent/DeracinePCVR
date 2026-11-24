@@ -45,6 +45,8 @@
 #include "core/linker.h"
 #include "core/rhi_command_capture.h"
 #include "core/rhi_entry_probe.h"
+#include "core/reference_output.h"
+#include "core/shader_binary_capture.h"
 #include "core/shader_param_capture.h"
 #include "core/vertex_input_capture.h"
 #include "core/memory.h"
@@ -104,6 +106,8 @@ void Emulator::Shutdown() {
     Core::RhiEntryProbe::ExportProvenance();
     Core::VertexInputCapture::ExportVertexInputs();
     Core::ShaderParamCapture::ExportShaderParams();
+    Core::ShaderBinaryCapture::ExportBinaries();
+    Core::ReferenceOutput::ExportReferences();
     Common::Log::Flush();
     if (controllers) {
         controllers->ResetLightbarColors();

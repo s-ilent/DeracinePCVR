@@ -11,6 +11,7 @@
 
 #include "common/recursive_lock.h"
 #include "common/shared_first_mutex.h"
+#include "core/reference_output.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/page_manager.h"
 #include "video_core/renderer_vulkan/vk_gpu_profile.h"
@@ -110,6 +111,14 @@ private:
     void Resolve();
     void DepthStencilCopy(bool is_depth, bool is_stencil);
     void EliminateFastClear();
+
+    /// Copies the bound colour attachment into a reference image, when the reference capture is
+    /// enabled. Returns false when there is no colour target or the copy could not be made.
+    ///
+    /// The copy is scoped to the subresource the draw writes and restores its state, so it does not
+    /// change what the game renders. This is the same discipline SC-10S established for texture
+    /// capture, applied to the render target.
+    bool CaptureColorTarget(Core::ReferenceOutput::ReferenceImage& out);
 
     void UpdateDynamicState(const GraphicsPipeline* pipeline, bool is_indexed) const;
     void UpdateViewportScissorState() const;

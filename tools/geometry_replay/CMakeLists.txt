@@ -19,8 +19,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_executable(deracine_scene_replay main.cpp)
 add_executable(deracine_textured_replay textured_replay.cpp)
+# The original-shader replay: executes the game's own translated shaders from a captured package.
+add_executable(deracine_original_shader_replay original_shader_replay.cpp)
 
-set(REPLAY_TARGETS deracine_scene_replay deracine_textured_replay)
+set(REPLAY_TARGETS deracine_scene_replay deracine_textured_replay
+                   deracine_original_shader_replay)
 
 # Prefer the vendored headers when the tree has them, so the build does not depend on a system SDK.
 set(VULKAN_HEADERS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../src/externals/vulkan-headers/include")
