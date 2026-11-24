@@ -2025,3 +2025,34 @@ gtest_discover_tests(shadps4_package_reader_test
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     DISCOVERY_TIMEOUT 60
 )
+
+# ===========================================================================
+# Reference-image comparison
+# ===========================================================================
+add_executable(shadps4_reference_compare_test
+    core/test_reference_compare.cpp
+    ${CMAKE_SOURCE_DIR}/../tools/geometry_replay/reference_compare.cpp
+    ${CMAKE_SOURCE_DIR}/../tools/geometry_replay/package_reader.cpp
+)
+
+target_include_directories(shadps4_reference_compare_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/tests
+    ${CMAKE_SOURCE_DIR}/../tools/geometry_replay
+)
+
+target_compile_features(shadps4_reference_compare_test PRIVATE cxx_std_23)
+target_compile_definitions(shadps4_reference_compare_test PRIVATE NOMINMAX)
+
+target_link_libraries(shadps4_reference_compare_test PRIVATE
+    GTest::gtest_main
+    nlohmann_json::nlohmann_json
+)
+
+list(APPEND TEST_TARGETS shadps4_reference_compare_test)
+
+gtest_discover_tests(shadps4_reference_compare_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)

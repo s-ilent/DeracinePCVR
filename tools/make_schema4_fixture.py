@@ -92,7 +92,9 @@ def main(argv):
         })
 
     # --- Reference image -----------------------------------------------------------------------
-    width, height, bpp = 64, 64, 4
+    # The reference must match the replay render extent, or the comparison is a configuration
+    # mismatch rather than a rendering one.
+    width, height, bpp = 640, 640, 4
     post = bytes([(x * 4) % 256 for x in range(width * height * bpp)])
     with open(os.path.join(out, 'reference_post.bin'), 'wb') as handle:
         handle.write(post)

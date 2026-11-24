@@ -31,6 +31,7 @@
 
 #include "draw_bounds.h"
 #include "effective_shader.h"
+#include "reference_compare.h"
 #include "draw_identity.h"
 #include "package_reader.h"
 
@@ -2187,6 +2188,37 @@ int main(int argc, char** argv) {
                 }
                 std::cout << "image: hash=" << image_hash << " distinct=" << seen.size()
                           << " covered=" << covered << "\n";
+
+                // The reference comparison. A package that carries a reference is compared against
+                // the first view only, because the reference describes one draw into one target and
+                // the other views are diagnostic camera positions.
+                if (rendered == 1 && shader_mode_effective) {
+                    reference::Rendered produced{};
+                    produced.width = kWidth;
+                    produced.height = kHeight;
+                    produced.bytes_per_pixel = 4;
+                    produced.pixels.assign(src, src + kWidth * kHeight * 4);
+                    const reference::Comparison comparison =
+                        reference::Compare(pkg, produced, /*require_pre=*/false);
+                    std::cout << "reference_status: "
+                              << reference::StatusName(comparison.status) << "\n";
+                    if (comparison.status == reference::Status::ExactMatch ||
+                        comparison.status == reference::Status::PixelMismatch) {
+                        std::cout << "reference_format: " << pkg.reference.format << "\n";
+                        std::cout << "reference_extent: " << comparison.width << "x"
+                                  << comparison.height << "\n";
+                        std::cout << "compared_pixels: " << comparison.compared_pixels << "\n";
+                        std::cout << "different_pixels: " << comparison.different_pixels << "\n";
+                        std::cout << "max_channel_error: " << comparison.max_channel_error
+                                  << "\n";
+                        std::cout << "mean_absolute_error: " << comparison.mean_absolute_error
+                                  << "\n";
+                        std::cout << "exact_match: "
+                                  << (comparison.exact_match ? "yes" : "no") << "\n";
+                    } else if (!comparison.reason.empty()) {
+                        std::cout << "reference_reason: " << comparison.reason << "\n";
+                    }
+                }
                 std::cout << "replay: wrote " << out_path.string() << "\n";
             }
             vkUnmapMemory(ctx.device, readback_memory);
