@@ -28,6 +28,7 @@
 
 #include <vulkan/vulkan.h>
 
+#include "draw_identity.h"
 #include "package_reader.h"
 
 #include <nlohmann/json.hpp>
@@ -186,6 +187,110 @@ const u32 kTapeTexFragSpv[] = {
     0x00050051, 0x00000006, 0x0000001b, 0x00000018, 0x00000001, 0x00050051, 0x00000006, 0x0000001c,
     0x00000018, 0x00000002, 0x00070050, 0x00000007, 0x0000001d, 0x0000001a, 0x0000001b, 0x0000001c,
     0x00000019, 0x0003003e, 0x00000015, 0x0000001d, 0x000100fd, 0x00010038,
+};
+
+const u32 kTapeInstidVertSpv[] = {
+    0x07230203, 0x00010000, 0x000d000b, 0x0000002f, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+    0x000b000f, 0x00000000, 0x00000004, 0x6e69616d, 0x00000000, 0x00000009, 0x0000000b, 0x0000000e,
+    0x00000011, 0x0000001a, 0x00000025, 0x00030003, 0x00000002, 0x000001c2, 0x000a0004, 0x475f4c47,
+    0x4c474f4f, 0x70635f45, 0x74735f70, 0x5f656c79, 0x656e696c, 0x7269645f, 0x69746365, 0x00006576,
+    0x00080004, 0x475f4c47, 0x4c474f4f, 0x6e695f45, 0x64756c63, 0x69645f65, 0x74636572, 0x00657669,
+    0x00040005, 0x00000004, 0x6e69616d, 0x00000000, 0x00040005, 0x00000009, 0x76755f76, 0x00000000,
+    0x00040005, 0x0000000b, 0x755f6e69, 0x00000076, 0x00040005, 0x0000000e, 0x6e695f76, 0x00007473,
+    0x00070005, 0x00000011, 0x495f6c67, 0x6174736e, 0x4965636e, 0x7865646e, 0x00000000, 0x00060005,
+    0x00000018, 0x505f6c67, 0x65567265, 0x78657472, 0x00000000, 0x00060006, 0x00000018, 0x00000000,
+    0x505f6c67, 0x7469736f, 0x006e6f69, 0x00070006, 0x00000018, 0x00000001, 0x505f6c67, 0x746e696f,
+    0x657a6953, 0x00000000, 0x00070006, 0x00000018, 0x00000002, 0x435f6c67, 0x4470696c, 0x61747369,
+    0x0065636e, 0x00070006, 0x00000018, 0x00000003, 0x435f6c67, 0x446c6c75, 0x61747369, 0x0065636e,
+    0x00030005, 0x0000001a, 0x00000000, 0x00040005, 0x0000001d, 0x68737550, 0x00000000, 0x00040006,
+    0x0000001d, 0x00000000, 0x0070766d, 0x00030005, 0x0000001f, 0x00006370, 0x00040005, 0x00000025,
+    0x705f6e69, 0x0000736f, 0x00040047, 0x00000009, 0x0000001e, 0x00000000, 0x00040047, 0x0000000b,
+    0x0000001e, 0x00000001, 0x00040047, 0x0000000e, 0x0000001e, 0x00000001, 0x00040047, 0x00000011,
+    0x0000000b, 0x0000002b, 0x00030047, 0x00000018, 0x00000002, 0x00050048, 0x00000018, 0x00000000,
+    0x0000000b, 0x00000000, 0x00050048, 0x00000018, 0x00000001, 0x0000000b, 0x00000001, 0x00050048,
+    0x00000018, 0x00000002, 0x0000000b, 0x00000003, 0x00050048, 0x00000018, 0x00000003, 0x0000000b,
+    0x00000004, 0x00030047, 0x0000001d, 0x00000002, 0x00040048, 0x0000001d, 0x00000000, 0x00000005,
+    0x00050048, 0x0000001d, 0x00000000, 0x00000007, 0x00000010, 0x00050048, 0x0000001d, 0x00000000,
+    0x00000023, 0x00000000, 0x00040047, 0x00000025, 0x0000001e, 0x00000000, 0x00020013, 0x00000002,
+    0x00030021, 0x00000003, 0x00000002, 0x00030016, 0x00000006, 0x00000020, 0x00040017, 0x00000007,
+    0x00000006, 0x00000002, 0x00040020, 0x00000008, 0x00000003, 0x00000007, 0x0004003b, 0x00000008,
+    0x00000009, 0x00000003, 0x00040020, 0x0000000a, 0x00000001, 0x00000007, 0x0004003b, 0x0000000a,
+    0x0000000b, 0x00000001, 0x00040020, 0x0000000d, 0x00000003, 0x00000006, 0x0004003b, 0x0000000d,
+    0x0000000e, 0x00000003, 0x00040015, 0x0000000f, 0x00000020, 0x00000001, 0x00040020, 0x00000010,
+    0x00000001, 0x0000000f, 0x0004003b, 0x00000010, 0x00000011, 0x00000001, 0x00040017, 0x00000014,
+    0x00000006, 0x00000004, 0x00040015, 0x00000015, 0x00000020, 0x00000000, 0x0004002b, 0x00000015,
+    0x00000016, 0x00000001, 0x0004001c, 0x00000017, 0x00000006, 0x00000016, 0x0006001e, 0x00000018,
+    0x00000014, 0x00000006, 0x00000017, 0x00000017, 0x00040020, 0x00000019, 0x00000003, 0x00000018,
+    0x0004003b, 0x00000019, 0x0000001a, 0x00000003, 0x0004002b, 0x0000000f, 0x0000001b, 0x00000000,
+    0x00040018, 0x0000001c, 0x00000014, 0x00000004, 0x0003001e, 0x0000001d, 0x0000001c, 0x00040020,
+    0x0000001e, 0x00000009, 0x0000001d, 0x0004003b, 0x0000001e, 0x0000001f, 0x00000009, 0x00040020,
+    0x00000020, 0x00000009, 0x0000001c, 0x00040017, 0x00000023, 0x00000006, 0x00000003, 0x00040020,
+    0x00000024, 0x00000001, 0x00000023, 0x0004003b, 0x00000024, 0x00000025, 0x00000001, 0x0004002b,
+    0x00000006, 0x00000027, 0x3f800000, 0x00040020, 0x0000002d, 0x00000003, 0x00000014, 0x00050036,
+    0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x0004003d, 0x00000007,
+    0x0000000c, 0x0000000b, 0x0003003e, 0x00000009, 0x0000000c, 0x0004003d, 0x0000000f, 0x00000012,
+    0x00000011, 0x0004006f, 0x00000006, 0x00000013, 0x00000012, 0x0003003e, 0x0000000e, 0x00000013,
+    0x00050041, 0x00000020, 0x00000021, 0x0000001f, 0x0000001b, 0x0004003d, 0x0000001c, 0x00000022,
+    0x00000021, 0x0004003d, 0x00000023, 0x00000026, 0x00000025, 0x00050051, 0x00000006, 0x00000028,
+    0x00000026, 0x00000000, 0x00050051, 0x00000006, 0x00000029, 0x00000026, 0x00000001, 0x00050051,
+    0x00000006, 0x0000002a, 0x00000026, 0x00000002, 0x00070050, 0x00000014, 0x0000002b, 0x00000028,
+    0x00000029, 0x0000002a, 0x00000027, 0x00050091, 0x00000014, 0x0000002c, 0x00000022, 0x0000002b,
+    0x00050041, 0x0000002d, 0x0000002e, 0x0000001a, 0x0000001b, 0x0003003e, 0x0000002e, 0x0000002c,
+    0x000100fd, 0x00010038,
+};
+
+const u32 kTapeInstidFragSpv[] = {
+    0x07230203, 0x00010000, 0x000d000b, 0x00000041, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+    0x0008000f, 0x00000004, 0x00000004, 0x6e69616d, 0x00000000, 0x00000011, 0x00000017, 0x00000037,
+    0x00030010, 0x00000004, 0x00000007, 0x00030003, 0x00000002, 0x000001c2, 0x000a0004, 0x475f4c47,
+    0x4c474f4f, 0x70635f45, 0x74735f70, 0x5f656c79, 0x656e696c, 0x7269645f, 0x69746365, 0x00006576,
+    0x00080004, 0x475f4c47, 0x4c474f4f, 0x6e695f45, 0x64756c63, 0x69645f65, 0x74636572, 0x00657669,
+    0x00040005, 0x00000004, 0x6e69616d, 0x00000000, 0x00040005, 0x00000009, 0x65786574, 0x0000006c,
+    0x00040005, 0x0000000d, 0x65745f75, 0x00000078, 0x00040005, 0x00000011, 0x76755f76, 0x00000000,
+    0x00030005, 0x00000015, 0x00000074, 0x00040005, 0x00000017, 0x6e695f76, 0x00007473, 0x00040005,
+    0x0000001d, 0x746e6974, 0x00000000, 0x00050005, 0x00000037, 0x5f74756f, 0x6f6c6f63, 0x00000072,
+    0x00040047, 0x0000000d, 0x00000021, 0x00000000, 0x00040047, 0x0000000d, 0x00000022, 0x00000000,
+    0x00040047, 0x00000011, 0x0000001e, 0x00000000, 0x00040047, 0x00000017, 0x0000001e, 0x00000001,
+    0x00040047, 0x00000037, 0x0000001e, 0x00000000, 0x00020013, 0x00000002, 0x00030021, 0x00000003,
+    0x00000002, 0x00030016, 0x00000006, 0x00000020, 0x00040017, 0x00000007, 0x00000006, 0x00000004,
+    0x00040020, 0x00000008, 0x00000007, 0x00000007, 0x00090019, 0x0000000a, 0x00000006, 0x00000001,
+    0x00000000, 0x00000000, 0x00000000, 0x00000001, 0x00000000, 0x0003001b, 0x0000000b, 0x0000000a,
+    0x00040020, 0x0000000c, 0x00000000, 0x0000000b, 0x0004003b, 0x0000000c, 0x0000000d, 0x00000000,
+    0x00040017, 0x0000000f, 0x00000006, 0x00000002, 0x00040020, 0x00000010, 0x00000001, 0x0000000f,
+    0x0004003b, 0x00000010, 0x00000011, 0x00000001, 0x00040020, 0x00000014, 0x00000007, 0x00000006,
+    0x00040020, 0x00000016, 0x00000001, 0x00000006, 0x0004003b, 0x00000016, 0x00000017, 0x00000001,
+    0x0004002b, 0x00000006, 0x00000019, 0x3ebd70a4, 0x00040017, 0x0000001b, 0x00000006, 0x00000003,
+    0x00040020, 0x0000001c, 0x00000007, 0x0000001b, 0x0004002b, 0x00000006, 0x0000001e, 0x3f000000,
+    0x0004002b, 0x00000006, 0x0000001f, 0x40c90fd0, 0x0004002b, 0x00000006, 0x00000021, 0x00000000,
+    0x0004002b, 0x00000006, 0x00000028, 0x3ea8f5c3, 0x0004002b, 0x00000006, 0x0000002f, 0x3f2b851f,
+    0x00040020, 0x00000036, 0x00000003, 0x00000007, 0x0004003b, 0x00000036, 0x00000037, 0x00000003,
+    0x0004002b, 0x00000006, 0x0000003c, 0x3f800000, 0x00050036, 0x00000002, 0x00000004, 0x00000000,
+    0x00000003, 0x000200f8, 0x00000005, 0x0004003b, 0x00000008, 0x00000009, 0x00000007, 0x0004003b,
+    0x00000014, 0x00000015, 0x00000007, 0x0004003b, 0x0000001c, 0x0000001d, 0x00000007, 0x0004003d,
+    0x0000000b, 0x0000000e, 0x0000000d, 0x0004003d, 0x0000000f, 0x00000012, 0x00000011, 0x00050057,
+    0x00000007, 0x00000013, 0x0000000e, 0x00000012, 0x0003003e, 0x00000009, 0x00000013, 0x0004003d,
+    0x00000006, 0x00000018, 0x00000017, 0x00050085, 0x00000006, 0x0000001a, 0x00000018, 0x00000019,
+    0x0003003e, 0x00000015, 0x0000001a, 0x0004003d, 0x00000006, 0x00000020, 0x00000015, 0x00050081,
+    0x00000006, 0x00000022, 0x00000020, 0x00000021, 0x00050085, 0x00000006, 0x00000023, 0x0000001f,
+    0x00000022, 0x0006000c, 0x00000006, 0x00000024, 0x00000001, 0x0000000e, 0x00000023, 0x00050085,
+    0x00000006, 0x00000025, 0x0000001e, 0x00000024, 0x00050081, 0x00000006, 0x00000026, 0x0000001e,
+    0x00000025, 0x0004003d, 0x00000006, 0x00000027, 0x00000015, 0x00050081, 0x00000006, 0x00000029,
+    0x00000027, 0x00000028, 0x00050085, 0x00000006, 0x0000002a, 0x0000001f, 0x00000029, 0x0006000c,
+    0x00000006, 0x0000002b, 0x00000001, 0x0000000e, 0x0000002a, 0x00050085, 0x00000006, 0x0000002c,
+    0x0000001e, 0x0000002b, 0x00050081, 0x00000006, 0x0000002d, 0x0000001e, 0x0000002c, 0x0004003d,
+    0x00000006, 0x0000002e, 0x00000015, 0x00050081, 0x00000006, 0x00000030, 0x0000002e, 0x0000002f,
+    0x00050085, 0x00000006, 0x00000031, 0x0000001f, 0x00000030, 0x0006000c, 0x00000006, 0x00000032,
+    0x00000001, 0x0000000e, 0x00000031, 0x00050085, 0x00000006, 0x00000033, 0x0000001e, 0x00000032,
+    0x00050081, 0x00000006, 0x00000034, 0x0000001e, 0x00000033, 0x00060050, 0x0000001b, 0x00000035,
+    0x00000026, 0x0000002d, 0x00000034, 0x0003003e, 0x0000001d, 0x00000035, 0x0004003d, 0x00000007,
+    0x00000038, 0x00000009, 0x0008004f, 0x0000001b, 0x00000039, 0x00000038, 0x00000038, 0x00000000,
+    0x00000001, 0x00000002, 0x0004003d, 0x0000001b, 0x0000003a, 0x0000001d, 0x00050085, 0x0000001b,
+    0x0000003b, 0x00000039, 0x0000003a, 0x00050051, 0x00000006, 0x0000003d, 0x0000003b, 0x00000000,
+    0x00050051, 0x00000006, 0x0000003e, 0x0000003b, 0x00000001, 0x00050051, 0x00000006, 0x0000003f,
+    0x0000003b, 0x00000002, 0x00070050, 0x00000007, 0x00000040, 0x0000003d, 0x0000003e, 0x0000003f,
+    0x0000003c, 0x0003003e, 0x00000037, 0x00000040, 0x000100fd, 0x00010038,
 };
 
 /// Diagnostic shaders. Not the game's shaders, and the report says so.
@@ -482,12 +587,23 @@ int main(int argc, char** argv) {
     std::string prefix = "tape";
     bool substitute_viewport = false;
     bool substitute_targets = false;
+    bool force_untextured = false;
+    bool instance_id_mode = false;
     for (int i = 2; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--substitute-viewport") {
             substitute_viewport = true;
         } else if (arg == "--substitute-render-targets") {
             substitute_targets = true;
+        } else if (arg == "--instance-id") {
+            // A diagnostic substitution: the draw is unchanged, the fragment colour is tinted by
+            // the instance index so a mutation of the instance range is visible. The captured draw
+            // uses two instances of the same geometry, so without this the two are identical.
+            instance_id_mode = true;
+        } else if (arg == "--untextured") {
+            // A resource mutation: the semantic tape is untouched, only the sampling is disabled.
+            // The draw arguments must be identical to the textured run.
+            force_untextured = true;
         } else {
             prefix = arg;
         }
@@ -562,7 +678,7 @@ int main(int argc, char** argv) {
     const package::Texture* textured = package::FindTextured(pkg);
     const package::Sampler* sampler =
         textured != nullptr ? package::FindSampler(pkg, *textured) : nullptr;
-    const bool textured_mode = textured != nullptr && sampler != nullptr &&
+    const bool textured_mode = !force_untextured && textured != nullptr && sampler != nullptr &&
                                pkg.uv.looks_like_uv && pkg.readiness.geometry_ready;
 
     // --- Resolve the tape's resources against the pkg --------------------------------------
@@ -584,6 +700,73 @@ int main(int argc, char** argv) {
     }
     std::cout << "resources: resolved_from_package=" << resolved
               << " without_package_reference=" << unresolved << "\n";
+
+    // --- Same-draw identity -------------------------------------------------------------------
+    // The tape and the package are produced by different subsystems. Joining them because both are
+    // valid would be the defect this check exists to prevent, so the join is explicit and its
+    // outcome is reported. A mismatch is refused before any GPU work.
+    {
+        tape::TapeIdentity tape_identity{};
+        tape_identity.provenance_id = tape.provenance_id;
+        for (const auto& resource : tape.resources) {
+            if (resource.kind == tape::ResourceKind::IndexBuffer) {
+                tape_identity.index_guest_base = resource.guest_base;
+                tape_identity.index_guest_size = resource.guest_size;
+                tape_identity.index_element_size = resource.element_size;
+                break;
+            }
+        }
+        for (const auto& operation : tape.operations) {
+            if (operation.kind != tape::OpKind::DrawIndexed)
+                continue;
+            tape_identity.primitive_type = operation.draw.primitive_type;
+            tape_identity.num_primitives = operation.draw.num_primitives;
+            tape_identity.num_instances = operation.draw.num_instances;
+            tape_identity.num_vertices = operation.draw.num_vertices;
+            tape_identity.start_index = operation.draw.start_index;
+            tape_identity.base_vertex_index = operation.draw.base_vertex_index;
+            tape_identity.first_instance = operation.draw.first_instance;
+            tape_identity.derived_index_count = operation.derived.index_count;
+            break;
+        }
+
+        tape::PackageIdentity package_identity{};
+        package_identity.provenance_id = pkg.provenance_id;
+        package_identity.index_guest_base = pkg.index.guest_base;
+        package_identity.index_guest_size = pkg.index.guest_size;
+        package_identity.index_element_size = pkg.index.index_size;
+        package_identity.index_count = pkg.index.index_count;
+        package_identity.first_index = pkg.index.first_index;
+        package_identity.base_vertex = pkg.index.base_vertex;
+        package_identity.instance_count = pkg.index.instance_count;
+        package_identity.first_instance = pkg.index.first_instance;
+        package_identity.has_index_binding = pkg.has_index;
+
+        const tape::JoinResult join = tape::JoinTapeToPackage(tape_identity, package_identity);
+        std::cout << "identity: " << tape::JoinOutcomeName(join.outcome) << "\n";
+        for (const auto& field : join.fields) {
+            std::cout << "identity:   " << field.name << " tape=" << field.tape_value
+                      << " package=" << field.package_value
+                      << (field.comparable ? (field.agrees ? " agree" : " DISAGREE")
+                                           : " not_comparable")
+                      << "\n";
+        }
+        if (join.derived_consistent) {
+            std::cout << "identity: derived_consistent=yes\n";
+        } else {
+            std::cout << "identity: derived_consistent=no (mutated:";
+            for (const auto name : join.derived_disagreements) {
+                std::cout << " " << name;
+            }
+            std::cout << ")\n";
+        }
+        if (join.outcome != tape::JoinOutcome::Joined) {
+            std::cerr << "identity rejected: " << join.reason << "\n";
+            std::cerr << "  the tape and the package do not describe the same draw, so executing "
+                         "them together would be a fabricated match\n";
+            return 1;
+        }
+    }
 
     // --- Geometry from the pkg -------------------------------------------------------------
     const PackageVertexBinding* position_binding = nullptr;
@@ -924,14 +1107,17 @@ int main(int argc, char** argv) {
             return VK_NULL_HANDLE;
         return module;
     };
+    const bool instid = textured_mode && instance_id_mode;
     VkShaderModule vert_module =
-        make_module(textured_mode ? kTapeTexVertSpv : kVertSpv,
-                    textured_mode ? sizeof(kTapeTexVertSpv) / sizeof(u32)
-                                  : sizeof(kVertSpv) / sizeof(u32));
+        make_module(instid ? kTapeInstidVertSpv : (textured_mode ? kTapeTexVertSpv : kVertSpv),
+                    instid ? sizeof(kTapeInstidVertSpv) / sizeof(u32)
+                           : (textured_mode ? sizeof(kTapeTexVertSpv) / sizeof(u32)
+                                            : sizeof(kVertSpv) / sizeof(u32)));
     VkShaderModule frag_module =
-        make_module(textured_mode ? kTapeTexFragSpv : kFragSpv,
-                    textured_mode ? sizeof(kTapeTexFragSpv) / sizeof(u32)
-                                  : sizeof(kFragSpv) / sizeof(u32));
+        make_module(instid ? kTapeInstidFragSpv : (textured_mode ? kTapeTexFragSpv : kFragSpv),
+                    instid ? sizeof(kTapeInstidFragSpv) / sizeof(u32)
+                           : (textured_mode ? sizeof(kTapeTexFragSpv) / sizeof(u32)
+                                            : sizeof(kFragSpv) / sizeof(u32)));
     if (vert_module == VK_NULL_HANDLE || frag_module == VK_NULL_HANDLE) {
         std::cerr << "shader module creation failed\n";
         return 1;
@@ -1410,6 +1596,34 @@ int main(int argc, char** argv) {
                     ppm.put(static_cast<char>(src[i * 4 + 2]));
                 }
                 ++rendered;
+                // The image identity is what a mutation test compares. A hash alone would not
+                // distinguish "the draw changed" from "the same draw rendered the same way", so
+                // the distinct-colour count and the covered-pixel count are reported too.
+                u64 image_hash = 0xcbf29ce484222325ull;
+                u32 covered = 0;
+                std::vector<u32> seen;
+                seen.reserve(4096);
+                for (u32 i = 0; i < kWidth * kHeight; ++i) {
+                    const u8* pixel = src + i * 4;
+                    for (u32 c = 0; c < 4; ++c) {
+                        image_hash ^= pixel[c];
+                        image_hash *= 0x100000001b3ull;
+                    }
+                    const u32 packed = (static_cast<u32>(pixel[0]) << 16) |
+                                       (static_cast<u32>(pixel[1]) << 8) |
+                                       static_cast<u32>(pixel[2]);
+                    // The clear colour is the background; anything else is covered.
+                    if (packed != 0x0D0D14u) {
+                        ++covered;
+                    }
+                    if (std::find(seen.begin(), seen.end(), packed) == seen.end()) {
+                        if (seen.size() < 4096) {
+                            seen.push_back(packed);
+                        }
+                    }
+                }
+                std::cout << "image: hash=" << image_hash << " distinct=" << seen.size()
+                          << " covered=" << covered << "\n";
                 std::cout << "replay: wrote " << out_path.string() << "\n";
             }
             vkUnmapMemory(ctx.device, readback_memory);

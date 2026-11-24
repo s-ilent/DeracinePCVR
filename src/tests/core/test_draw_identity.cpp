@@ -7,6 +7,8 @@
 // integrated draw because both are valid. Every test here either establishes the join from a real
 // identity field or refuses it.
 
+#include <algorithm>
+
 #include <gtest/gtest.h>
 
 #include "draw_identity.h"
@@ -95,18 +97,26 @@ TEST(DrawIdentity, ADifferentElementWidthIsRejected) {
     EXPECT_NE(result.reason.find("element width"), std::string::npos);
 }
 
-TEST(DrawIdentity, ADifferentIndexCountIsRejected) {
+TEST(DrawIdentity, ADifferentIndexCountIsReportedAsInconsistentNotMismatched) {
+    // A semantic mutation changes the draw arguments on purpose while keeping the resource. That is
+    // a legitimate execution, not a mismatched capture, so the join still succeeds and the
+    // disagreement is reported separately.
     auto package = MakePackage();
     package.index_count = 1500;
     const auto result = JoinTapeToPackage(MakeTape(), package);
-    EXPECT_EQ(result.outcome, JoinOutcome::Mismatched);
+    EXPECT_EQ(result.outcome, JoinOutcome::Joined) << result.reason;
+    EXPECT_FALSE(result.derived_consistent);
+    EXPECT_NE(std::find(result.derived_disagreements.begin(), result.derived_disagreements.end(),
+                        "index_count"),
+              result.derived_disagreements.end());
 }
 
-TEST(DrawIdentity, ADifferentStartIndexIsRejected) {
+TEST(DrawIdentity, ADifferentStartIndexIsReportedAsInconsistent) {
     auto package = MakePackage();
     package.first_index = 168;
     const auto result = JoinTapeToPackage(MakeTape(), package);
-    EXPECT_EQ(result.outcome, JoinOutcome::Mismatched);
+    EXPECT_EQ(result.outcome, JoinOutcome::Joined) << result.reason;
+    EXPECT_FALSE(result.derived_consistent);
 }
 
 TEST(DrawIdentity, ANegativeBaseVertexIsComparedAsSigned) {
@@ -120,20 +130,22 @@ TEST(DrawIdentity, ANegativeBaseVertexIsComparedAsSigned) {
     EXPECT_EQ(result.outcome, JoinOutcome::Joined) << result.reason;
 }
 
-TEST(DrawIdentity, ADifferentBaseVertexIsRejected) {
+TEST(DrawIdentity, ADifferentBaseVertexIsReportedAsInconsistent) {
     auto tape = MakeTape();
     tape.base_vertex_index = -7;
     auto package = MakePackage();
     package.base_vertex = 0;
     const auto result = JoinTapeToPackage(tape, package);
-    EXPECT_EQ(result.outcome, JoinOutcome::Mismatched);
+    EXPECT_EQ(result.outcome, JoinOutcome::Joined) << result.reason;
+    EXPECT_FALSE(result.derived_consistent);
 }
 
-TEST(DrawIdentity, ADifferentInstanceCountIsRejected) {
+TEST(DrawIdentity, ADifferentInstanceCountIsReportedAsInconsistent) {
     auto package = MakePackage();
     package.instance_count = 2;
     const auto result = JoinTapeToPackage(MakeTape(), package);
-    EXPECT_EQ(result.outcome, JoinOutcome::Mismatched);
+    EXPECT_EQ(result.outcome, JoinOutcome::Joined) << result.reason;
+    EXPECT_FALSE(result.derived_consistent);
 }
 
 TEST(DrawIdentity, AgreementOnDerivedFieldsAloneIsNotEnough) {
@@ -190,14 +202,17 @@ TEST(DrawIdentity, EveryFieldIsReported) {
     }
 }
 
-TEST(DrawIdentity, AReusedIndexBufferWithADifferentDrawIsRejected) {
-    // The same index buffer can serve several draws. The index resource agrees, but the draw
-    // arguments do not, so the join must fail rather than accept the shared buffer as identity.
+TEST(DrawIdentity, AReusedIndexBufferWithADifferentDrawIsReportedAsInconsistent) {
+    // The same index buffer can serve several draws. The resource identity agrees, so the join
+    // succeeds, but the draw arguments do not, and that is reported. A reader can then tell a
+    // mutated or reused-buffer draw from an unmutated one without the join being refused.
     auto package = MakePackage();
     package.index_count = 1500;
     package.first_index = 336;
     const auto result = JoinTapeToPackage(MakeTape(), package);
-    EXPECT_EQ(result.outcome, JoinOutcome::Mismatched);
+    EXPECT_EQ(result.outcome, JoinOutcome::Joined) << result.reason;
+    EXPECT_FALSE(result.derived_consistent);
+    EXPECT_GE(result.derived_disagreements.size(), 2u);
 }
 
 TEST(DrawIdentity, AMismatchedCommandListIsRejected) {
@@ -211,6 +226,76 @@ TEST(DrawIdentity, AMismatchedCommandListIsRejected) {
             EXPECT_FALSE(field.agrees) << field.name << " claimed agreement without comparison";
         }
     }
+}
+
+TEST(DrawIdentity, AProvenanceMismatchIsDecisiveEvenWhenEverythingElseAgrees) {
+    // Provenance is the same record id from the same execution. When it disagrees, no amount of
+    // agreement elsewhere repairs it: the two captures observed different draws.
+    auto package = MakePackage();
+    package.provenance_id = 99;
+    const auto result = JoinTapeToPackage(MakeTape(), package);
+    EXPECT_EQ(result.outcome, JoinOutcome::Mismatched);
+}
+
+TEST(DrawIdentity, AnIncomparableFieldNeverClaimsAgreement) {
+    // A field the package does not carry cannot be compared. Reporting it as agreeing would be a
+    // fabricated match, which is the failure mode this whole module exists to prevent.
+    auto package = MakePackage();
+    package.has_index_binding = false;
+    package.index_count = 0;
+    package.first_index = 0;
+    package.base_vertex = 0;
+    package.instance_count = 0;
+    package.first_instance = 0;
+    const auto result = JoinTapeToPackage(MakeTape(), package);
+    for (const auto& field : result.fields) {
+        if (!field.comparable) {
+            EXPECT_FALSE(field.agrees) << field.name << " claimed agreement without comparison";
+        }
+    }
+}
+
+TEST(DrawIdentity, AZeroIndexResourceOnBothSidesIsNotAnIdentity) {
+    // Two captures that both failed to record the index resource must not be joined on the
+    // strength of two absences. Provenance is not an index identity: it says the two records came
+    // from the same execution, not that they describe the same resource. The join therefore
+    // reports insufficient evidence rather than treating two zeros as agreement.
+    auto tape = MakeTape();
+    tape.index_guest_base = 0;
+    tape.index_guest_size = 0;
+    auto package = MakePackage();
+    package.index_guest_base = 0;
+    package.index_guest_size = 0;
+    const auto result = JoinTapeToPackage(tape, package);
+    EXPECT_EQ(result.outcome, JoinOutcome::InsufficientEvidence);
+    for (const auto& field : result.fields) {
+        if (field.name == "index_guest_base") {
+            EXPECT_FALSE(field.comparable);
+            EXPECT_FALSE(field.agrees);
+        }
+    }
+}
+
+TEST(DrawIdentity, ADifferentElementWidthIsDecisive) {
+    // The width is a property of the resource, so a disagreement means one side is describing a
+    // different buffer even when the addresses happen to match.
+    auto package = MakePackage();
+    package.index_element_size = 4;
+    const auto result = JoinTapeToPackage(MakeTape(), package);
+    EXPECT_EQ(result.outcome, JoinOutcome::Mismatched);
+    EXPECT_NE(result.reason.find("element width"), std::string::npos);
+}
+
+TEST(DrawIdentity, TheConsistencyReportNamesEveryDisagreement) {
+    // A reader needs to know which fields disagreed, not merely that something did.
+    auto package = MakePackage();
+    package.index_count = 1500;
+    package.first_index = 336;
+    package.instance_count = 3;
+    const auto result = JoinTapeToPackage(MakeTape(), package);
+    EXPECT_EQ(result.outcome, JoinOutcome::Joined);
+    EXPECT_FALSE(result.derived_consistent);
+    EXPECT_GE(result.derived_disagreements.size(), 3u);
 }
 
 } // namespace

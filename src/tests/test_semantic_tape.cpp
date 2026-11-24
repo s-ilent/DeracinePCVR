@@ -534,9 +534,47 @@ TEST(SemanticTapeIdentity, TwoDrawsSharingListAndResourceAreDisambiguatedByPaylo
     identity.command_list = 0x100;
     identity.index_resource = 0xAAA;
     identity.num_primitives = 500;
+    identity.present.num_primitives = true;
     u32 matched = 0;
     EXPECT_EQ(MatchDrawCommand(candidates, identity, matched), DrawMatchOutcome::Matched);
     EXPECT_EQ(matched, 1u);
+}
+
+TEST(SemanticTapeIdentity, AZeroPrimitiveTypeIsComparedNotTreatedAsAbsent) {
+    // UE4's PT_TriangleList is zero, so a triangle-list draw carries a legitimate zero. Treating
+    // zero as "unspecified" would skip the comparison for exactly the draws that matter and let a
+    // decoy with a different primitive type match.
+    std::array<CapturedDrawCandidate, 2> candidates{
+        Candidate(0, 0x100, 0xAAA, 1012, 2, 593),
+        Candidate(1, 0x100, 0xAAA, 1012, 2, 593),
+    };
+    // The two candidates differ only in primitive type, which the helper sets to zero. Make the
+    // second a point list.
+    candidates[1].primitive_type = 2;
+
+    DrawIdentity identity{};
+    identity.command_list = 0x100;
+    identity.index_resource = 0xAAA;
+    identity.primitive_type = 0;
+    identity.present.primitive_type = true;
+
+    u32 matched = 0;
+    EXPECT_EQ(MatchDrawCommand(candidates, identity, matched), DrawMatchOutcome::Matched);
+    EXPECT_EQ(matched, 0u);
+}
+
+TEST(SemanticTapeIdentity, AnAbsentFieldIsNotCompared) {
+    // A field the record did not carry must not be treated as agreeing, and must not be treated as
+    // disagreeing either: it is simply not part of the comparison.
+    const std::array<CapturedDrawCandidate, 1> candidates{
+        Candidate(0, 0x100, 0xAAA, 1012, 2, 593),
+    };
+    DrawIdentity identity{};
+    identity.command_list = 0x100;
+    identity.index_resource = 0xAAA;
+    identity.num_primitives = 999; // carried by nobody, and not marked present
+    u32 matched = 0;
+    EXPECT_EQ(MatchDrawCommand(candidates, identity, matched), DrawMatchOutcome::Matched);
 }
 
 TEST(SemanticTapeIdentity, IndistinguishableDrawsAreRefusedAsAmbiguous) {
@@ -1030,8 +1068,12 @@ TEST(SemanticTapeMutation, AnUnsupportedTopologyIsRefusedByTheDerivation) {
     CapturedCommandRecord record = DrawRecord(174, 0x100, 0xAAA, 1012, 2, 593);
     record.payload[1] = 2; // PT_PointList
     const std::array<CapturedCommandRecord, 1> records{record};
+    // The provenance record carries the same primitive type, so the matcher accepts the draw and
+    // the derivation is what refuses it. That is the behaviour under test.
+    TapeSource source = ClassroomSource();
+    source.ue4_primitive_type = 2;
     Tape tape{};
-    ASSERT_EQ(BuildTapeFromCapture(records, ClassroomSource(), tape), BuildOutcome::Ok);
+    ASSERT_EQ(BuildTapeFromCapture(records, source, tape), BuildOutcome::Ok);
     EXPECT_FALSE(tape.operations[0].derived.valid);
     // The viewport is missing too, so CheckExecutable reports that first. The full problem set
     // names both, which is what a report needs.

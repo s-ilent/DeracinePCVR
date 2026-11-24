@@ -136,23 +136,30 @@ JoinResult JoinTapeToPackage(const TapeIdentity& tape_identity,
         return field;
     };
 
-    const auto index_count = compare("index_count", tape_identity.derived_index_count,
-                                     package_identity.index_count,
-                                     tape_identity.derived_index_count != 0 &&
-                                         package_identity.index_count != 0);
-    if (index_count.comparable && !index_count.agrees) {
-        result.outcome = JoinOutcome::Mismatched;
-        result.reason = "the tape's derived index count does not match the package's index count";
-        return result;
-    }
-    const auto first_index =
-        compare("first_index", tape_identity.start_index, package_identity.first_index,
+    // These are consistency checks, not identity. A semantic mutation changes the draw arguments
+    // on purpose while keeping the resource, and that is a legitimate execution rather than a
+    // mismatched capture. A disagreement is recorded so a reader can tell a mutated tape from an
+    // unmutated one, but it does not by itself mean the two captures describe different draws.
+    const auto consistency = [&result](std::string_view name, u64 tape_value, u64 package_value,
+                                       bool comparable) {
+        IdentityField field{};
+        field.name = name;
+        field.tape_value = Dec(tape_value);
+        field.package_value = Dec(package_value);
+        field.comparable = comparable;
+        field.agrees = comparable && tape_value == package_value;
+        result.fields.push_back(field);
+        if (field.comparable && !field.agrees) {
+            result.derived_consistent = false;
+            result.derived_disagreements.push_back(name);
+        }
+        return field;
+    };
+
+    consistency("index_count", tape_identity.derived_index_count, package_identity.index_count,
+                tape_identity.derived_index_count != 0 && package_identity.index_count != 0);
+    consistency("first_index", tape_identity.start_index, package_identity.first_index,
                 package_identity.has_index_binding);
-    if (first_index.comparable && !first_index.agrees) {
-        result.outcome = JoinOutcome::Mismatched;
-        result.reason = "the tape's StartIndex does not match the package's first index";
-        return result;
-    }
     // The base vertex is signed on both sides, so a negative value is compared as signed rather
     // than through a cast that would make it a huge positive number.
     {
@@ -161,32 +168,18 @@ JoinResult JoinTapeToPackage(const TapeIdentity& tape_identity,
         field.tape_value = SignedDec(tape_identity.base_vertex_index);
         field.package_value = SignedDec(static_cast<s32>(package_identity.base_vertex));
         field.comparable = package_identity.has_index_binding;
-        field.agrees = field.comparable &&
-                       tape_identity.base_vertex_index ==
-                           static_cast<s32>(package_identity.base_vertex);
+        field.agrees = field.comparable && tape_identity.base_vertex_index ==
+                                               static_cast<s32>(package_identity.base_vertex);
         result.fields.push_back(field);
         if (field.comparable && !field.agrees) {
-            result.outcome = JoinOutcome::Mismatched;
-            result.reason = "the tape's BaseVertexIndex does not match the package's base vertex";
-            return result;
+            result.derived_consistent = false;
+            result.derived_disagreements.push_back("base_vertex");
         }
     }
-    const auto instances = compare("instance_count", tape_identity.num_instances,
-                                   package_identity.instance_count,
-                                   package_identity.has_index_binding);
-    if (instances.comparable && !instances.agrees) {
-        result.outcome = JoinOutcome::Mismatched;
-        result.reason = "the tape's NumInstances does not match the package's instance count";
-        return result;
-    }
-    const auto first_instance = compare("first_instance", tape_identity.first_instance,
-                                        package_identity.first_instance,
-                                        package_identity.has_index_binding);
-    if (first_instance.comparable && !first_instance.agrees) {
-        result.outcome = JoinOutcome::Mismatched;
-        result.reason = "the tape's FirstInstance does not match the package's first instance";
-        return result;
-    }
+    consistency("instance_count", tape_identity.num_instances, package_identity.instance_count,
+                package_identity.has_index_binding);
+    consistency("first_instance", tape_identity.first_instance, package_identity.first_instance,
+                package_identity.has_index_binding);
 
     // --- Verdict ------------------------------------------------------------------------------
     // The join succeeds only when a real identity field established it. The derived fields are a

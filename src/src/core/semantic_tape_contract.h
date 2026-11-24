@@ -243,6 +243,23 @@ struct DrawIdentity {
     u32 num_vertices{};
     /// StartIndex from the command payload, when available.
     u32 start_index{};
+
+    /// Which of the semantic fields above the record actually carried.
+    ///
+    /// A zero value is not a sentinel for "absent": UE4's `PT_TriangleList` is zero, and a draw
+    /// with `StartIndex` zero or `NumInstances` zero is a real draw. Comparing a field only when it
+    /// is non-zero therefore skips the comparison for exactly the values a triangle-list draw
+    /// usually has, and a decoy with a different primitive type would match.
+    ///
+    /// Presence is recorded explicitly instead, so a field that was carried is always compared and
+    /// a field that was not is never treated as agreeing.
+    struct Present {
+        bool primitive_type : 1;
+        bool num_primitives : 1;
+        bool num_instances : 1;
+        bool num_vertices : 1;
+        bool start_index : 1;
+    } present{};
 };
 
 /// Why a draw could not be resolved to exactly one deferred command.
@@ -325,22 +342,26 @@ struct CapturedDrawCandidate {
         if (candidate.index_resource != identity.index_resource) {
             continue;
         }
-        // Stage 2: the semantic fields the record knows must agree. A field the record does not
-        // carry is zero and is not compared, so an incomplete record still matches on identity
-        // alone rather than being refused.
-        if (identity.primitive_type != 0 && candidate.primitive_type != identity.primitive_type) {
+        // Stage 2: the semantic fields the record actually carried must agree. Presence is
+        // explicit, because a zero value is a real value here: `PT_TriangleList` is zero, and a
+        // draw with `StartIndex` zero is ordinary. Testing `!= 0` would skip the comparison for
+        // exactly those draws and let a decoy with a different primitive type match.
+        if (identity.present.primitive_type &&
+            candidate.primitive_type != identity.primitive_type) {
             continue;
         }
-        if (identity.num_primitives != 0 && candidate.num_primitives != identity.num_primitives) {
+        if (identity.present.num_primitives &&
+            candidate.num_primitives != identity.num_primitives) {
             continue;
         }
-        if (identity.num_instances != 0 && candidate.num_instances != identity.num_instances) {
+        if (identity.present.num_instances &&
+            candidate.num_instances != identity.num_instances) {
             continue;
         }
-        if (identity.num_vertices != 0 && candidate.num_vertices != identity.num_vertices) {
+        if (identity.present.num_vertices && candidate.num_vertices != identity.num_vertices) {
             continue;
         }
-        if (identity.start_index != 0 && candidate.start_index != identity.start_index) {
+        if (identity.present.start_index && candidate.start_index != identity.start_index) {
             continue;
         }
         found = candidate.capture_index;
@@ -928,7 +949,11 @@ inline constexpr u8 CaptureCommandSetViewport = 5;
     DrawIdentity identity{};
     identity.command_list = source.command_list;
     identity.index_resource = source.index_resource;
+    // The provenance record carries the primitive type, so it is compared. It is recorded as
+    // present rather than inferred from being non-zero, because `PT_TriangleList` is zero and a
+    // triangle-list draw is the common case.
     identity.primitive_type = source.ue4_primitive_type;
+    identity.present.primitive_type = true;
 
     u32 matched_index = 0;
     const DrawMatchOutcome outcome =

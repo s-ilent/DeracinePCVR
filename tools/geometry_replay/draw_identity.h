@@ -61,6 +61,16 @@ struct JoinResult {
     std::vector<IdentityField> fields;
     /// A one-line explanation when the join did not succeed.
     std::string reason;
+    /// Whether the derived draw arguments agree.
+    ///
+    /// This is deliberately separate from `outcome`. Identity is established by which resource the
+    /// draw consumed, not by what it asked that resource to do. A semantic mutation changes the
+    /// draw arguments on purpose while keeping the resource, and that is a legitimate execution,
+    /// not a mismatched capture. A disagreement here is reported so a reader can tell a mutated
+    /// tape from an unmutated one, but it does not by itself mean the two captures are unrelated.
+    bool derived_consistent{true};
+    /// The derived fields that disagreed, for the report.
+    std::vector<std::string_view> derived_disagreements;
 };
 
 /// The identity facts a tape contributes.
