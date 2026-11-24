@@ -4,10 +4,13 @@
 #pragma once
 
 #include <array>
+#include <cstring>
+#include <optional>
 #include <span>
 #include <string_view>
 
 #include "common/types.h"
+#include "core/rhi_command_capture_contract.h"
 
 namespace Core::SemanticTape {
 
@@ -38,6 +41,23 @@ inline constexpr std::string_view DrawSelectionEnvironmentVariable =
 /// The tape is a bounded record of one draw and its preceding state. A larger bound is refused
 /// rather than clamped, so a typo cannot silently produce a truncated tape.
 inline constexpr u32 MaxTapeOperations = 256;
+
+/// Bounded resource table. This is one contract shared by both producers and by the reader: the
+/// live C++ exporter, the offline Python builder and the standalone interpreter all enforce it.
+///
+/// The bound is 64 because the observed classroom draw needs 33 (one index buffer, one colour
+/// target, one depth target and thirty vertex-stream references), and the widest draw the recovered
+/// command family can describe needs at most 34 (index + depth + 8 colour targets + 8 UAVs + 16
+/// vertex streams). 64 is roughly twice that worst case, so a real draw fits with headroom while a
+/// corrupt or runaway capture still fails at a fixed, compile-time bound.
+///
+/// Exceeding it is a hard failure, never a silent truncation: a tape that dropped a resource would
+/// still validate structurally while referencing an identity it no longer carries.
+inline constexpr u32 MaxTapeResources = 64;
+
+/// Bounded unresolved-dependency table. A tape reports what it could not recover; the bound keeps
+/// that report a fixed array rather than an allocation.
+inline constexpr u32 MaxTapeUnresolved = 16;
 
 /// Backend-neutral operation vocabulary.
 ///
@@ -202,6 +222,141 @@ struct DerivedDraw {
     return out;
 }
 
+/// The identity a provenance record carries for the draw it observed.
+///
+/// These are the fields the RHI entry recorded about the invocation, and they are the only fields
+/// that may be used to find the deferred command that produced it.
+struct DrawIdentity {
+    /// The command list the draw was issued on. Read from the command list at the wrapper entry, so
+    /// it is the list the command object belonged to.
+    u64 command_list{};
+    /// The index-buffer resource the RHI invocation was given. This is the RHI entry argument, so
+    /// it is the resource the draw actually consumed.
+    u64 index_resource{};
+    /// UE4 EPrimitiveType from the command payload, when the provenance record carried it.
+    u32 primitive_type{};
+    /// NumPrimitives from the command payload, when available.
+    u32 num_primitives{};
+    /// NumInstances from the command payload, when available.
+    u32 num_instances{};
+    /// NumVertices from the command payload, when available.
+    u32 num_vertices{};
+    /// StartIndex from the command payload, when available.
+    u32 start_index{};
+};
+
+/// Why a draw could not be resolved to exactly one deferred command.
+enum class DrawMatchOutcome : u8 {
+    Matched = 0,
+    /// No captured draw command shares the identity.
+    NoCandidate = 1,
+    /// More than one captured draw command shares the identity, and the semantic fields did not
+    /// separate them. Refused rather than resolved by taking the first.
+    Ambiguous = 2,
+    /// The identity itself is unusable: a zero command list or a zero index resource cannot
+    /// identify anything, so matching on it would select an arbitrary command.
+    UnusableIdentity = 3,
+};
+
+[[nodiscard]] constexpr std::string_view DrawMatchOutcomeName(DrawMatchOutcome outcome) noexcept {
+    switch (outcome) {
+    case DrawMatchOutcome::Matched:
+        return "matched";
+    case DrawMatchOutcome::NoCandidate:
+        return "no_candidate";
+    case DrawMatchOutcome::Ambiguous:
+        return "ambiguous";
+    case DrawMatchOutcome::UnusableIdentity:
+        return "unusable_identity";
+    default:
+        return "unknown";
+    }
+}
+
+/// One captured draw command, reduced to the fields the matcher needs.
+///
+/// This is a plain value rather than the capture record so the matcher can be exercised against
+/// synthetic fixtures without a live capture, and so the live exporter and the tests call the same
+/// function.
+struct CapturedDrawCandidate {
+    /// Index into the capture table, so the caller can retrieve the full record.
+    u32 capture_index{};
+    u64 command_list{};
+    u64 index_resource{};
+    u32 primitive_type{};
+    u32 num_primitives{};
+    u32 num_instances{};
+    u32 num_vertices{};
+    u32 start_index{};
+};
+
+/// Resolves a provenance identity to exactly one captured draw command.
+///
+/// This is the production matcher: the live exporter calls it, and the tests exercise the same
+/// function. It deliberately does NOT use the capture-slot sequence number or the deferred-command
+/// ordinal. Those are two different counters: the slot ordinal is assigned as index + 1 when a
+/// command is recorded, while the deferred ordinal is a per-thread counter incremented at wrapper
+/// entry. Comparing them across domains selects the wrong command.
+///
+/// Matching proceeds in two stages:
+///
+///   1. Identity: command list and index resource must both agree. A candidate that fails either is
+///      not this draw.
+///   2. Disambiguation: when more than one candidate survives stage 1, the semantic payload fields
+///      that the provenance record independently carries are compared. A candidate that disagrees
+///      on any field the record knows is excluded.
+///
+/// If more than one candidate still survives, the result is Ambiguous. Taking the first would be a
+/// guess, and a wrong draw is worse than a refused one.
+[[nodiscard]] inline DrawMatchOutcome MatchDrawCommand(
+    std::span<const CapturedDrawCandidate> candidates, const DrawIdentity& identity,
+    u32& out_capture_index) noexcept {
+    out_capture_index = 0;
+    if (identity.command_list == 0 || identity.index_resource == 0) {
+        return DrawMatchOutcome::UnusableIdentity;
+    }
+
+    std::size_t found = 0;
+    std::size_t found_count = 0;
+    for (const auto& candidate : candidates) {
+        if (candidate.command_list != identity.command_list) {
+            continue;
+        }
+        if (candidate.index_resource != identity.index_resource) {
+            continue;
+        }
+        // Stage 2: the semantic fields the record knows must agree. A field the record does not
+        // carry is zero and is not compared, so an incomplete record still matches on identity
+        // alone rather than being refused.
+        if (identity.primitive_type != 0 && candidate.primitive_type != identity.primitive_type) {
+            continue;
+        }
+        if (identity.num_primitives != 0 && candidate.num_primitives != identity.num_primitives) {
+            continue;
+        }
+        if (identity.num_instances != 0 && candidate.num_instances != identity.num_instances) {
+            continue;
+        }
+        if (identity.num_vertices != 0 && candidate.num_vertices != identity.num_vertices) {
+            continue;
+        }
+        if (identity.start_index != 0 && candidate.start_index != identity.start_index) {
+            continue;
+        }
+        found = candidate.capture_index;
+        ++found_count;
+    }
+
+    if (found_count == 1) {
+        out_capture_index = static_cast<u32>(found);
+        return DrawMatchOutcome::Matched;
+    }
+    if (found_count > 1) {
+        return DrawMatchOutcome::Ambiguous;
+    }
+    return DrawMatchOutcome::NoCandidate;
+}
+
 /// One operation on the tape.
 struct Operation {
     OpKind kind{OpKind::Opaque};
@@ -284,9 +439,9 @@ struct Tape {
 
     std::array<Operation, MaxTapeOperations> operations{};
     u32 operation_count{};
-    std::array<Resource, 32> resources{};
+    std::array<Resource, MaxTapeResources> resources{};
     u32 resource_count{};
-    std::array<UnresolvedDependency, 16> unresolved{};
+    std::array<UnresolvedDependency, MaxTapeUnresolved> unresolved{};
     u32 unresolved_count{};
 };
 
@@ -299,8 +454,12 @@ struct Tape {
 }
 
 /// Appends a resource, refusing to exceed the bound.
+///
+/// A caller must treat a false return as a hard failure. Returning a zero resource id instead would
+/// produce a tape that still validates structurally while referencing an identity it does not
+/// carry, which is worse than refusing the capture.
 [[nodiscard]] inline bool AppendResource(Tape& tape, const Resource& resource) noexcept {
-    if (tape.resource_count >= tape.resources.size())
+    if (tape.resource_count >= MaxTapeResources)
         return false;
     tape.resources[tape.resource_count++] = resource;
     return true;
@@ -323,6 +482,32 @@ struct Tape {
     return nullptr;
 }
 
+/// Whether a stored derived draw agrees with the semantic payload it claims to come from.
+///
+/// The UE4 semantic payload is authoritative. The derived values are a convenience for a backend,
+/// and a tape whose stored derived values contradict its own payload is inconsistent data. Executing
+/// it would mean trusting a number that the tape itself disproves, so it is refused.
+///
+/// The comparison is exact on every field the derivation produces. A tape written by either
+/// producer passes because both call DeriveDraw; a tape edited to change one side fails.
+[[nodiscard]] inline bool DerivedMatchesPayload(const DrawIndexedPayload& payload,
+                                                const DerivedDraw& stored,
+                                                u32 index_element_size) noexcept {
+    const DerivedDraw expected = DeriveDraw(payload, index_element_size);
+    if (expected.valid != stored.valid) {
+        return false;
+    }
+    if (!expected.valid) {
+        // An invalid derivation carries no values to compare; agreement on invalidity is enough.
+        return true;
+    }
+    return expected.index_count == stored.index_count &&
+           expected.first_index == stored.first_index &&
+           expected.vertex_offset == stored.vertex_offset &&
+           expected.instance_count == stored.instance_count &&
+           expected.index_byte_offset == stored.index_byte_offset;
+}
+
 /// Why a tape is not executable. Reported so a partial tape says what it is missing.
 enum class TapeProblem : u8 {
     None = 0,
@@ -336,6 +521,15 @@ enum class TapeProblem : u8 {
     DuplicateResourceId = 8,
     DanglingResourceReference = 9,
     OperationOutOfOrder = 10,
+    /// The stored derived draw contradicts the semantic payload it claims to come from.
+    DerivedInconsistent = 11,
+    /// The tape carries more resources than the shared capacity contract allows.
+    ResourceCapacityExceeded = 12,
+    /// The tape carries more operations than the shared capacity contract allows.
+    OperationCapacityExceeded = 13,
+    /// The tape carries no graphics-pipeline operation. The bound-shader-state command is not in
+    /// the recovered command cluster, so this is currently always the case.
+    NoGraphicsPipeline = 14,
 };
 
 [[nodiscard]] constexpr std::string_view TapeProblemName(TapeProblem problem) noexcept {
@@ -362,6 +556,14 @@ enum class TapeProblem : u8 {
         return "dangling_resource_reference";
     case TapeProblem::OperationOutOfOrder:
         return "operation_out_of_order";
+    case TapeProblem::DerivedInconsistent:
+        return "derived_inconsistent";
+    case TapeProblem::ResourceCapacityExceeded:
+        return "resource_capacity_exceeded";
+    case TapeProblem::OperationCapacityExceeded:
+        return "operation_capacity_exceeded";
+    case TapeProblem::NoGraphicsPipeline:
+        return "no_graphics_pipeline";
     default:
         return "unknown";
     }
@@ -374,6 +576,15 @@ enum class TapeProblem : u8 {
 [[nodiscard]] inline TapeProblem ValidateTape(const Tape& tape) noexcept {
     if (tape.schema_version != SchemaVersion)
         return TapeProblem::SchemaMismatch;
+
+    // The capacity contract is enforced on read as well as on write. A tape that exceeds it cannot
+    // have been produced by a conforming producer, so it is refused rather than partially read.
+    if (tape.operation_count > MaxTapeOperations)
+        return TapeProblem::OperationCapacityExceeded;
+    if (tape.resource_count > MaxTapeResources)
+        return TapeProblem::ResourceCapacityExceeded;
+    if (tape.unresolved_count > MaxTapeUnresolved)
+        return TapeProblem::ResourceCapacityExceeded;
 
     // Resource ids must be unique and non-zero, so a reference is unambiguous.
     for (u32 i = 0; i < tape.resource_count; ++i) {
@@ -424,6 +635,20 @@ enum class TapeProblem : u8 {
     if (!saw_draw)
         return TapeProblem::NoDraw;
 
+    // The stored derived draw must agree with the semantic payload. The payload is authoritative, so
+    // a tape whose derived values contradict it is inconsistent data and is refused here rather than
+    // executed on a number the tape itself disproves.
+    for (u32 i = 0; i < tape.operation_count; ++i) {
+        const auto& operation = tape.operations[i];
+        if (operation.kind != OpKind::DrawIndexed)
+            continue;
+        const Resource* index = FindResource(tape, operation.draw.index_buffer_resource);
+        if (index == nullptr)
+            continue; // reported as a dangling reference above
+        if (!DerivedMatchesPayload(operation.draw, operation.derived, index->element_size))
+            return TapeProblem::DerivedInconsistent;
+    }
+
     return TapeProblem::None;
 }
 
@@ -466,5 +691,441 @@ enum class TapeProblem : u8 {
     }
     return TapeProblem::None;
 }
+
+/// Every problem a tape has, not just the first one found.
+///
+/// CheckExecutable returns a single problem, which is the right shape for a caller that only needs
+/// to know whether it can proceed. It is the wrong shape for a report: a tape missing its viewport
+/// and its render targets and its pipeline has three problems, and reporting only the first hides
+/// the other two. This collects them all so a diagnostic can state the full set.
+struct TapeProblems {
+    /// One bit per TapeProblem value. Bit 0 is unused because TapeProblem::None is not a problem.
+    u32 mask{};
+
+    [[nodiscard]] constexpr bool Has(TapeProblem problem) const noexcept {
+        return problem != TapeProblem::None && (mask & (1u << static_cast<u32>(problem))) != 0;
+    }
+    [[nodiscard]] constexpr bool Any() const noexcept { return mask != 0; }
+    [[nodiscard]] constexpr u32 Count() const noexcept {
+        u32 count = 0;
+        for (u32 bits = mask; bits != 0; bits &= bits - 1) {
+            ++count;
+        }
+        return count;
+    }
+};
+
+/// Collects every structural and executability problem the tape has.
+///
+/// This does not replace CheckExecutable: a caller that only needs a yes/no answer still uses that.
+/// It exists so a report can name every missing dimension at once rather than stopping at the first.
+[[nodiscard]] inline TapeProblems CollectProblems(const Tape& tape) noexcept {
+    TapeProblems problems{};
+    const auto add = [&problems](TapeProblem problem) {
+        if (problem != TapeProblem::None) {
+            problems.mask |= 1u << static_cast<u32>(problem);
+        }
+    };
+
+    add(ValidateTape(tape));
+
+    bool saw_viewport = false;
+    bool saw_render_targets = false;
+    bool saw_pipeline = false;
+    for (u32 i = 0; i < tape.operation_count; ++i) {
+        const auto& operation = tape.operations[i];
+        if (operation.kind == OpKind::DrawIndexed) {
+            break;
+        }
+        if (operation.kind == OpKind::SetViewport) {
+            saw_viewport = true;
+        }
+        if (operation.kind == OpKind::SetRenderTargets) {
+            saw_render_targets = true;
+        }
+        if (operation.kind == OpKind::SetGraphicsPipeline) {
+            saw_pipeline = true;
+        }
+    }
+    if (!saw_viewport) {
+        add(TapeProblem::NoViewport);
+    }
+    if (!saw_render_targets) {
+        add(TapeProblem::NoRenderTargets);
+    }
+
+    for (u32 i = 0; i < tape.operation_count; ++i) {
+        const auto& operation = tape.operations[i];
+        if (operation.kind != OpKind::DrawIndexed) {
+            continue;
+        }
+        if (!operation.derived.valid) {
+            add(TapeProblem::DrawNotDerivable);
+        }
+        const Resource* index = FindResource(tape, operation.draw.index_buffer_resource);
+        if (index == nullptr) {
+            add(TapeProblem::IndexResourceMissing);
+        } else if (index->provenance == ResourceProvenance::Unresolved) {
+            add(TapeProblem::IndexResourceUnresolved);
+        }
+    }
+
+    // The pipeline is a dimension the tape cannot currently carry at all, so it is always missing.
+    // It is reported here rather than silently assumed, and a caller that substitutes a diagnostic
+    // pipeline must say so.
+    if (!saw_pipeline) {
+        problems.mask |= 1u << static_cast<u32>(TapeProblem::NoGraphicsPipeline);
+    }
+
+    return problems;
+}
+
+/// One captured command, reduced to the fields the tape builder needs.
+///
+/// This is a plain value rather than the capture record so the builder can be exercised against
+/// synthetic fixtures without a live capture. The live exporter fills it from the capture table and
+/// the tests fill it from a fixture; both then call the same BuildTapeFromCapture.
+struct CapturedCommandRecord {
+    u64 sequence{};
+    u8 command_id{};
+    u64 command_list{};
+    u64 rhi_context{};
+    std::array<u64, 8> payload{};
+    std::array<u64, 8> render_targets{};
+    u64 depth_target{};
+    u8 render_target_count{};
+};
+
+/// The provenance facts the builder needs about the draw being described.
+struct TapeSource {
+    u64 provenance_id{};
+    u64 command_list{};
+    u64 index_resource{};
+    u32 ue4_primitive_type{};
+    u64 rhi_context{};
+    u64 submission_id{};
+    u64 packet_offset{};
+    bool packet_offset_known{};
+    /// The effective viewport read from the RHI context at draw entry, when it was readable.
+    bool viewport_valid{};
+    float viewport_min_x{};
+    float viewport_min_y{};
+    float viewport_min_z{};
+    float viewport_max_x{};
+    float viewport_max_y{};
+    float viewport_max_z{};
+    /// The index element width, from the draw package when it describes this same draw.
+    u32 index_element_size{};
+    /// The package resource id for the index buffer, or 0 when no package matched.
+    u32 package_index_resource_ref{};
+};
+
+/// Why the builder refused to produce a tape.
+enum class BuildOutcome : u8 {
+    Ok = 0,
+    /// The capture table was empty, so no command sequence exists.
+    NoCapture = 1,
+    /// The draw could not be resolved to exactly one captured command.
+    DrawUnresolved = 2,
+    /// The tape exceeded the shared resource capacity contract.
+    ResourceCapacityExceeded = 3,
+    /// The tape exceeded the shared operation capacity contract.
+    OperationCapacityExceeded = 4,
+    /// The built tape failed its own structural validation.
+    InvalidTape = 5,
+};
+
+[[nodiscard]] constexpr std::string_view BuildOutcomeName(BuildOutcome outcome) noexcept {
+    switch (outcome) {
+    case BuildOutcome::Ok:
+        return "ok";
+    case BuildOutcome::NoCapture:
+        return "no_capture";
+    case BuildOutcome::DrawUnresolved:
+        return "draw_unresolved";
+    case BuildOutcome::ResourceCapacityExceeded:
+        return "resource_capacity_exceeded";
+    case BuildOutcome::OperationCapacityExceeded:
+        return "operation_capacity_exceeded";
+    case BuildOutcome::InvalidTape:
+        return "invalid_tape";
+    default:
+        return "unknown";
+    }
+}
+
+/// Command ids, matching Core::RhiCommandCapture.
+inline constexpr u8 CaptureCommandDrawIndexedPrimitive = 1;
+inline constexpr u8 CaptureCommandSetStreamSource = 3;
+inline constexpr u8 CaptureCommandSetRenderTargets = 4;
+inline constexpr u8 CaptureCommandSetViewport = 5;
+
+/// Reads a 32-bit field out of a captured payload word.
+[[nodiscard]] inline u32 PayloadWord32(const std::array<u64, 8>& payload, u32 index) noexcept {
+    return static_cast<u32>(payload[index] & 0xFFFFFFFFull);
+}
+
+/// Reads a signed 32-bit field out of a captured payload word.
+[[nodiscard]] inline s32 PayloadWordSigned32(const std::array<u64, 8>& payload,
+                                             u32 index) noexcept {
+    return static_cast<s32>(static_cast<u32>(payload[index] & 0xFFFFFFFFull));
+}
+
+/// Reads a float out of a captured payload word.
+[[nodiscard]] inline float PayloadWordFloat(const std::array<u64, 8>& payload,
+                                            u32 index) noexcept {
+    const u32 bits = static_cast<u32>(payload[index] & 0xFFFFFFFFull);
+    float value{};
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+/// Builds a tape from a captured command sequence.
+///
+/// This is the production builder: the live exporter fills the records from the capture table and
+/// calls it, and the tests fill them from a synthetic fixture and call the same function. Keeping it
+/// here rather than in the exporter is what makes the live logic testable without a live capture.
+///
+/// The draw is resolved by MatchDrawCommand, which uses the command list and index resource the RHI
+/// entry recorded, disambiguated by the semantic payload. It never compares the capture-slot
+/// ordinal against the deferred-command ordinal, because those are different counters.
+[[nodiscard]] inline BuildOutcome BuildTapeFromCapture(
+    std::span<const CapturedCommandRecord> records, const TapeSource& source, Tape& tape) noexcept {
+    tape = {};
+    tape.provenance_id = source.provenance_id;
+    tape.submission_id = source.submission_id;
+    tape.packet_offset = source.packet_offset;
+    tape.packet_offset_known = source.packet_offset_known;
+
+    if (records.empty()) {
+        return BuildOutcome::NoCapture;
+    }
+
+    // Stage 1: collect the draw candidates and resolve the identity.
+    //
+    // Each candidate carries its own record index, and MatchDrawCommand returns that index directly.
+    // There is no second mapping from a candidate slot to a record slot: doing that would resolve
+    // correctly only when the draw happened to be the first candidate.
+    std::array<CapturedDrawCandidate, MaxTapeOperations> candidates{};
+    u32 candidate_count = 0;
+    for (u32 i = 0; i < records.size() && candidate_count < MaxTapeOperations; ++i) {
+        const auto& record = records[i];
+        if (record.command_id != CaptureCommandDrawIndexedPrimitive) {
+            continue;
+        }
+        auto& candidate = candidates[candidate_count];
+        candidate.capture_index = i;
+        candidate.command_list = record.command_list;
+        candidate.index_resource = record.payload[0];
+        candidate.primitive_type = PayloadWord32(record.payload, 1);
+        candidate.num_primitives = PayloadWord32(record.payload, 6);
+        candidate.num_instances = PayloadWord32(record.payload, 7);
+        candidate.num_vertices = PayloadWord32(record.payload, 4);
+        candidate.start_index = PayloadWord32(record.payload, 5);
+        ++candidate_count;
+    }
+
+    DrawIdentity identity{};
+    identity.command_list = source.command_list;
+    identity.index_resource = source.index_resource;
+    identity.primitive_type = source.ue4_primitive_type;
+
+    u32 matched_index = 0;
+    const DrawMatchOutcome outcome =
+        MatchDrawCommand(std::span<const CapturedDrawCandidate>{candidates.data(), candidate_count},
+                         identity, matched_index);
+    if (outcome != DrawMatchOutcome::Matched) {
+        return BuildOutcome::DrawUnresolved;
+    }
+
+    // MatchDrawCommand returns the capture record index, not a candidate slot.
+    const u32 draw_record_index = matched_index;
+    const auto& draw_record = records[draw_record_index];
+    const u64 draw_list = draw_record.command_list;
+
+    // Resource ids are assigned in first-reference order, so the tape is deterministic. A repeated
+    // reference to the same guest identity reuses its id and consumes no further slot.
+    std::array<u64, MaxTapeResources> resource_guest{};
+    u32 resource_count = 0;
+    u32 next_resource_id = 1;
+    bool capacity_exceeded = false;
+
+    const auto intern = [&](u64 guest, ResourceKind kind, u32 element_size,
+                            ResourceProvenance provenance, u32 package_ref) -> u32 {
+        if (guest == 0) {
+            return 0;
+        }
+        for (u32 i = 0; i < resource_count; ++i) {
+            if (resource_guest[i] == guest) {
+                return tape.resources[i].id;
+            }
+        }
+        if (resource_count >= MaxTapeResources) {
+            capacity_exceeded = true;
+            return 0;
+        }
+        Resource resource{};
+        resource.id = next_resource_id;
+        resource.kind = kind;
+        resource.provenance = provenance;
+        resource.package_resource_ref = package_ref;
+        resource.guest_base = guest;
+        resource.element_size = element_size;
+        if (!AppendResource(tape, resource)) {
+            capacity_exceeded = true;
+            return 0;
+        }
+        resource_guest[resource_count] = guest;
+        ++resource_count;
+        ++next_resource_id;
+        return resource.id;
+    };
+
+    const u32 index_resource_id =
+        intern(draw_record.payload[0], ResourceKind::IndexBuffer, source.index_element_size,
+               ResourceProvenance::Ue4Object, source.package_index_resource_ref);
+
+    // State commands on the same list, in capture order, before the draw.
+    for (u32 i = 0; i < draw_record_index; ++i) {
+        const auto& record = records[i];
+        if (record.command_list != draw_list) {
+            continue;
+        }
+        Operation operation{};
+        operation.sequence = record.sequence;
+        operation.command_list = record.command_list;
+        operation.rhi_context = record.rhi_context;
+
+        switch (record.command_id) {
+        case CaptureCommandSetViewport:
+            operation.kind = OpKind::SetViewport;
+            // A4 established the payload order from the Execute wrapper: the first three fields are
+            // integers converted to float, the last three are already floats.
+            operation.viewport_min_x = static_cast<float>(PayloadWordSigned32(record.payload, 0));
+            operation.viewport_min_y = static_cast<float>(PayloadWordSigned32(record.payload, 1));
+            operation.viewport_min_z = PayloadWordFloat(record.payload, 2);
+            operation.viewport_max_x = static_cast<float>(PayloadWordSigned32(record.payload, 3));
+            operation.viewport_max_y = static_cast<float>(PayloadWordSigned32(record.payload, 4));
+            operation.viewport_max_z = PayloadWordFloat(record.payload, 5);
+            operation.evidence = Evidence::VerifiedTargetBinary;
+            break;
+        case CaptureCommandSetRenderTargets:
+            operation.kind = OpKind::SetRenderTargets;
+            operation.color_target_count = record.render_target_count;
+            for (u32 t = 0; t < record.render_target_count && t < 8; ++t) {
+                operation.color_targets[t] =
+                    intern(record.render_targets[t], ResourceKind::RenderTarget, 0,
+                           ResourceProvenance::Ue4Object, 0);
+            }
+            operation.depth_target = intern(record.depth_target, ResourceKind::DepthTarget, 0,
+                                            ResourceProvenance::Ue4Object, 0);
+            operation.evidence = Evidence::VerifiedTargetBinary;
+            break;
+        case CaptureCommandSetStreamSource:
+            // The stream-source payload is a slot index and an interface pointer, not a resource
+            // base, so it is carried as a tentative reference rather than claimed as an identity.
+            operation.kind = OpKind::BindVertexBuffers;
+            operation.slot = PayloadWord32(record.payload, 0);
+            operation.resource = intern(record.payload[1], ResourceKind::VertexBuffer, 0,
+                                        ResourceProvenance::Ue4Object, 0);
+            operation.evidence = Evidence::Tentative;
+            operation.note = "stream-source payload is an interface pointer, not a resource base";
+            break;
+        default:
+            operation.kind = OpKind::Opaque;
+            operation.evidence = Evidence::Tentative;
+            operation.note = "command semantics not established";
+            break;
+        }
+        if (!AppendOperation(tape, operation)) {
+            return BuildOutcome::OperationCapacityExceeded;
+        }
+    }
+
+    // Capacity exhaustion during interning is a hard failure. A tape that silently dropped a
+    // resource would still validate structurally while referencing an identity it does not carry.
+    if (capacity_exceeded) {
+        return BuildOutcome::ResourceCapacityExceeded;
+    }
+    if (index_resource_id == 0) {
+        return BuildOutcome::DrawUnresolved;
+    }
+
+    // The draw itself, with the original semantic payload preserved verbatim.
+    Operation draw{};
+    draw.kind = OpKind::DrawIndexed;
+    draw.evidence = Evidence::VerifiedTargetBinary;
+    draw.sequence = draw_record.sequence;
+    draw.command_list = draw_list;
+    draw.rhi_context = source.rhi_context;
+    draw.draw.index_buffer_resource = index_resource_id;
+    draw.draw.primitive_type = PayloadWord32(draw_record.payload, 1);
+    draw.draw.base_vertex_index = PayloadWordSigned32(draw_record.payload, 2);
+    draw.draw.first_instance = PayloadWord32(draw_record.payload, 3);
+    draw.draw.num_vertices = PayloadWord32(draw_record.payload, 4);
+    draw.draw.start_index = PayloadWord32(draw_record.payload, 5);
+    draw.draw.num_primitives = PayloadWord32(draw_record.payload, 6);
+    draw.draw.num_instances = PayloadWord32(draw_record.payload, 7);
+    draw.derived = DeriveDraw(draw.draw, source.index_element_size);
+    if (!AppendOperation(tape, draw)) {
+        return BuildOutcome::OperationCapacityExceeded;
+    }
+
+    // The viewport the draw consumed. The RHI caches it on the context and only emits a packet on
+    // change, so the command list frequently carries no viewport at all. When the context read
+    // succeeded, the effective value is recorded as the state the draw actually used.
+    bool list_has_viewport = false;
+    for (u32 i = 0; i < tape.operation_count; ++i) {
+        if (tape.operations[i].kind == OpKind::SetViewport) {
+            list_has_viewport = true;
+        }
+    }
+    if (source.viewport_valid) {
+        Operation viewport{};
+        viewport.kind = OpKind::SetViewport;
+        viewport.evidence = Evidence::RuntimeConfirmed;
+        viewport.command_list = draw_list;
+        viewport.rhi_context = source.rhi_context;
+        viewport.viewport_min_x = source.viewport_min_x;
+        viewport.viewport_min_y = source.viewport_min_y;
+        viewport.viewport_min_z = source.viewport_min_z;
+        viewport.viewport_max_x = source.viewport_max_x;
+        viewport.viewport_max_y = source.viewport_max_y;
+        viewport.viewport_max_z = source.viewport_max_z;
+        viewport.note = list_has_viewport
+                            ? "effective viewport read from the RHI context at draw entry"
+                            : "no viewport command on this list; value read from the RHI context "
+                              "cache at draw entry";
+        // Insert before the draw so the tape stays an ordered program.
+        if (tape.operation_count >= MaxTapeOperations) {
+            return BuildOutcome::OperationCapacityExceeded;
+        }
+        for (u32 i = tape.operation_count; i > tape.operation_count - 1; --i) {
+            tape.operations[i] = tape.operations[i - 1];
+        }
+        tape.operations[tape.operation_count - 1] = viewport;
+        ++tape.operation_count;
+    }
+
+    if (!list_has_viewport && !source.viewport_valid) {
+        AppendUnresolved(tape, {"viewport", "SetViewport command or RHI context",
+                                "no viewport was observed for this draw"});
+    }
+
+    // Shader and pipeline state are not recovered by this phase. Report them rather than
+    // substituting a diagnostic pipeline silently.
+    AppendUnresolved(tape, {"graphics pipeline", "FRHICommandSetBoundShaderState",
+                            "the bound-shader-state command is not in the recovered cluster"});
+    AppendUnresolved(tape, {"shader resources", "RHI shader resource bindings",
+                            "texture and sampler binding is SC-10 scope"});
+
+    // Validate the producer output before it is serialized. A tape that fails here is a producer
+    // defect, not a consumer problem.
+    if (ValidateTape(tape) != TapeProblem::None) {
+        return BuildOutcome::InvalidTape;
+    }
+    return BuildOutcome::Ok;
+}
+
 
 } // namespace Core::SemanticTape

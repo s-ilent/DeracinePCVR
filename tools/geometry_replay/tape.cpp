@@ -83,6 +83,12 @@ std::string_view ProblemName(Problem problem) {
         return "dangling_resource_reference";
     case Problem::OperationOutOfOrder:
         return "operation_out_of_order";
+    case Problem::DerivedInconsistent:
+        return "derived_inconsistent";
+    case Problem::ResourceCapacityExceeded:
+        return "resource_capacity_exceeded";
+    case Problem::OperationCapacityExceeded:
+        return "operation_capacity_exceeded";
     case Problem::ReadFailed:
         return "read_failed";
     default:
@@ -204,9 +210,46 @@ const Resource* FindResource(const Tape& tape, u32 id) {
     return nullptr;
 }
 
+DerivedDraw DeriveDraw(const DrawPayload& payload, u32 index_element_size) {
+    DerivedDraw out{};
+    if (index_element_size != 2 && index_element_size != 4) {
+        return out;
+    }
+    const u32 per_primitive = IndicesPerPrimitive(payload.primitive_type);
+    if (per_primitive == 0) {
+        return out;
+    }
+    if (payload.primitive_type == kPrimitiveTypeTriangleStrip) {
+        if (payload.num_primitives == 0) {
+            return out;
+        }
+        out.index_count = payload.num_primitives + 2;
+    } else {
+        // Guard the multiply: a corrupt payload must not wrap into a small count.
+        if (payload.num_primitives > 0xFFFFFFFFu / per_primitive) {
+            return out;
+        }
+        out.index_count = payload.num_primitives * per_primitive;
+    }
+    out.first_index = payload.start_index;
+    out.vertex_offset = payload.base_vertex_index;
+    out.instance_count = payload.num_instances;
+    out.index_byte_offset = static_cast<u64>(payload.start_index) * index_element_size;
+    out.valid = true;
+    return out;
+}
+
 Problem ValidateTape(const Tape& tape) {
     if (tape.schema_version != kSchemaVersion)
         return Problem::SchemaMismatch;
+
+    // The capacity contract is enforced on read as well as on write.
+    if (tape.operations.size() > kMaxTapeOperations)
+        return Problem::OperationCapacityExceeded;
+    if (tape.resources.size() > kMaxTapeResources)
+        return Problem::ResourceCapacityExceeded;
+    if (tape.unresolved.size() > kMaxTapeUnresolved)
+        return Problem::ResourceCapacityExceeded;
 
     std::set<u32> ids;
     for (const auto& resource : tape.resources) {
@@ -250,6 +293,29 @@ Problem ValidateTape(const Tape& tape) {
     }
     if (!saw_draw)
         return Problem::NoDraw;
+
+    // The stored derived draw must agree with the semantic payload. The payload is authoritative, so
+    // a tape whose derived values contradict it is inconsistent data and is refused here rather than
+    // executed on a number the tape itself disproves.
+    for (const auto& operation : tape.operations) {
+        if (operation.kind != OpKind::DrawIndexed)
+            continue;
+        const Resource* index = FindResource(tape, operation.draw.index_buffer_resource);
+        if (index == nullptr)
+            continue; // reported as a dangling reference above
+        const DerivedDraw expected = DeriveDraw(operation.draw, index->element_size);
+        if (expected.valid != operation.derived.valid)
+            return Problem::DerivedInconsistent;
+        if (!expected.valid)
+            continue;
+        if (expected.index_count != operation.derived.index_count ||
+            expected.first_index != operation.derived.first_index ||
+            expected.vertex_offset != operation.derived.vertex_offset ||
+            expected.instance_count != operation.derived.instance_count ||
+            expected.index_byte_offset != operation.derived.index_byte_offset) {
+            return Problem::DerivedInconsistent;
+        }
+    }
 
     return Problem::None;
 }
@@ -379,14 +445,23 @@ bool Execute(const Tape& tape, CommandSink& sink, ExecutionReport& report, std::
             sink.BindShaderResources(resources, 1);
             break;
         }
-        case OpKind::DrawIndexed:
+        case OpKind::DrawIndexed: {
             // The draw arguments come from the tape, which came from the UE4 deferred command.
             // Nothing here reads a captured PM4 packet.
-            sink.DrawIndexed(operation.draw, operation.derived);
+            //
+            // The semantic payload is authoritative, so the effective arguments are recomputed here
+            // rather than taken from the serialized derived block. ValidateTape has already refused
+            // a tape whose stored values disagree, so this recomputation is the value the sink
+            // receives: a backend never sees an unverified number.
+            const Resource* index = FindResource(tape, operation.draw.index_buffer_resource);
+            const u32 element_size = index != nullptr ? index->element_size : 0;
+            const DerivedDraw effective = DeriveDraw(operation.draw, element_size);
+            sink.DrawIndexed(operation.draw, effective);
             report.draw_payload = operation.draw;
-            report.derived = operation.derived;
+            report.derived = effective;
             ++report.draws;
             break;
+        }
         case OpKind::EndFrame:
             break;
         case OpKind::Opaque:

@@ -40,6 +40,25 @@ using Core::SemanticTape::Tape;
 using Core::SemanticTape::TapeProblem;
 using Core::SemanticTape::TapeProblemName;
 using Core::SemanticTape::ValidateTape;
+using Core::SemanticTape::BuildOutcome;
+using Core::SemanticTape::BuildOutcomeName;
+using Core::SemanticTape::BuildTapeFromCapture;
+using Core::SemanticTape::CapturedCommandRecord;
+using Core::SemanticTape::CapturedDrawCandidate;
+using Core::SemanticTape::DerivedMatchesPayload;
+using Core::SemanticTape::DrawIdentity;
+using Core::SemanticTape::DrawMatchOutcome;
+using Core::SemanticTape::DrawMatchOutcomeName;
+using Core::SemanticTape::MatchDrawCommand;
+using Core::SemanticTape::MaxTapeResources;
+using Core::SemanticTape::MaxTapeUnresolved;
+using Core::SemanticTape::TapeSource;
+using Core::SemanticTape::CaptureCommandDrawIndexedPrimitive;
+using Core::SemanticTape::CaptureCommandSetRenderTargets;
+using Core::SemanticTape::CaptureCommandSetStreamSource;
+using Core::SemanticTape::CaptureCommandSetViewport;
+using Core::SemanticTape::CollectProblems;
+using Core::SemanticTape::TapeProblems;
 
 /// The classroom draw captured by SC-09H, as the deferred command payload carried it.
 ///
@@ -344,8 +363,22 @@ TEST(SemanticTapeExecutable, DownstreamOracleIndexResourceIsExecutable) {
 }
 
 TEST(SemanticTapeExecutable, UnderivableDrawIsReported) {
+    // An invalid derivation is also an inconsistency with the payload, so ValidateTape refuses it
+    // first. Both facts are true; the structural check is the one that fires.
     Tape tape = ExecutableTape();
     tape.operations[2].derived = {};
+    EXPECT_EQ(ValidateTape(tape), TapeProblem::DerivedInconsistent);
+    EXPECT_EQ(CheckExecutable(tape), TapeProblem::DerivedInconsistent);
+}
+
+TEST(SemanticTapeExecutable, AnUnderivablePayloadIsReportedAsSuch) {
+    // A payload whose topology this tape cannot convert is not an inconsistency: the derivation is
+    // invalid on both sides, so the structural check passes and executability reports the real
+    // reason.
+    Tape tape = ExecutableTape();
+    tape.operations[2].draw.primitive_type = 2; // PT_PointList
+    tape.operations[2].derived = DeriveDraw(tape.operations[2].draw, 2);
+    EXPECT_EQ(ValidateTape(tape), TapeProblem::None);
     EXPECT_EQ(CheckExecutable(tape), TapeProblem::DrawNotDerivable);
 }
 
@@ -431,4 +464,649 @@ TEST(SemanticTapeProblems, EveryProblemHasAStableName) {
     }
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// Draw identity matching
+//
+// The defect these cover: the live exporter compared the capture-slot ordinal against the
+// deferred-command ordinal. Those are different counters, so it selected the wrong command.
+// ---------------------------------------------------------------------------------------------
+
+CapturedDrawCandidate Candidate(u32 index, u64 list, u64 resource, u32 primitives,
+                                u32 instances, u32 vertices, u32 start_index = 0,
+                                u32 primitive_type = 0) {
+    CapturedDrawCandidate candidate{};
+    candidate.capture_index = index;
+    candidate.command_list = list;
+    candidate.index_resource = resource;
+    candidate.primitive_type = primitive_type;
+    candidate.num_primitives = primitives;
+    candidate.num_instances = instances;
+    candidate.num_vertices = vertices;
+    candidate.start_index = start_index;
+    return candidate;
+}
+
+TEST(SemanticTapeIdentity, ResolvesByListAndIndexResource) {
+    const std::array<CapturedDrawCandidate, 3> candidates{
+        Candidate(0, 0x100, 0xAAA, 3, 1, 10),
+        Candidate(1, 0x100, 0xBBB, 1012, 2, 593),
+        Candidate(2, 0x200, 0xBBB, 5, 1, 20),
+    };
+    DrawIdentity identity{};
+    identity.command_list = 0x100;
+    identity.index_resource = 0xBBB;
+    u32 matched = 0;
+    EXPECT_EQ(MatchDrawCommand(candidates, identity, matched), DrawMatchOutcome::Matched);
+    EXPECT_EQ(matched, 1u);
+}
+
+TEST(SemanticTapeIdentity, ADrawOnAnotherListIsNotSelected) {
+    const std::array<CapturedDrawCandidate, 3> candidates{
+        Candidate(0, 0x100, 0xAAA, 3, 1, 10),
+        Candidate(1, 0x100, 0xBBB, 1012, 2, 593),
+        Candidate(2, 0x200, 0xBBB, 5, 1, 20),
+    };
+    DrawIdentity identity{};
+    identity.command_list = 0x200;
+    identity.index_resource = 0xBBB;
+    u32 matched = 0;
+    EXPECT_EQ(MatchDrawCommand(candidates, identity, matched), DrawMatchOutcome::Matched);
+    EXPECT_EQ(matched, 2u);
+}
+
+TEST(SemanticTapeIdentity, AnAbsentDrawIsRefusedRatherThanGuessed) {
+    const std::array<CapturedDrawCandidate, 1> candidates{Candidate(0, 0x100, 0xAAA, 3, 1, 10)};
+    DrawIdentity identity{};
+    identity.command_list = 0x300;
+    identity.index_resource = 0xAAA;
+    u32 matched = 0;
+    EXPECT_EQ(MatchDrawCommand(candidates, identity, matched), DrawMatchOutcome::NoCandidate);
+}
+
+TEST(SemanticTapeIdentity, TwoDrawsSharingListAndResourceAreDisambiguatedByPayload) {
+    // Two draws on the same list with the same index buffer, differing only in primitive count.
+    const std::array<CapturedDrawCandidate, 2> candidates{
+        Candidate(0, 0x100, 0xAAA, 1012, 2, 593),
+        Candidate(1, 0x100, 0xAAA, 500, 1, 300),
+    };
+    DrawIdentity identity{};
+    identity.command_list = 0x100;
+    identity.index_resource = 0xAAA;
+    identity.num_primitives = 500;
+    u32 matched = 0;
+    EXPECT_EQ(MatchDrawCommand(candidates, identity, matched), DrawMatchOutcome::Matched);
+    EXPECT_EQ(matched, 1u);
+}
+
+TEST(SemanticTapeIdentity, IndistinguishableDrawsAreRefusedAsAmbiguous) {
+    // Same list, same resource, same payload: nothing distinguishes them, so taking the first would
+    // be a guess. A wrong draw is worse than a refused one.
+    const std::array<CapturedDrawCandidate, 2> candidates{
+        Candidate(0, 0x100, 0xAAA, 1012, 2, 593),
+        Candidate(1, 0x100, 0xAAA, 1012, 2, 593),
+    };
+    DrawIdentity identity{};
+    identity.command_list = 0x100;
+    identity.index_resource = 0xAAA;
+    u32 matched = 0;
+    EXPECT_EQ(MatchDrawCommand(candidates, identity, matched), DrawMatchOutcome::Ambiguous);
+}
+
+TEST(SemanticTapeIdentity, AZeroIdentityIsUnusableRatherThanMatchingEverything) {
+    const std::array<CapturedDrawCandidate, 1> candidates{Candidate(0, 0x100, 0xAAA, 3, 1, 10)};
+    DrawIdentity identity{};
+    identity.command_list = 0;
+    identity.index_resource = 0xAAA;
+    u32 matched = 0;
+    EXPECT_EQ(MatchDrawCommand(candidates, identity, matched),
+              DrawMatchOutcome::UnusableIdentity);
+
+    identity.command_list = 0x100;
+    identity.index_resource = 0;
+    EXPECT_EQ(MatchDrawCommand(candidates, identity, matched),
+              DrawMatchOutcome::UnusableIdentity);
+}
+
+TEST(SemanticTapeIdentity, EveryOutcomeHasAStableName) {
+    for (const auto outcome : {DrawMatchOutcome::Matched, DrawMatchOutcome::NoCandidate,
+                               DrawMatchOutcome::Ambiguous,
+                               DrawMatchOutcome::UnusableIdentity}) {
+        EXPECT_NE(DrawMatchOutcomeName(outcome), "unknown");
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Sequence-counter independence
+//
+// The capture-slot ordinal and the deferred-command ordinal are different counters. The matcher
+// must not depend on either, so varying them independently must not change the selection.
+// ---------------------------------------------------------------------------------------------
+
+CapturedCommandRecord DrawRecord(u64 sequence, u64 list, u64 resource, u32 primitives,
+                                 u32 instances, u32 vertices) {
+    CapturedCommandRecord record{};
+    record.sequence = sequence;
+    record.command_id = CaptureCommandDrawIndexedPrimitive;
+    record.command_list = list;
+    record.payload[0] = resource;
+    record.payload[1] = 0; // PT_TriangleList
+    record.payload[2] = 0;
+    record.payload[3] = 0;
+    record.payload[4] = vertices;
+    record.payload[5] = 0;
+    record.payload[6] = primitives;
+    record.payload[7] = instances;
+    return record;
+}
+
+TapeSource ClassroomSource() {
+    TapeSource source{};
+    source.provenance_id = 82;
+    source.command_list = 0x100;
+    source.index_resource = 0xAAA;
+    source.ue4_primitive_type = 0;
+    source.index_element_size = 2;
+    source.submission_id = 8913;
+    source.packet_offset = 0x1B64;
+    source.packet_offset_known = true;
+    return source;
+}
+
+TEST(SemanticTapeSequenceIndependence, SelectionDoesNotDependOnEitherCounter) {
+    // The same draw, recorded at different capture slots. The provenance record carries a deferred
+    // ordinal that matches none of them, which is exactly the live situation.
+    for (const u64 slot : {1ull, 7ull, 174ull, 9999ull}) {
+        const std::array<CapturedCommandRecord, 2> records{
+            DrawRecord(slot, 0x100, 0xAAA, 1012, 2, 593),
+            DrawRecord(slot + 1, 0x200, 0xBBB, 5, 1, 20),
+        };
+        Tape tape{};
+        EXPECT_EQ(BuildTapeFromCapture(records, ClassroomSource(), tape), BuildOutcome::Ok)
+            << "slot " << slot;
+        const Operation* draw = nullptr;
+        for (u32 i = 0; i < tape.operation_count; ++i) {
+            if (tape.operations[i].kind == OpKind::DrawIndexed)
+                draw = &tape.operations[i];
+        }
+        ASSERT_NE(draw, nullptr);
+        EXPECT_EQ(draw->draw.num_primitives, 1012u) << "slot " << slot;
+        EXPECT_EQ(draw->draw.num_vertices, 593u) << "slot " << slot;
+    }
+}
+
+TEST(SemanticTapeSequenceIndependence, TheWrongDrawIsNotSelectedWhenCountersDisagree) {
+    // A decoy draw sits at the slot number the deferred ordinal would have suggested. Matching on
+    // that counter would pick the decoy; matching on identity picks the real draw.
+    const std::array<CapturedCommandRecord, 2> records{
+        DrawRecord(635, 0x200, 0xBBB, 958, 2, 1356), // decoy at the deferred ordinal
+        DrawRecord(174, 0x100, 0xAAA, 1012, 2, 593), // the real draw
+    };
+    Tape tape{};
+    ASSERT_EQ(BuildTapeFromCapture(records, ClassroomSource(), tape), BuildOutcome::Ok);
+    const Operation* draw = nullptr;
+    for (u32 i = 0; i < tape.operation_count; ++i) {
+        if (tape.operations[i].kind == OpKind::DrawIndexed)
+            draw = &tape.operations[i];
+    }
+    ASSERT_NE(draw, nullptr);
+    EXPECT_EQ(draw->draw.num_primitives, 1012u);
+    EXPECT_EQ(draw->draw.num_vertices, 593u);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Resource capacity
+// ---------------------------------------------------------------------------------------------
+
+TEST(SemanticTapeCapacity, TheObservedThirtyThreeResourceTapeIsSupported) {
+    // The RHI-01 offline tape carries 33 resources. The contract must accommodate it.
+    EXPECT_GE(MaxTapeResources, 33u);
+
+    Tape tape{};
+    for (u32 i = 0; i < 33; ++i) {
+        Resource resource{};
+        resource.id = i + 1;
+        resource.kind = ResourceKind::VertexBuffer;
+        resource.provenance = ResourceProvenance::Ue4Object;
+        ASSERT_TRUE(AppendResource(tape, resource)) << "resource " << i;
+    }
+    EXPECT_EQ(tape.resource_count, 33u);
+}
+
+TEST(SemanticTapeCapacity, ExactlyAtCapacityIsAccepted) {
+    Tape tape{};
+    for (u32 i = 0; i < MaxTapeResources; ++i) {
+        Resource resource{};
+        resource.id = i + 1;
+        ASSERT_TRUE(AppendResource(tape, resource)) << "resource " << i;
+    }
+    EXPECT_EQ(tape.resource_count, MaxTapeResources);
+}
+
+TEST(SemanticTapeCapacity, OneOverCapacityIsRefused) {
+    Tape tape{};
+    for (u32 i = 0; i < MaxTapeResources; ++i) {
+        Resource resource{};
+        resource.id = i + 1;
+        ASSERT_TRUE(AppendResource(tape, resource));
+    }
+    Resource extra{};
+    extra.id = MaxTapeResources + 1;
+    EXPECT_FALSE(AppendResource(tape, extra));
+    EXPECT_EQ(tape.resource_count, MaxTapeResources);
+}
+
+TEST(SemanticTapeCapacity, RepeatedReferencesConsumeNoAdditionalSlots) {
+    // The same guest identity referenced many times must intern to one resource.
+    std::array<CapturedCommandRecord, 40> records{};
+    for (u32 i = 0; i < 39; ++i) {
+        records[i].sequence = i + 1;
+        records[i].command_id = CaptureCommandSetStreamSource;
+        records[i].command_list = 0x100;
+        records[i].payload[0] = 0;
+        records[i].payload[1] = 0xAAA; // the same resource every time
+    }
+    records[39] = DrawRecord(40, 0x100, 0xAAA, 1012, 2, 593);
+
+    Tape tape{};
+    ASSERT_EQ(BuildTapeFromCapture(records, ClassroomSource(), tape), BuildOutcome::Ok);
+    // The index buffer and the vertex stream share one guest identity, so they intern to a single
+    // resource. Forty references consume one slot, not forty.
+    EXPECT_EQ(tape.resource_count, 1u);
+}
+
+TEST(SemanticTapeCapacity, LateOverflowAfterManyValidOperationsFailsExplicitly) {
+    // Fill the resource table with distinct vertex streams, then add the draw. The overflow happens
+    // late, after many otherwise valid operations, and must still fail rather than truncate.
+    const u32 stream_count = MaxTapeResources + 4;
+    std::vector<CapturedCommandRecord> records;
+    records.reserve(stream_count + 1);
+    for (u32 i = 0; i < stream_count; ++i) {
+        CapturedCommandRecord record{};
+        record.sequence = i + 1;
+        record.command_id = CaptureCommandSetStreamSource;
+        record.command_list = 0x100;
+        record.payload[0] = i;
+        record.payload[1] = 0x1000 + i; // a distinct resource each time
+        records.push_back(record);
+    }
+    records.push_back(DrawRecord(stream_count + 1, 0x100, 0xAAA, 1012, 2, 593));
+
+    Tape tape{};
+    EXPECT_EQ(BuildTapeFromCapture(records, ClassroomSource(), tape),
+              BuildOutcome::ResourceCapacityExceeded);
+}
+
+TEST(SemanticTapeCapacity, TheReaderRejectsATapeOverCapacity) {
+    Tape tape = ExecutableTape();
+    // Force the count past the contract without appending, which is what a corrupt file would do.
+    tape.resource_count = MaxTapeResources + 1;
+    EXPECT_EQ(ValidateTape(tape), TapeProblem::ResourceCapacityExceeded);
+}
+
+TEST(SemanticTapeCapacity, TheReaderRejectsATapeOverTheOperationBound) {
+    Tape tape = ExecutableTape();
+    tape.operation_count = MaxTapeOperations + 1;
+    EXPECT_EQ(ValidateTape(tape), TapeProblem::OperationCapacityExceeded);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Derived-versus-payload consistency
+//
+// The UE4 semantic payload is authoritative. A tape whose stored derived values contradict it is
+// inconsistent data and must be refused rather than executed.
+// ---------------------------------------------------------------------------------------------
+
+TEST(SemanticTapeConsistency, AConsistentDerivationIsAccepted) {
+    const DrawIndexedPayload payload = ClassroomPayload();
+    const DerivedDraw derived = DeriveDraw(payload, 2);
+    EXPECT_TRUE(DerivedMatchesPayload(payload, derived, 2));
+}
+
+TEST(SemanticTapeConsistency, AChangedPrimitiveCountIsDetected) {
+    // This is the negative consistency test: change only the payload, leave the derived values.
+    DrawIndexedPayload payload = ClassroomPayload();
+    const DerivedDraw derived = DeriveDraw(payload, 2);
+    payload.num_primitives = 500;
+    EXPECT_FALSE(DerivedMatchesPayload(payload, derived, 2));
+}
+
+TEST(SemanticTapeConsistency, AChangedIndexCountIsDetected) {
+    const DrawIndexedPayload payload = ClassroomPayload();
+    DerivedDraw derived = DeriveDraw(payload, 2);
+    derived.index_count = 1500;
+    EXPECT_FALSE(DerivedMatchesPayload(payload, derived, 2));
+}
+
+TEST(SemanticTapeConsistency, AChangedFirstIndexIsDetected) {
+    const DrawIndexedPayload payload = ClassroomPayload();
+    DerivedDraw derived = DeriveDraw(payload, 2);
+    derived.first_index = 42;
+    EXPECT_FALSE(DerivedMatchesPayload(payload, derived, 2));
+}
+
+TEST(SemanticTapeConsistency, AChangedVertexOffsetIsDetected) {
+    const DrawIndexedPayload payload = ClassroomPayload();
+    DerivedDraw derived = DeriveDraw(payload, 2);
+    derived.vertex_offset = -3;
+    EXPECT_FALSE(DerivedMatchesPayload(payload, derived, 2));
+}
+
+TEST(SemanticTapeConsistency, AChangedInstanceCountIsDetected) {
+    const DrawIndexedPayload payload = ClassroomPayload();
+    DerivedDraw derived = DeriveDraw(payload, 2);
+    derived.instance_count = 7;
+    EXPECT_FALSE(DerivedMatchesPayload(payload, derived, 2));
+}
+
+TEST(SemanticTapeConsistency, AChangedByteOffsetIsDetected) {
+    const DrawIndexedPayload payload = ClassroomPayload();
+    DerivedDraw derived = DeriveDraw(payload, 2);
+    derived.index_byte_offset = 99;
+    EXPECT_FALSE(DerivedMatchesPayload(payload, derived, 2));
+}
+
+TEST(SemanticTapeConsistency, TheTapeValidatorRejectsAnInconsistentDraw) {
+    Tape tape = ExecutableTape();
+    // Change only the payload. The stored derived block still says 3036.
+    tape.operations[2].draw.num_primitives = 500;
+    EXPECT_EQ(ValidateTape(tape), TapeProblem::DerivedInconsistent);
+}
+
+TEST(SemanticTapeConsistency, TheTapeValidatorAcceptsTheRegeneratedDraw) {
+    // The positive path: change the payload and regenerate through the production derivation.
+    Tape tape = ExecutableTape();
+    tape.operations[2].draw.num_primitives = 500;
+    tape.operations[2].derived = DeriveDraw(tape.operations[2].draw, 2);
+    EXPECT_EQ(ValidateTape(tape), TapeProblem::None);
+    EXPECT_EQ(tape.operations[2].derived.index_count, 1500u);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Producer parity: the shared builder
+// ---------------------------------------------------------------------------------------------
+
+TEST(SemanticTapeBuilder, BuildsTheClassroomDrawFromSyntheticCapture) {
+    const std::array<CapturedCommandRecord, 1> records{
+        DrawRecord(174, 0x100, 0xAAA, 1012, 2, 593)};
+    Tape tape{};
+    ASSERT_EQ(BuildTapeFromCapture(records, ClassroomSource(), tape), BuildOutcome::Ok);
+    EXPECT_EQ(tape.provenance_id, 82u);
+    EXPECT_EQ(tape.submission_id, 8913u);
+    EXPECT_EQ(tape.packet_offset, 0x1B64u);
+    EXPECT_TRUE(tape.packet_offset_known);
+
+    const Operation* draw = nullptr;
+    for (u32 i = 0; i < tape.operation_count; ++i) {
+        if (tape.operations[i].kind == OpKind::DrawIndexed)
+            draw = &tape.operations[i];
+    }
+    ASSERT_NE(draw, nullptr);
+    EXPECT_EQ(draw->draw.primitive_type, 0u);
+    EXPECT_EQ(draw->draw.num_primitives, 1012u);
+    EXPECT_EQ(draw->draw.num_instances, 2u);
+    EXPECT_EQ(draw->derived.index_count, 3036u);
+    EXPECT_EQ(draw->derived.instance_count, 2u);
+}
+
+TEST(SemanticTapeBuilder, PreservesOperationOrderAndExcludesOtherLists) {
+    std::array<CapturedCommandRecord, 4> records{};
+    records[0].sequence = 1;
+    records[0].command_id = CaptureCommandSetRenderTargets;
+    records[0].command_list = 0x100;
+    records[0].render_target_count = 1;
+    records[0].render_targets[0] = 0xCCC;
+    records[1].sequence = 2;
+    records[1].command_id = CaptureCommandSetViewport;
+    records[1].command_list = 0x999; // another list: must be excluded
+    records[1].payload[3] = 1024;
+    records[1].payload[4] = 1024;
+    records[1].payload[5] = 0x3F800000;
+    records[2].sequence = 3;
+    records[2].command_id = CaptureCommandSetStreamSource;
+    records[2].command_list = 0x100;
+    records[2].payload[1] = 0xDDD;
+    records[3] = DrawRecord(4, 0x100, 0xAAA, 1012, 2, 593);
+
+    Tape tape{};
+    ASSERT_EQ(BuildTapeFromCapture(records, ClassroomSource(), tape), BuildOutcome::Ok);
+
+    // Render targets, then the vertex stream, then the draw. The other list is absent.
+    ASSERT_GE(tape.operation_count, 3u);
+    EXPECT_EQ(tape.operations[0].kind, OpKind::SetRenderTargets);
+    EXPECT_EQ(tape.operations[1].kind, OpKind::BindVertexBuffers);
+    EXPECT_EQ(tape.operations[2].kind, OpKind::DrawIndexed);
+    for (u32 i = 0; i < tape.operation_count; ++i) {
+        EXPECT_NE(tape.operations[i].kind, OpKind::SetViewport)
+            << "a viewport from another list must not be merged in";
+    }
+}
+
+TEST(SemanticTapeBuilder, ReportsAMissingViewportRatherThanInventingOne) {
+    const std::array<CapturedCommandRecord, 1> records{
+        DrawRecord(174, 0x100, 0xAAA, 1012, 2, 593)};
+    Tape tape{};
+    ASSERT_EQ(BuildTapeFromCapture(records, ClassroomSource(), tape), BuildOutcome::Ok);
+    bool found = false;
+    for (u32 i = 0; i < tape.unresolved_count; ++i) {
+        if (tape.unresolved[i].what == "viewport")
+            found = true;
+    }
+    EXPECT_TRUE(found);
+    EXPECT_EQ(CheckExecutable(tape), TapeProblem::NoViewport);
+}
+
+TEST(SemanticTapeBuilder, InsertsAnInheritedViewportSnapshotBeforeTheDraw) {
+    // The RHI caches the viewport on the context, so a draw can inherit one set earlier on another
+    // list. The snapshot read at draw entry is inserted as state the draw consumed.
+    const std::array<CapturedCommandRecord, 1> records{
+        DrawRecord(174, 0x100, 0xAAA, 1012, 2, 593)};
+    TapeSource source = ClassroomSource();
+    source.viewport_valid = true;
+    source.viewport_min_x = 0.0f;
+    source.viewport_min_y = 0.0f;
+    source.viewport_min_z = 0.0f;
+    source.viewport_max_x = 2880.0f;
+    source.viewport_max_y = 3240.0f;
+    source.viewport_max_z = 1.0f;
+
+    Tape tape{};
+    ASSERT_EQ(BuildTapeFromCapture(records, source, tape), BuildOutcome::Ok);
+
+    // The viewport must precede the draw, and carry the snapshot values.
+    ASSERT_GE(tape.operation_count, 2u);
+    EXPECT_EQ(tape.operations[0].kind, OpKind::SetViewport);
+    EXPECT_EQ(tape.operations[0].evidence, Evidence::RuntimeConfirmed);
+    EXPECT_FLOAT_EQ(tape.operations[0].viewport_max_x, 2880.0f);
+    EXPECT_FLOAT_EQ(tape.operations[0].viewport_max_y, 3240.0f);
+    EXPECT_EQ(tape.operations[1].kind, OpKind::DrawIndexed);
+}
+
+TEST(SemanticTapeBuilder, ReportsMissingRenderTargets) {
+    const std::array<CapturedCommandRecord, 1> records{
+        DrawRecord(174, 0x100, 0xAAA, 1012, 2, 593)};
+    TapeSource source = ClassroomSource();
+    source.viewport_valid = true;
+    source.viewport_max_x = 640.0f;
+    source.viewport_max_y = 640.0f;
+    source.viewport_max_z = 1.0f;
+    Tape tape{};
+    ASSERT_EQ(BuildTapeFromCapture(records, source, tape), BuildOutcome::Ok);
+    EXPECT_EQ(CheckExecutable(tape), TapeProblem::NoRenderTargets);
+}
+
+TEST(SemanticTapeBuilder, ReportsMultipleUnresolvedDependencies) {
+    // A tape missing several state dimensions must report all of them, not just the first.
+    const std::array<CapturedCommandRecord, 1> records{
+        DrawRecord(174, 0x100, 0xAAA, 1012, 2, 593)};
+    Tape tape{};
+    ASSERT_EQ(BuildTapeFromCapture(records, ClassroomSource(), tape), BuildOutcome::Ok);
+    EXPECT_GE(tape.unresolved_count, 3u);
+    bool viewport = false;
+    bool pipeline = false;
+    bool shaders = false;
+    for (u32 i = 0; i < tape.unresolved_count; ++i) {
+        const auto what = tape.unresolved[i].what;
+        if (what == "viewport")
+            viewport = true;
+        if (what == "graphics pipeline")
+            pipeline = true;
+        if (what == "shader resources")
+            shaders = true;
+    }
+    EXPECT_TRUE(viewport);
+    EXPECT_TRUE(pipeline);
+    EXPECT_TRUE(shaders);
+}
+
+TEST(SemanticTapeBuilder, RefusesAnEmptyCapture) {
+    const std::array<CapturedCommandRecord, 0> records{};
+    Tape tape{};
+    EXPECT_EQ(BuildTapeFromCapture(records, ClassroomSource(), tape), BuildOutcome::NoCapture);
+}
+
+TEST(SemanticTapeBuilder, RefusesAnUnresolvableDraw) {
+    const std::array<CapturedCommandRecord, 1> records{
+        DrawRecord(174, 0x200, 0xBBB, 1012, 2, 593)};
+    Tape tape{};
+    EXPECT_EQ(BuildTapeFromCapture(records, ClassroomSource(), tape),
+              BuildOutcome::DrawUnresolved);
+}
+
+TEST(SemanticTapeBuilder, EveryBuildOutcomeHasAStableName) {
+    for (const auto outcome : {BuildOutcome::Ok, BuildOutcome::NoCapture,
+                               BuildOutcome::DrawUnresolved,
+                               BuildOutcome::ResourceCapacityExceeded,
+                               BuildOutcome::OperationCapacityExceeded,
+                               BuildOutcome::InvalidTape}) {
+        EXPECT_NE(BuildOutcomeName(outcome), "unknown");
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Semantic mutation: the payload drives the executed draw
+// ---------------------------------------------------------------------------------------------
+
+TEST(SemanticTapeMutation, ChangingThePayloadChangesTheDerivedCount) {
+    // 1012 triangles produce 3036 indices; 500 produce 1500. The derivation is the production one.
+    const std::array<CapturedCommandRecord, 1> records{
+        DrawRecord(174, 0x100, 0xAAA, 1012, 2, 593)};
+    Tape tape{};
+    ASSERT_EQ(BuildTapeFromCapture(records, ClassroomSource(), tape), BuildOutcome::Ok);
+    EXPECT_EQ(tape.operations[0].derived.index_count, 3036u);
+
+    const std::array<CapturedCommandRecord, 1> mutated{
+        DrawRecord(174, 0x100, 0xAAA, 500, 2, 593)};
+    Tape mutated_tape{};
+    ASSERT_EQ(BuildTapeFromCapture(mutated, ClassroomSource(), mutated_tape), BuildOutcome::Ok);
+    EXPECT_EQ(mutated_tape.operations[0].derived.index_count, 1500u);
+}
+
+TEST(SemanticTapeMutation, NonzeroFirstIndexAndInstanceArePreserved) {
+    CapturedCommandRecord record = DrawRecord(174, 0x100, 0xAAA, 1012, 3, 593);
+    record.payload[5] = 168; // StartIndex
+    record.payload[3] = 4;   // FirstInstance
+    const std::array<CapturedCommandRecord, 1> records{record};
+    Tape tape{};
+    ASSERT_EQ(BuildTapeFromCapture(records, ClassroomSource(), tape), BuildOutcome::Ok);
+    const auto& draw = tape.operations[0];
+    EXPECT_EQ(draw.draw.start_index, 168u);
+    EXPECT_EQ(draw.draw.first_instance, 4u);
+    EXPECT_EQ(draw.derived.first_index, 168u);
+    EXPECT_EQ(draw.derived.index_byte_offset, 336u);
+}
+
+TEST(SemanticTapeMutation, NegativeBaseVertexSurvivesTheBuilder) {
+    CapturedCommandRecord record = DrawRecord(174, 0x100, 0xAAA, 1012, 2, 593);
+    record.payload[2] = 0xFFFFFFF9ull; // -7 as a signed 32-bit value
+    const std::array<CapturedCommandRecord, 1> records{record};
+    Tape tape{};
+    ASSERT_EQ(BuildTapeFromCapture(records, ClassroomSource(), tape), BuildOutcome::Ok);
+    EXPECT_EQ(tape.operations[0].draw.base_vertex_index, -7);
+    EXPECT_EQ(tape.operations[0].derived.vertex_offset, -7);
+}
+
+TEST(SemanticTapeMutation, AnUnsupportedTopologyIsRefusedByTheDerivation) {
+    CapturedCommandRecord record = DrawRecord(174, 0x100, 0xAAA, 1012, 2, 593);
+    record.payload[1] = 2; // PT_PointList
+    const std::array<CapturedCommandRecord, 1> records{record};
+    Tape tape{};
+    ASSERT_EQ(BuildTapeFromCapture(records, ClassroomSource(), tape), BuildOutcome::Ok);
+    EXPECT_FALSE(tape.operations[0].derived.valid);
+    // The viewport is missing too, so CheckExecutable reports that first. The full problem set
+    // names both, which is what a report needs.
+    const auto problems = CollectProblems(tape);
+    EXPECT_TRUE(problems.Has(TapeProblem::DrawNotDerivable));
+    EXPECT_TRUE(problems.Has(TapeProblem::NoViewport));
+    EXPECT_GE(problems.Count(), 2u);
+}
+
+TEST(SemanticTapeMutation, AnOverflowingPrimitiveCountIsRefused) {
+    CapturedCommandRecord record = DrawRecord(174, 0x100, 0xAAA, 0xFFFFFFFFu, 2, 593);
+    const std::array<CapturedCommandRecord, 1> records{record};
+    Tape tape{};
+    ASSERT_EQ(BuildTapeFromCapture(records, ClassroomSource(), tape), BuildOutcome::Ok);
+    EXPECT_FALSE(tape.operations[0].derived.valid);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Multiple simultaneous problems
+//
+// A single CheckExecutable failure must not conceal another unresolved dependency. A tape missing
+// its viewport, its render targets and its pipeline has three problems, and a report needs all
+// three.
+// ---------------------------------------------------------------------------------------------
+
+TEST(SemanticTapeProblems, CollectsEveryMissingDimensionAtOnce) {
+    // A tape with only a draw: no viewport, no render targets, no pipeline.
+    Tape tape{};
+    tape.schema_version = SchemaVersion;
+    tape.provenance_id = 1;
+    Resource index{};
+    index.id = 1;
+    index.kind = ResourceKind::IndexBuffer;
+    index.provenance = ResourceProvenance::Ue4Object;
+    index.element_size = 2;
+    (void)AppendResource(tape, index);
+    Operation draw{};
+    draw.kind = OpKind::DrawIndexed;
+    draw.draw = ClassroomPayload();
+    draw.derived = DeriveDraw(draw.draw, 2);
+    (void)AppendOperation(tape, draw);
+
+    const auto problems = CollectProblems(tape);
+    EXPECT_TRUE(problems.Has(TapeProblem::NoViewport));
+    EXPECT_TRUE(problems.Has(TapeProblem::NoRenderTargets));
+    EXPECT_TRUE(problems.Has(TapeProblem::NoGraphicsPipeline));
+    EXPECT_GE(problems.Count(), 3u);
+
+    // CheckExecutable reports only the first, which is why the collector exists.
+    EXPECT_EQ(CheckExecutable(tape), TapeProblem::NoViewport);
+}
+
+TEST(SemanticTapeProblems, ACompleteTapeHasNoProblems) {
+    Tape tape = ExecutableTape();
+    const auto problems = CollectProblems(tape);
+    // The pipeline is the one dimension the tape cannot carry, so it is always reported.
+    EXPECT_TRUE(problems.Has(TapeProblem::NoGraphicsPipeline));
+    EXPECT_FALSE(problems.Has(TapeProblem::NoViewport));
+    EXPECT_FALSE(problems.Has(TapeProblem::NoRenderTargets));
+    EXPECT_EQ(problems.Count(), 1u);
+}
+
+TEST(SemanticTapeProblems, AStructuralProblemIsIncludedAlongsideMissingState) {
+    Tape tape = ExecutableTape();
+    tape.operations[2].draw.num_primitives = 500; // inconsistent with the stored derived block
+    const auto problems = CollectProblems(tape);
+    EXPECT_TRUE(problems.Has(TapeProblem::DerivedInconsistent));
+    EXPECT_TRUE(problems.Has(TapeProblem::NoGraphicsPipeline));
+    EXPECT_GE(problems.Count(), 2u);
+}
+
+TEST(SemanticTapeProblems, NoGraphicsPipelineHasAStableName) {
+    EXPECT_EQ(TapeProblemName(TapeProblem::NoGraphicsPipeline), "no_graphics_pipeline");
+    EXPECT_EQ(TapeProblemName(TapeProblem::DerivedInconsistent), "derived_inconsistent");
+    EXPECT_EQ(TapeProblemName(TapeProblem::ResourceCapacityExceeded),
+              "resource_capacity_exceeded");
+}
 } // namespace

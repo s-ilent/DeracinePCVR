@@ -468,8 +468,12 @@ public:
 
     void DrawIndexed(const tape::DrawPayload& payload, const tape::DerivedDraw& derived) override {
         // Every argument here comes from the tape. Nothing is read from a captured PM4 packet.
+        //
+        // vertexOffset is int32_t in Vulkan's signature, and BaseVertexIndex is signed in UE4. It is
+        // passed through as a signed value: routing it through an unsigned intermediate would turn a
+        // negative base vertex into a huge positive offset.
         vkCmdDrawIndexed(cmd_, derived.index_count, derived.instance_count, derived.first_index,
-                         static_cast<u32>(derived.vertex_offset), payload.first_instance);
+                         derived.vertex_offset, payload.first_instance);
         last_draw_ = derived;
         ++draws_;
     }

@@ -166,244 +166,73 @@ TapeState g_state{};
 }
 
 /// Builds the tape for one provenance record.
+///
+/// The construction itself lives in the contract header as BuildTapeFromCapture, so the live exporter
+/// and the tests run the same code. This function only gathers the capture records and the
+/// provenance facts into the plain values that builder takes.
 [[nodiscard]] bool BuildTape(Tape& tape, const RhiEntryProbe::ProvenanceSnapshot& snapshot,
                              const DrawPackage::Package& package, bool have_package,
                              std::string& error) {
-    tape = {};
-    tape.scene = "classroom-title";
-    tape.provenance_id = snapshot.id;
-    tape.image_sha256 = g_state.image_sha256;
-    tape.module_base = g_state.module_base;
-    tape.submission_id = snapshot.submission_id;
-    tape.packet_offset = snapshot.packet_offset;
-    tape.packet_offset_known = snapshot.packet_offset_known;
-
-    // The draw package, when it describes this same draw, is the bridge from command provenance to
-    // resource provenance. The association is recorded, not assumed.
-    const bool package_matches = have_package && package.provenance_id == snapshot.id;
-    const u32 index_element_size =
-        IndexElementSizeFromPackage(package, package_matches);
-
-    // Walk the captured commands in capture order and keep the ones that belong to this draw's
-    // command list, up to and including the draw itself. A command on another list is not state
-    // this draw consumed, so it is excluded rather than merged.
     const u32 captured = RhiCommandCapture::CapturedCommandCount();
     if (captured == 0) {
         error = "the command capture is not installed, so no command sequence is available";
         return false;
     }
 
-    // Locate the draw command whose payload matches this provenance record. The identity is the
-    // command capture id the RHI entry recorded, which is the sequence number of the wrapper
-    // invocation.
-    u32 draw_index = 0;
-    bool found_draw = false;
+    std::vector<CapturedCommandRecord> records;
+    records.reserve(captured);
     for (u32 i = 0; i < captured; ++i) {
         RhiCommandCapture::CapturedCommandView command{};
         if (!RhiCommandCapture::GetCapturedCommand(i, command))
             break;
-        if (command.sequence != snapshot.command_capture_id)
-            continue;
-        if (command.command_id != RhiCommandCapture::CommandDrawIndexedPrimitive)
-            continue;
-        draw_index = i;
-        found_draw = true;
-        break;
+        CapturedCommandRecord record{};
+        record.sequence = command.sequence;
+        record.command_id = command.command_id;
+        record.command_list = command.list_pointer;
+        record.rhi_context = command.context_pointer;
+        for (size_t w = 0; w < 8; ++w) {
+            record.payload[w] = command.payload[w];
+            record.render_targets[w] = command.render_targets[w];
+        }
+        record.depth_target = command.depth_target;
+        record.render_target_count = command.render_target_count;
+        records.push_back(record);
     }
-    if (!found_draw) {
-        error = "the deferred draw command for this provenance record was not captured";
+
+    // The draw package, when it describes this same draw, is the bridge from command provenance to
+    // resource provenance. The association is recorded, not assumed.
+    const bool package_matches = have_package && package.provenance_id == snapshot.id;
+
+    TapeSource source{};
+    source.provenance_id = snapshot.id;
+    source.command_list = snapshot.command_list;
+    source.index_resource = snapshot.rhi_index_resource;
+    source.ue4_primitive_type = snapshot.ue4_primitive_type;
+    source.rhi_context = snapshot.rhi_context;
+    source.submission_id = snapshot.submission_id;
+    source.packet_offset = snapshot.packet_offset;
+    source.packet_offset_known = snapshot.packet_offset_known;
+    source.viewport_valid = snapshot.viewport.valid;
+    source.viewport_min_x = snapshot.viewport.min_x;
+    source.viewport_min_y = snapshot.viewport.min_y;
+    source.viewport_min_z = snapshot.viewport.min_z;
+    source.viewport_max_x = snapshot.viewport.max_x;
+    source.viewport_max_y = snapshot.viewport.max_y;
+    source.viewport_max_z = snapshot.viewport.max_z;
+    source.index_element_size = IndexElementSizeFromPackage(package, package_matches);
+    if (package_matches && package.has_index_binding) {
+        source.package_index_resource_ref = package.index_binding.resource_ref;
+    }
+
+    const BuildOutcome outcome = BuildTapeFromCapture(records, source, tape);
+    if (outcome != BuildOutcome::Ok) {
+        error = std::string{"the tape could not be built: "} + std::string{BuildOutcomeName(outcome)};
         return false;
     }
 
-    RhiCommandCapture::CapturedCommandView draw_command{};
-    if (!RhiCommandCapture::GetCapturedCommand(draw_index, draw_command)) {
-        error = "the deferred draw command could not be read back";
-        return false;
-    }
-    const u64 draw_list = draw_command.list_pointer;
-
-    // Collect the state commands on the same list that precede the draw. The list is a program, so
-    // order is meaningful and is preserved.
-    std::vector<u32> state_indices;
-    for (u32 i = 0; i < draw_index; ++i) {
-        RhiCommandCapture::CapturedCommandView command{};
-        if (!RhiCommandCapture::GetCapturedCommand(i, command))
-            break;
-        if (command.list_pointer != draw_list)
-            continue;
-        state_indices.push_back(i);
-    }
-
-    // Resource ids are assigned in first-reference order, so the tape is deterministic.
-    std::map<u64, u32> resource_by_guest;
-    u32 next_resource_id = 1;
-    const auto intern_resource = [&](u64 guest, ResourceKind kind, u32 element_size,
-                                     ResourceProvenance provenance,
-                                     u32 package_ref) -> u32 {
-        if (guest == 0)
-            return 0;
-        if (const auto it = resource_by_guest.find(guest); it != resource_by_guest.end())
-            return it->second;
-        Resource resource{};
-        resource.id = next_resource_id++;
-        resource.kind = kind;
-        resource.provenance = provenance;
-        resource.package_resource_ref = package_ref;
-        resource.guest_base = guest;
-        resource.element_size = element_size;
-        if (!AppendResource(tape, resource))
-            return 0;
-        resource_by_guest[guest] = resource.id;
-        return resource.id;
-    };
-
-    // The index buffer resource. Its identity comes from the UE4 command payload, which is the
-    // strongest available source; the package reference is recorded separately.
-    u32 package_index_ref = 0;
-    if (package_matches && package.has_index_binding)
-        package_index_ref = package.index_binding.resource_ref;
-    const u32 index_resource_id =
-        intern_resource(draw_command.payload[0], ResourceKind::IndexBuffer, index_element_size,
-                        ResourceProvenance::Ue4Object, package_index_ref);
-
-    // Emit the state operations in order. Only operations whose semantics are established become
-    // typed; anything else is carried as Opaque so the tape does not silently drop it.
-    for (const u32 index : state_indices) {
-        RhiCommandCapture::CapturedCommandView command{};
-        if (!RhiCommandCapture::GetCapturedCommand(index, command))
-            break;
-
-        Operation operation{};
-        operation.sequence = command.sequence;
-        operation.command_list = command.list_pointer;
-        operation.rhi_context = command.context_pointer;
-
-        switch (command.command_id) {
-        case RhiCommandCapture::CommandSetViewport: {
-            operation.kind = OpKind::SetViewport;
-            // A4 established the payload order from the Execute wrapper: the first three fields are
-            // integers converted to float, the last three are already floats.
-            operation.viewport_min_x = PayloadIntAsFloat(command, 0);
-            operation.viewport_min_y = PayloadIntAsFloat(command, 1);
-            operation.viewport_min_z = PayloadFloat(command, 2);
-            operation.viewport_max_x = PayloadIntAsFloat(command, 3);
-            operation.viewport_max_y = PayloadIntAsFloat(command, 4);
-            operation.viewport_max_z = PayloadFloat(command, 5);
-            operation.evidence = Evidence::VerifiedTargetBinary;
-            break;
-        }
-        case RhiCommandCapture::CommandSetRenderTargets: {
-            operation.kind = OpKind::SetRenderTargets;
-            operation.color_target_count = command.render_target_count;
-            for (u32 t = 0; t < command.render_target_count && t < 8; ++t) {
-                operation.color_targets[t] = intern_resource(
-                    command.render_targets[t], ResourceKind::RenderTarget, 0,
-                    ResourceProvenance::Ue4Object, 0);
-            }
-            operation.depth_target = intern_resource(command.depth_target,
-                                                     ResourceKind::DepthTarget, 0,
-                                                     ResourceProvenance::Ue4Object, 0);
-            operation.evidence = Evidence::VerifiedTargetBinary;
-            break;
-        }
-        case RhiCommandCapture::CommandSetStreamSource: {
-            // The stream-source payload is a slot index and a resource pointer. The pointer is
-            // adjusted by -0x68 in the Execute wrapper to reach the resource base, so the payload
-            // value is an interface pointer rather than a resource identity. It is carried as an
-            // opaque reference rather than claimed as a vertex buffer identity.
-            operation.kind = OpKind::BindVertexBuffers;
-            operation.slot = static_cast<u32>(command.payload[0] & 0xFFFFFFFFull);
-            operation.resource = intern_resource(command.payload[1], ResourceKind::VertexBuffer, 0,
-                                                 ResourceProvenance::Ue4Object, 0);
-            operation.evidence = Evidence::Tentative;
-            operation.note = "stream-source payload is an interface pointer, not a resource base";
-            break;
-        }
-        default:
-            operation.kind = OpKind::Opaque;
-            operation.evidence = Evidence::Tentative;
-            operation.note = "command semantics not established";
-            break;
-        }
-        if (!AppendOperation(tape, operation)) {
-            error = "the tape exceeded its operation bound";
-            return false;
-        }
-    }
-
-    // The draw itself, with the original semantic payload preserved verbatim.
-    Operation draw{};
-    draw.kind = OpKind::DrawIndexed;
-    draw.evidence = Evidence::VerifiedTargetBinary;
-    draw.sequence = draw_command.sequence;
-    draw.command_capture_id = snapshot.command_capture_id;
-    draw.command_list = draw_list;
-    draw.rhi_context = snapshot.rhi_context;
-    draw.draw.index_buffer_resource = index_resource_id;
-    draw.draw.primitive_type = PayloadPrimitiveType(draw_command);
-    draw.draw.base_vertex_index = PayloadBaseVertex(draw_command);
-    draw.draw.first_instance = PayloadFirstInstance(draw_command);
-    draw.draw.num_vertices = PayloadNumVertices(draw_command);
-    draw.draw.start_index = PayloadStartIndex(draw_command);
-    draw.draw.num_primitives = PayloadNumPrimitives(draw_command);
-    draw.draw.num_instances = PayloadNumInstances(draw_command);
-    draw.derived = DeriveDraw(draw.draw, index_element_size);
-    if (!draw.derived.valid) {
-        AppendUnresolved(tape, {"derived draw arguments", "DrawIndexed", draw.derived.reason});
-    }
-    if (!AppendOperation(tape, draw)) {
-        error = "the tape exceeded its operation bound";
-        return false;
-    }
-
-    // The viewport the draw consumed. The RHI caches it on the context and only emits a packet on
-    // change, so the command list frequently carries no viewport at all. When the context read
-    // succeeded, the effective value is recorded as the state the draw actually used, and the
-    // absence of a viewport command on the list is reported rather than treated as a defect.
-    bool list_has_viewport = false;
-    for (u32 i = 0; i < tape.operation_count; ++i) {
-        if (tape.operations[i].kind == OpKind::SetViewport)
-            list_has_viewport = true;
-    }
-    if (snapshot.viewport.valid) {
-        Operation viewport{};
-        viewport.kind = OpKind::SetViewport;
-        viewport.evidence = Evidence::RuntimeConfirmed;
-        viewport.command_list = draw_list;
-        viewport.rhi_context = snapshot.rhi_context;
-        viewport.viewport_min_x = snapshot.viewport.min_x;
-        viewport.viewport_min_y = snapshot.viewport.min_y;
-        viewport.viewport_min_z = snapshot.viewport.min_z;
-        viewport.viewport_max_x = snapshot.viewport.max_x;
-        viewport.viewport_max_y = snapshot.viewport.max_y;
-        viewport.viewport_max_z = snapshot.viewport.max_z;
-        viewport.note = list_has_viewport
-                            ? "effective viewport read from the RHI context at draw entry"
-                            : "no viewport command on this list; value read from the RHI context "
-                              "cache at draw entry";
-        // Insert before the draw so the tape stays an ordered program.
-        if (tape.operation_count < MaxTapeOperations) {
-            for (u32 i = tape.operation_count; i > tape.operation_count - 1; --i)
-                tape.operations[i] = tape.operations[i - 1];
-            tape.operations[tape.operation_count - 1] = viewport;
-            ++tape.operation_count;
-        }
-    } else {
-        AppendUnresolved(tape, {"viewport", "RHI context", "the context viewport cache was unreadable"});
-    }
-
-    if (!list_has_viewport && !snapshot.viewport.valid) {
-        AppendUnresolved(tape, {"viewport", "SetViewport command or RHI context",
-                                "no viewport was observed for this draw"});
-    }
-
-    // Shader and pipeline state are not recovered by this phase. Report them rather than
-    // substituting a diagnostic pipeline silently.
-    AppendUnresolved(tape, {"graphics pipeline", "FRHICommandSetBoundShaderState",
-                            "the bound-shader-state command is not in the recovered cluster"});
-    AppendUnresolved(tape, {"shader resources", "RHI shader resource bindings",
-                            "texture and sampler binding is SC-10 scope"});
-
+    tape.scene = "classroom-title";
+    tape.image_sha256 = g_state.image_sha256;
+    tape.module_base = g_state.module_base;
     error.clear();
     return true;
 }

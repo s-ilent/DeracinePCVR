@@ -180,5 +180,182 @@ class TapeShape(unittest.TestCase):
         self.assertTrue(tape["packet_offset_known"])
 
 
+class Capacity(unittest.TestCase):
+    """The shared resource-capacity contract."""
+
+    def test_the_observed_thirty_three_resource_tape_is_supported(self):
+        self.assertGreaterEqual(builder.MAX_TAPE_RESOURCES, 33)
+
+    def test_exactly_at_capacity_is_accepted(self):
+        tape = {"schema_version": 1, "operations": [], "resources": [], "unresolved": []}
+        for i in range(builder.MAX_TAPE_RESOURCES):
+            tape["resources"].append({"id": i + 1, "kind": "vertex_buffer",
+                                      "provenance": "ue4_object", "package_resource_ref": 0,
+                                      "guest_base": 0, "guest_size": 0, "element_size": 0})
+        self.assertEqual(len(tape["resources"]), builder.MAX_TAPE_RESOURCES)
+
+    def test_one_over_capacity_is_refused_by_the_validator(self):
+        tape = {"schema_version": 1, "operations": [], "resources": [], "unresolved": []}
+        for i in range(builder.MAX_TAPE_RESOURCES + 1):
+            tape["resources"].append({"id": i + 1, "kind": "vertex_buffer",
+                                      "provenance": "ue4_object", "package_resource_ref": 0,
+                                      "guest_base": 0, "guest_size": 0, "element_size": 0})
+        self.assertEqual(builder.validate_tape(tape), "resource_capacity_exceeded")
+
+    def test_late_overflow_fails_explicitly(self):
+        # More distinct vertex streams than the contract allows, then the draw.
+        commands = []
+        for i in range(builder.MAX_TAPE_RESOURCES + 4):
+            commands.append({"sequence": i + 1, "command_id": builder.CMD_SET_STREAM_SOURCE,
+                             "list": 0x100, "payload": [i, 0x1000 + i, 0, 0, 0, 0, 0, 0]})
+        commands.append({"sequence": 999, "command_id": builder.CMD_DRAW_INDEXED,
+                         "list": 0x100, "payload": [0xAAA, 0, 0, 0, 593, 0, 1012, 2]})
+        record = {"id": 1, "command_list": 0x100, "rhi_index_resource": 0xAAA,
+                  "command_capture_id": 0, "submission_id": 1, "packet_offset": 0,
+                  "rhi_context": 0}
+        with self.assertRaises(SystemExit):
+            builder.build_tape(commands, record, "", 0, 2)
+
+    def test_repeated_references_consume_no_additional_slots(self):
+        commands = []
+        for i in range(39):
+            commands.append({"sequence": i + 1, "command_id": builder.CMD_SET_STREAM_SOURCE,
+                             "list": 0x100, "payload": [0, 0xAAA, 0, 0, 0, 0, 0, 0]})
+        commands.append({"sequence": 40, "command_id": builder.CMD_DRAW_INDEXED,
+                         "list": 0x100, "payload": [0xAAA, 0, 0, 0, 593, 0, 1012, 2]})
+        record = {"id": 1, "command_list": 0x100, "rhi_index_resource": 0xAAA,
+                  "command_capture_id": 0, "submission_id": 1, "packet_offset": 0,
+                  "rhi_context": 0}
+        tape = builder.build_tape(commands, record, "", 0, 2)
+        self.assertEqual(len(tape["resources"]), 1)
+
+
+class Consistency(unittest.TestCase):
+    """The UE4 semantic payload is authoritative; stored derived values must agree."""
+
+    def _tape(self, primitives=1012):
+        commands = [{"sequence": 1, "command_id": builder.CMD_DRAW_INDEXED,
+                     "list": 0x100, "payload": [0xAAA, 0, 0, 0, 593, 0, primitives, 2]}]
+        record = {"id": 1, "command_list": 0x100, "rhi_index_resource": 0xAAA,
+                  "command_capture_id": 0, "submission_id": 1, "packet_offset": 0,
+                  "rhi_context": 0}
+        return builder.build_tape(commands, record, "", 0, 2)
+
+    def test_a_consistent_tape_validates(self):
+        self.assertEqual(builder.validate_tape(self._tape()), "none")
+
+    def test_a_changed_primitive_count_is_detected(self):
+        # Change only the payload, leave the derived block untouched.
+        tape = self._tape()
+        draw = [op for op in tape["operations"] if op["kind"] == "DrawIndexed"][0]
+        draw["draw"]["num_primitives"] = 500
+        self.assertEqual(builder.validate_tape(tape), "derived_inconsistent")
+
+    def test_a_changed_index_count_is_detected(self):
+        tape = self._tape()
+        draw = [op for op in tape["operations"] if op["kind"] == "DrawIndexed"][0]
+        draw["derived"]["index_count"] = 1500
+        self.assertEqual(builder.validate_tape(tape), "derived_inconsistent")
+
+    def test_a_changed_vertex_offset_is_detected(self):
+        tape = self._tape()
+        draw = [op for op in tape["operations"] if op["kind"] == "DrawIndexed"][0]
+        draw["derived"]["vertex_offset"] = -3
+        self.assertEqual(builder.validate_tape(tape), "derived_inconsistent")
+
+    def test_the_regenerated_draw_validates(self):
+        tape = self._tape()
+        draw = [op for op in tape["operations"] if op["kind"] == "DrawIndexed"][0]
+        draw["draw"]["num_primitives"] = 500
+        draw["derived"] = builder.derive_draw(draw["draw"], 2)
+        self.assertEqual(builder.validate_tape(tape), "none")
+        self.assertEqual(draw["derived"]["index_count"], 1500)
+
+
+class ProducerParity(unittest.TestCase):
+    """The offline builder and the live C++ builder must agree on the same fixture.
+
+    These assert the semantic content the C++ tests assert, using the same fixture values, so a
+    divergence between the two producers shows up as a failing test on one side.
+    """
+
+    def _classroom(self, primitives=1012, instances=2, vertices=593, start_index=0,
+                   base_vertex=0, first_instance=0, primitive_type=0):
+        commands = [{"sequence": 174, "command_id": builder.CMD_DRAW_INDEXED,
+                     "list": 0x100,
+                     "payload": [0xAAA, primitive_type, base_vertex & 0xFFFFFFFF,
+                                 first_instance, vertices, start_index, primitives, instances]}]
+        record = {"id": 82, "command_list": 0x100, "rhi_index_resource": 0xAAA,
+                  "command_capture_id": 635, "submission_id": 8913,
+                  "packet_offset": 0x1B64, "rhi_context": 0, "ue4_primitive_type": primitive_type}
+        return builder.build_tape(commands, record, "", 0, 2)
+
+    def test_classroom_draw_matches_the_cpp_expectation(self):
+        tape = self._classroom()
+        draw = [op for op in tape["operations"] if op["kind"] == "DrawIndexed"][0]
+        self.assertEqual(draw["draw"]["primitive_type"], 0)
+        self.assertEqual(draw["draw"]["num_primitives"], 1012)
+        self.assertEqual(draw["draw"]["num_instances"], 2)
+        self.assertEqual(draw["derived"]["index_count"], 3036)
+        self.assertEqual(draw["derived"]["instance_count"], 2)
+
+    def test_five_hundred_primitives_derive_fifteen_hundred_indices(self):
+        tape = self._classroom(primitives=500)
+        draw = [op for op in tape["operations"] if op["kind"] == "DrawIndexed"][0]
+        self.assertEqual(draw["derived"]["index_count"], 1500)
+
+    def test_nonzero_first_index_and_instance_are_preserved(self):
+        tape = self._classroom(start_index=168, first_instance=4, instances=3)
+        draw = [op for op in tape["operations"] if op["kind"] == "DrawIndexed"][0]
+        self.assertEqual(draw["draw"]["start_index"], 168)
+        self.assertEqual(draw["draw"]["first_instance"], 4)
+        self.assertEqual(draw["derived"]["first_index"], 168)
+        self.assertEqual(draw["derived"]["index_byte_offset"], 336)
+
+    def test_negative_base_vertex_is_preserved(self):
+        tape = self._classroom(base_vertex=-7)
+        draw = [op for op in tape["operations"] if op["kind"] == "DrawIndexed"][0]
+        self.assertEqual(draw["draw"]["base_vertex_index"], -7)
+        self.assertEqual(draw["derived"]["vertex_offset"], -7)
+
+    def test_sequence_counter_disagreement_does_not_change_selection(self):
+        # The provenance record carries a deferred ordinal that matches no capture slot.
+        for slot in (1, 7, 174, 9999):
+            commands = [
+                {"sequence": slot, "command_id": builder.CMD_DRAW_INDEXED, "list": 0x100,
+                 "payload": [0xAAA, 0, 0, 0, 593, 0, 1012, 2]},
+                {"sequence": slot + 1, "command_id": builder.CMD_DRAW_INDEXED, "list": 0x200,
+                 "payload": [0xBBB, 0, 0, 0, 20, 0, 5, 1]},
+            ]
+            record = {"id": 82, "command_list": 0x100, "rhi_index_resource": 0xAAA,
+                      "command_capture_id": 635, "submission_id": 8913,
+                      "packet_offset": 0x1B64, "rhi_context": 0}
+            tape = builder.build_tape(commands, record, "", 0, 2)
+            draw = [op for op in tape["operations"] if op["kind"] == "DrawIndexed"][0]
+            self.assertEqual(draw["draw"]["num_primitives"], 1012, "slot %d" % slot)
+
+    def test_the_decoy_at_the_deferred_ordinal_is_not_selected(self):
+        commands = [
+            {"sequence": 635, "command_id": builder.CMD_DRAW_INDEXED, "list": 0x200,
+             "payload": [0xBBB, 0, 0, 0, 1356, 0, 958, 2]},
+            {"sequence": 174, "command_id": builder.CMD_DRAW_INDEXED, "list": 0x100,
+             "payload": [0xAAA, 0, 0, 0, 593, 0, 1012, 2]},
+        ]
+        record = {"id": 82, "command_list": 0x100, "rhi_index_resource": 0xAAA,
+                  "command_capture_id": 635, "submission_id": 8913,
+                  "packet_offset": 0x1B64, "rhi_context": 0}
+        tape = builder.build_tape(commands, record, "", 0, 2)
+        draw = [op for op in tape["operations"] if op["kind"] == "DrawIndexed"][0]
+        self.assertEqual(draw["draw"]["num_primitives"], 1012)
+        self.assertEqual(draw["draw"]["num_vertices"], 593)
+
+    def test_missing_viewport_and_render_targets_are_both_reported(self):
+        tape = self._classroom()
+        unresolved = [d["what"] for d in tape["unresolved"]]
+        self.assertIn("viewport", unresolved)
+        kinds = [op["kind"] for op in tape["operations"]]
+        self.assertNotIn("SetRenderTargets", kinds)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

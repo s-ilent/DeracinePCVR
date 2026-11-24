@@ -32,6 +32,17 @@ from pathlib import Path
 
 SCHEMA_VERSION = 1
 
+# Bounded tables. These mirror Core::SemanticTape's contract exactly: the live C++ exporter, this
+# builder and the standalone reader all enforce the same limits, so a tape one producer accepts is
+# one the others accept.
+#
+# 64 resources because the observed classroom draw needs 33 (one index buffer, one colour target,
+# one depth target and thirty vertex-stream references), and the widest draw the recovered command
+# family can describe needs at most 34. 64 is roughly twice that worst case.
+MAX_TAPE_RESOURCES = 64
+MAX_TAPE_OPERATIONS = 256
+MAX_TAPE_UNRESOLVED = 16
+
 # Command ids, matching Core::RhiCommandCapture.
 CMD_DRAW_INDEXED = 1
 CMD_DRAW = 2
@@ -180,6 +191,126 @@ def parse_log(path):
     return commands, provenance, image_sha, module_base
 
 
+def match_draw_command(commands, record):
+    """Resolve a provenance record to exactly one captured draw command.
+
+    Mirror of Core::SemanticTape::MatchDrawCommand. The live exporter and this builder call the
+    same algorithm, so they select the same draw.
+
+    The provenance record command_capture_id is the deferred-command ordinal the wrapper assigned
+    on its own thread, NOT the capture slot sequence number. Those are two different counters, so
+    comparing them selects the wrong command. The identity that is exact is the pair the RHI entry
+    recorded: the command list the draw was issued on, and the index-buffer resource it was given,
+    disambiguated by the semantic payload fields the record independently carries.
+
+    Returns (outcome, index) where outcome is "matched", "no_candidate", "ambiguous" or
+    "unusable_identity".
+    """
+    command_list = record.get("command_list", 0)
+    index_resource = record.get("rhi_index_resource", 0)
+    if command_list == 0 or index_resource == 0:
+        return "unusable_identity", None
+
+    primitive_type = record.get("ue4_primitive_type", 0)
+    num_primitives = record.get("num_primitives", 0)
+    num_instances = record.get("num_instances", 0)
+    num_vertices = record.get("num_vertices", 0)
+    start_index = record.get("start_index", 0)
+
+    found = []
+    for index, command in enumerate(commands):
+        if command["command_id"] != CMD_DRAW_INDEXED:
+            continue
+        if command["list"] != command_list:
+            continue
+        payload = command["payload"]
+        if payload[0] != index_resource:
+            continue
+        # Stage 2: the semantic fields the record knows must agree. A field the record does not
+        # carry is zero and is not compared.
+        if primitive_type != 0 and (payload[1] & 0xFFFFFFFF) != primitive_type:
+            continue
+        if num_primitives != 0 and (payload[6] & 0xFFFFFFFF) != num_primitives:
+            continue
+        if num_instances != 0 and (payload[7] & 0xFFFFFFFF) != num_instances:
+            continue
+        if num_vertices != 0 and (payload[4] & 0xFFFFFFFF) != num_vertices:
+            continue
+        if start_index != 0 and (payload[5] & 0xFFFFFFFF) != start_index:
+            continue
+        found.append(index)
+
+    if len(found) == 1:
+        return "matched", found[0]
+    if len(found) > 1:
+        return "ambiguous", None
+    return "no_candidate", None
+
+
+def validate_tape(tape):
+    """Structural validation, mirroring Core::SemanticTape::ValidateTape.
+
+    Returns a problem name, or "none". The producer calls this before writing, so a tape that fails
+    here is a producer defect rather than a consumer problem.
+    """
+    if tape["schema_version"] != SCHEMA_VERSION:
+        return "schema_mismatch"
+    if len(tape["operations"]) > MAX_TAPE_OPERATIONS:
+        return "operation_capacity_exceeded"
+    if len(tape["resources"]) > MAX_TAPE_RESOURCES:
+        return "resource_capacity_exceeded"
+    if len(tape["unresolved"]) > MAX_TAPE_UNRESOLVED:
+        return "resource_capacity_exceeded"
+
+    ids = set()
+    for resource in tape["resources"]:
+        if resource["id"] == 0 or resource["id"] in ids:
+            return "duplicate_resource_id"
+        ids.add(resource["id"])
+
+    by_id = {resource["id"]: resource for resource in tape["resources"]}
+    for operation in tape["operations"]:
+        kind = operation["kind"]
+        if kind == "DrawIndexed":
+            ref = operation["draw"]["index_buffer_resource"]
+            if ref == 0:
+                return "index_resource_missing"
+            if ref not in by_id:
+                return "dangling_resource_reference"
+        if kind in ("BindIndexBuffer", "BindVertexBuffers"):
+            ref = operation.get("resource", 0)
+            if ref != 0 and ref not in by_id:
+                return "dangling_resource_reference"
+        if kind == "SetRenderTargets":
+            for target in operation.get("color_targets", []):
+                if target != 0 and target not in by_id:
+                    return "dangling_resource_reference"
+            depth = operation.get("depth_target", 0)
+            if depth != 0 and depth not in by_id:
+                return "dangling_resource_reference"
+
+    draws = [op for op in tape["operations"] if op["kind"] == "DrawIndexed"]
+    if len(draws) > 1:
+        return "operation_out_of_order"
+    if not draws:
+        return "no_draw"
+
+    # The stored derived draw must agree with the semantic payload. The payload is authoritative.
+    draw = draws[0]
+    index = by_id.get(draw["draw"]["index_buffer_resource"])
+    if index is not None:
+        expected = derive_draw(draw["draw"], index["element_size"])
+        stored = draw["derived"]
+        if expected["valid"] != stored["valid"]:
+            return "derived_inconsistent"
+        if expected["valid"]:
+            for key in ("index_count", "first_index", "vertex_offset", "instance_count",
+                        "index_byte_offset"):
+                if expected[key] != stored[key]:
+                    return "derived_inconsistent"
+    return "none"
+
+
 def build_tape(commands, record, image_sha, module_base, index_element_size):
     """Build the tape for one provenance record."""
     tape = {
@@ -205,31 +336,21 @@ def build_tape(commands, record, image_sha, module_base, index_element_size):
     # the draw was issued on, and the index-buffer resource the draw was given. Both come from the
     # same invocation, and a second draw sharing both would be ambiguous rather than silently
     # resolved.
-    candidates = [
-        index
-        for index, command in enumerate(commands)
-        if command["command_id"] == CMD_DRAW_INDEXED
-        and command["list"] == record["command_list"]
-        and command["payload"][0] == record["rhi_index_resource"]
-    ]
-    if not candidates:
+    outcome, draw_index = match_draw_command(commands, record)
+    if outcome != "matched":
         raise SystemExit(
-            "no deferred draw command matches provenance %d (list 0x%x, index resource 0x%x)"
-            % (record["id"], record["command_list"], record["rhi_index_resource"])
+            "the deferred draw command for provenance %d could not be resolved: %s"
+            % (record["id"], outcome)
         )
-    if len(candidates) > 1:
-        raise SystemExit(
-            "provenance %d is ambiguous: %d deferred draw commands share list 0x%x and index "
-            "resource 0x%x"
-            % (record["id"], len(candidates), record["command_list"],
-               record["rhi_index_resource"])
-        )
-    draw_index = candidates[0]
 
     draw_command = commands[draw_index]
     draw_list = draw_command["list"]
 
     # Resource ids are assigned in first-reference order, so the tape is deterministic.
+    #
+    # A repeated reference to the same guest identity reuses its id and consumes no further slot.
+    # Capacity exhaustion is a hard failure: returning a zero id would produce a tape that still
+    # validates structurally while referencing an identity it does not carry.
     resource_by_guest = {}
     next_id = [1]
 
@@ -238,6 +359,10 @@ def build_tape(commands, record, image_sha, module_base, index_element_size):
             return 0
         if guest in resource_by_guest:
             return resource_by_guest[guest]
+        if len(tape["resources"]) >= MAX_TAPE_RESOURCES:
+            raise SystemExit(
+                "the tape exceeded its resource capacity of %d entries" % MAX_TAPE_RESOURCES
+            )
         rid = next_id[0]
         next_id[0] += 1
         tape["resources"].append(
@@ -372,6 +497,12 @@ def build_tape(commands, record, image_sha, module_base, index_element_size):
             "reason": "texture and sampler binding is SC-10 scope",
         }
     )
+
+    # Validate the producer's own output before it is serialized. A tape that fails here is a
+    # producer defect, not a consumer problem, so it is refused rather than written.
+    problem = validate_tape(tape)
+    if problem != "none":
+        raise SystemExit("the built tape is not valid: %s" % problem)
     return tape
 
 

@@ -148,8 +148,44 @@ enum class Problem : u8 {
     DuplicateResourceId,
     DanglingResourceReference,
     OperationOutOfOrder,
+    /// The stored derived draw contradicts the semantic payload it claims to come from.
+    DerivedInconsistent,
+    /// The tape carries more resources than the shared capacity contract allows.
+    ResourceCapacityExceeded,
+    /// The tape carries more operations than the shared capacity contract allows.
+    OperationCapacityExceeded,
     ReadFailed,
 };
+
+/// Bounded tables, mirroring Core::SemanticTape's contract. The reader enforces the same limits as
+/// both producers, so a tape one side accepts is one the others accept.
+inline constexpr std::size_t kMaxTapeResources = 64;
+inline constexpr std::size_t kMaxTapeOperations = 256;
+inline constexpr std::size_t kMaxTapeUnresolved = 16;
+
+/// UE4 EPrimitiveType values this reader converts. These are the UE4 enum's own values, not the AMD
+/// hardware topology: UE4 begins PT_TriangleList = 0, while the GPU numbers triangle list as 4.
+inline constexpr u32 kPrimitiveTypeTriangleList = 0;
+inline constexpr u32 kPrimitiveTypeTriangleStrip = 1;
+
+/// Indices consumed by one primitive of the given topology, or 0 when it is not converted.
+[[nodiscard]] constexpr u32 IndicesPerPrimitive(u32 primitive_type) {
+    switch (primitive_type) {
+    case kPrimitiveTypeTriangleList:
+        return 3;
+    case kPrimitiveTypeTriangleStrip:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+/// Recomputes the effective draw arguments from the authoritative semantic payload.
+///
+/// The reader does not trust the serialized derived values. It recomputes them here and compares,
+/// so a tape whose stored values contradict its own payload is refused rather than executed on a
+/// number the tape disproves.
+[[nodiscard]] DerivedDraw DeriveDraw(const DrawPayload& payload, u32 index_element_size);
 
 [[nodiscard]] std::string_view ProblemName(Problem problem);
 
