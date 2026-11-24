@@ -455,10 +455,14 @@ public:
     VulkanSink(ReplayContext& ctx, VkCommandBuffer cmd, VkPipeline pipeline,
                VkPipelineLayout layout, VkBuffer vertex_buffer, VkBuffer index_buffer,
                u32 index_element_size, const Mat4& mvp, VkDescriptorSet descriptor_set = {},
-               bool textured = false)
+               bool textured = false, bool bind_descriptors = false,
+               std::vector<u8> push_bytes = {}, u32 push_offset = 0, u32 push_size = 0,
+               u32 push_stages = 0)
         : ctx_(ctx), cmd_(cmd), pipeline_(pipeline), layout_(layout), vertex_buffer_(vertex_buffer),
           index_buffer_(index_buffer), index_element_size_(index_element_size), mvp_(mvp),
-          descriptor_set_(descriptor_set), textured_(textured) {}
+          descriptor_set_(descriptor_set), textured_(textured), bind_descriptors_(bind_descriptors),
+          push_bytes_(std::move(push_bytes)), push_offset_(push_offset), push_size_(push_size),
+          push_stages_(push_stages) {}
 
     void BeginFrame() override {
         // The tape carries no SetGraphicsPipeline operation: the bound-shader-state command is not
@@ -466,13 +470,23 @@ public:
         // the caller reports it as substituted state rather than letting the draw silently produce
         // nothing.
         vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
-        // The sampled image is bound from the descriptor set the package's texture and sampler
-        // produced. The draw arguments still come from the tape.
-        if (textured_ && descriptor_set_ != VK_NULL_HANDLE) {
+        // A descriptor set is bound whenever the pipeline layout requires one. That is a property
+        // of the shaders, not of whether a diagnostic texture happens to exist: an effective shader
+        // that needs only a uniform buffer has no texture at all, and gating the bind on texturing
+        // would leave its set unbound.
+        if (bind_descriptors_ && descriptor_set_ != VK_NULL_HANDLE) {
             vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1,
                                     &descriptor_set_, 0, nullptr);
         }
-        vkCmdPushConstants(cmd_, layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(mvp_.m), mvp_.m);
+        // The push constants come from the captured state in effective mode. The diagnostic MVP is
+        // a substitute and is pushed only when no captured range was supplied.
+        if (push_size_ != 0) {
+            vkCmdPushConstants(cmd_, layout_, push_stages_, push_offset_, push_size_,
+                               push_bytes_.data());
+        } else {
+            vkCmdPushConstants(cmd_, layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(mvp_.m),
+                               mvp_.m);
+        }
         // The tape carries no BindIndexBuffer operation: the recovered command cluster has no
         // index-buffer binding command, because the PS4 RHI receives the index buffer as an argument
         // to the draw rather than as separate state. The buffer is bound here from the tape's index
@@ -581,6 +595,13 @@ private:
     VkPipelineLayout layout_{};
     VkDescriptorSet descriptor_set_{};
     bool textured_{};
+    /// Whether the pipeline layout requires a descriptor set, independent of diagnostic texturing.
+    bool bind_descriptors_{};
+    /// The captured push-constant bytes, offset, size and stage mask.
+    std::vector<u8> push_bytes_;
+    u32 push_offset_{};
+    u32 push_size_{};
+    u32 push_stages_{};
     VkBuffer vertex_buffer_{};
     VkBuffer index_buffer_{};
     u32 index_element_size_{2};
@@ -1511,10 +1532,26 @@ int main(int argc, char** argv) {
     blend.attachmentCount = 1;
     blend.pAttachments = &blend_attachment;
 
+    // The push-constant range is a property of the pipeline layout. In effective mode it comes from
+    // what the modules declare, and the captured bytes must cover it; a package that did not
+    // capture enough is refused rather than pushed with a substitute.
     VkPushConstantRange push_range{};
-    push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-    push_range.offset = 0;
-    push_range.size = sizeof(float) * 16;
+    if (shader_mode_effective && effective_shaders.push_constant_size != 0) {
+        push_range.stageFlags = effective_shaders.push_constant_stages;
+        push_range.offset = effective_shaders.push_constant_offset;
+        push_range.size = effective_shaders.push_constant_size;
+        if (effective_shaders.push_constant_bytes.size() <
+            static_cast<size_t>(push_range.offset) + push_range.size) {
+            std::cerr << "the modules declare a push-constant range of " << push_range.size
+                      << " bytes at offset " << push_range.offset << ", but the package captured "
+                      << effective_shaders.push_constant_bytes.size() << " bytes\n";
+            return 1;
+        }
+    } else {
+        push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        push_range.offset = 0;
+        push_range.size = sizeof(float) * 16;
+    }
 
     VkDescriptorSetLayout descriptor_layout{};
     VkDescriptorPool descriptor_pool{};
@@ -1987,8 +2024,23 @@ int main(int argc, char** argv) {
         rp_begin.pClearValues = clears;
         vkCmdBeginRenderPass(cmd, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
 
+        // A descriptor set is bound when the pipeline layout declares one, which in effective mode
+        // is whenever the modules declare any binding. Diagnostic texturing is a separate concern.
+        const bool bind_descriptors =
+            shader_mode_effective ? !effective_shaders.bindings.empty() : textured_mode;
+        std::vector<u8> push_bytes;
+        u32 push_offset = 0;
+        u32 push_size = 0;
+        u32 push_stages = 0;
+        if (shader_mode_effective && effective_shaders.push_constant_size != 0) {
+            push_bytes = effective_shaders.push_constant_bytes;
+            push_offset = effective_shaders.push_constant_offset;
+            push_size = effective_shaders.push_constant_size;
+            push_stages = effective_shaders.push_constant_stages;
+        }
         VulkanSink sink{ctx, cmd, pipeline, pipeline_layout, vertex_buffer, index_buffer,
-                        index_width, mvp, descriptor_set, textured_mode};
+                        index_width, mvp, descriptor_set, textured_mode, bind_descriptors,
+                        std::move(push_bytes), push_offset, push_size, push_stages};
         tape::ExecutionReport report{};
         std::string exec_error;
         if (!tape::Execute(tape, sink, report, exec_error, substitutions)) {
