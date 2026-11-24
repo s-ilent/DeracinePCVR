@@ -97,6 +97,16 @@ public:
     /// Schedules a copy of pending images for download back to CPU memory.
     void ProcessDownloadImages();
 
+    /// Copies one image's selected subresources into a host-visible buffer and hands the bytes to
+    /// the texture capture, through the same synchronized path the renderer uses to download an
+    /// image. Returns false when the image cannot legally be copied.
+    ///
+    /// This is a diagnostic observation, not a rendering path: it is only reached when the capture
+    /// is opted in, and it never runs for an image the caller did not select.
+    bool SnapshotImageForCapture(ImageId image_id, u32 mip_first, u32 mip_count, u32 layer_first,
+                                 u32 layer_count, u32 aspect, u64 provenance_id,
+                                 u32 vk_binding);
+
     /// Retrieves the image handle of the image with the provided attributes.
     [[nodiscard]] ImageId FindImage(ImageDesc& desc, bool exact_fmt = false);
 
@@ -153,6 +163,10 @@ public:
     /// Retrieves the sampler that matches the provided S# descriptor.
     [[nodiscard]] vk::Sampler GetSampler(const AmdGpu::Sampler& sampler,
                                          AmdGpu::BorderColorBuffer border_color_base);
+
+    /// Retrieves the cached sampler object, so a draw-time observer can read the state the
+    /// VkSampler was built from rather than re-deriving it.
+    [[nodiscard]] const Sampler& GetSamplerObject(const AmdGpu::Sampler& sampler);
 
     /// Retrieves the image with the specified id.
     [[nodiscard]] Image& GetImage(ImageId id) {

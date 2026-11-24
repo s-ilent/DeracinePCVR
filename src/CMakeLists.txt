@@ -1028,6 +1028,7 @@ set(CORE src/core/aerolib/stubs.cpp
           src/core/rhi_entry_probe.cpp
     src/core/draw_package.cpp
     src/core/shader_param_capture.cpp
+    src/core/texture_capture.cpp
     src/core/vertex_input_capture.cpp
           src/core/rhi_entry_probe.h
          src/core/memory.cpp

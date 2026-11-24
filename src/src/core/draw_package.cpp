@@ -103,6 +103,20 @@ bool WritePackage(const Package& package, const std::string& directory) noexcept
         }
         blob.close();
 
+        // Texture payload goes in its own sidecar, so a reader can stream it separately and a
+        // geometry-only consumer never has to skip past it.
+        if (!package.texture_bytes.empty()) {
+            const auto texture_path = dir / "textures.bin";
+            std::ofstream texture_blob{texture_path, std::ios::binary | std::ios::trunc};
+            if (!texture_blob) {
+                LOG_WARNING(Core_Linker, "Draw package refused: cannot open {}",
+                            texture_path.string());
+                return false;
+            }
+            texture_blob.write(reinterpret_cast<const char*>(package.texture_bytes.data()),
+                               static_cast<std::streamsize>(package.texture_bytes.size()));
+        }
+
         std::ostringstream json;
         json << "{\n";
         json << "  \"schema_version\": " << package.schema_version << ",\n";
@@ -219,19 +233,108 @@ bool WritePackage(const Package& package, const std::string& directory) noexcept
         json << "    \"nonfinite_vertices\": " << geo.nonfinite_vertices << "\n";
         json << "  },\n";
 
+        json << "  \"textures\": [\n";
+        for (size_t i = 0; i < package.textures.size(); ++i) {
+            const auto& texture = package.textures[i];
+            json << "    {\n";
+            json << "      \"id\": " << texture.id << ",\n";
+            json << "      \"vk_binding\": " << texture.vk_binding << ",\n";
+            json << "      \"stage\": " << texture.stage << ",\n";
+            json << "      \"stage_hash\": " << texture.stage_hash << ",\n";
+            json << "      \"guest_address\": " << texture.guest_address << ",\n";
+            json << "      \"image_id\": " << texture.image_id << ",\n";
+            json << "      \"image_uid\": " << texture.image_uid << ",\n";
+            json << "      \"image_format\": " << texture.image_format << ",\n";
+            json << "      \"view_format\": " << texture.view_format << ",\n";
+            json << "      \"aspect\": " << texture.aspect << ",\n";
+            json << "      \"mip_first\": " << texture.mip_first << ",\n";
+            json << "      \"mip_count\": " << texture.mip_count << ",\n";
+            json << "      \"layer_first\": " << texture.layer_first << ",\n";
+            json << "      \"layer_count\": " << texture.layer_count << ",\n";
+            json << "      \"width\": " << texture.width << ",\n";
+            json << "      \"height\": " << texture.height << ",\n";
+            json << "      \"depth\": " << texture.depth << ",\n";
+            json << "      \"samples\": " << texture.samples << ",\n";
+            json << "      \"sampler_id\": " << texture.sampler_id << ",\n";
+            json << "      \"status\": \"" << StatusName(texture.status) << "\",\n";
+            json << "      \"limitation\": \"" << EscapeJson(texture.limitation) << "\",\n";
+            json << "      \"subresources\": [\n";
+            for (size_t j = 0; j < texture.subresources.size(); ++j) {
+                const auto& sub = texture.subresources[j];
+                json << "        {\"mip\": " << sub.mip << ", \"layer\": " << sub.layer
+                     << ", \"width\": " << sub.width << ", \"height\": " << sub.height
+                     << ", \"row_pitch\": " << sub.row_pitch
+                     << ", \"blob_offset\": " << sub.blob_offset
+                     << ", \"byte_length\": " << sub.byte_length
+                     << ", \"content_hash\": " << sub.content_hash << "}"
+                     << (j + 1 < texture.subresources.size() ? "," : "") << "\n";
+            }
+            json << "      ]\n";
+            json << "    }" << (i + 1 < package.textures.size() ? "," : "") << "\n";
+        }
+        json << "  ],\n";
+
+        json << "  \"samplers\": [\n";
+        for (size_t i = 0; i < package.samplers.size(); ++i) {
+            const auto& sampler = package.samplers[i];
+            json << "    {\n";
+            json << "      \"id\": " << sampler.id << ",\n";
+            json << "      \"guest_hash\": " << sampler.guest_hash << ",\n";
+            json << "      \"mag_filter\": " << sampler.mag_filter << ",\n";
+            json << "      \"min_filter\": " << sampler.min_filter << ",\n";
+            json << "      \"mip_filter\": " << sampler.mip_filter << ",\n";
+            json << "      \"address_u\": " << sampler.address_u << ",\n";
+            json << "      \"address_v\": " << sampler.address_v << ",\n";
+            json << "      \"address_w\": " << sampler.address_w << ",\n";
+            json << "      \"lod_bias\": " << sampler.lod_bias << ",\n";
+            json << "      \"min_lod\": " << sampler.min_lod << ",\n";
+            json << "      \"max_lod\": " << sampler.max_lod << ",\n";
+            json << "      \"anisotropy_enable\": "
+                 << (sampler.anisotropy_enable ? "true" : "false") << ",\n";
+            json << "      \"max_anisotropy\": " << sampler.max_anisotropy << ",\n";
+            json << "      \"compare_enable\": "
+                 << (sampler.compare_enable ? "true" : "false") << ",\n";
+            json << "      \"compare_op\": " << sampler.compare_op << ",\n";
+            json << "      \"border_color\": " << sampler.border_color << ",\n";
+            json << "      \"unnormalized_coordinates\": "
+                 << (sampler.unnormalized_coordinates ? "true" : "false") << "\n";
+            json << "    }" << (i + 1 < package.samplers.size() ? "," : "") << "\n";
+        }
+        json << "  ],\n";
+
+        json << "  \"texture_coordinate\": {\n";
+        json << "    \"binding\": " << package.texture_coordinate.binding << ",\n";
+        json << "    \"component_u\": " << package.texture_coordinate.component_u << ",\n";
+        json << "    \"component_v\": " << package.texture_coordinate.component_v << ",\n";
+        json << "    \"evidence\": \"" << EscapeJson(package.texture_coordinate.evidence)
+             << "\",\n";
+        json << "    \"min_u\": " << package.texture_coordinate.min_u << ",\n";
+        json << "    \"max_u\": " << package.texture_coordinate.max_u << ",\n";
+        json << "    \"min_v\": " << package.texture_coordinate.min_v << ",\n";
+        json << "    \"max_v\": " << package.texture_coordinate.max_v << ",\n";
+        json << "    \"looks_like_uv\": "
+             << (package.texture_coordinate.looks_like_uv ? "true" : "false") << "\n";
+        json << "  },\n";
+
         json << "  \"readiness\": {\n";
         json << "    \"shader_buffers_ready\": "
              << (package.readiness.shader_buffers_ready ? "true" : "false") << ",\n";
         json << "    \"geometry_ready\": "
              << (package.readiness.geometry_ready ? "true" : "false") << ",\n";
-        json << "    \"textures_ready\": "
-             << (package.readiness.textures_ready ? "true" : "false") << ",\n";
+        json << "    \"texture_binding_ready\": "
+             << (package.readiness.texture_binding_ready ? "true" : "false") << ",\n";
+        json << "    \"texture_contents_ready\": "
+             << (package.readiness.texture_contents_ready ? "true" : "false") << ",\n";
+        json << "    \"sampler_ready\": "
+             << (package.readiness.sampler_ready ? "true" : "false") << ",\n";
         json << "    \"pipeline_state_ready\": "
              << (package.readiness.pipeline_state_ready ? "true" : "false") << ",\n";
         json << "    \"diagnostic_geometry_replay_ready\": "
              << (package.readiness.diagnostic_geometry_replay_ready ? "true" : "false") << ",\n";
-        json << "    \"full_draw_replay_ready\": "
-             << (package.readiness.full_draw_replay_ready ? "true" : "false") << ",\n";
+        json << "    \"diagnostic_textured_replay_ready\": "
+             << (package.readiness.diagnostic_textured_replay_ready ? "true" : "false") << ",\n";
+        json << "    \"original_material_ready\": "
+             << (package.readiness.original_material_ready ? "true" : "false") << ",\n";
         json << "    \"limitation\": \"" << EscapeJson(package.readiness.limitation) << "\"\n";
         json << "  }\n";
         json << "}\n";

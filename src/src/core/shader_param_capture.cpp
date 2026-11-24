@@ -18,6 +18,7 @@
 
 #include "common/logging/log.h"
 #include "core/draw_package.h"
+#include "core/texture_capture.h"
 
 namespace Core::ShaderParamCapture {
 
@@ -535,6 +536,37 @@ void ExportShaderParams() noexcept {
 /// Writes one package for the first draw that has at least one host-verified resource. A package
 /// is only produced when it would be internally consistent, so a reader never sees a half-built
 /// one.
+/// Converts an IEEE 754 binary16 value to float. A UV stored as 16-bit float is common in UE4
+/// material streams, and reading it as anything else would be a guess.
+float HalfToFloat(u16 half) noexcept {
+    const u32 sign = (half >> 15) & 0x1u;
+    const u32 exponent = (half >> 10) & 0x1Fu;
+    const u32 mantissa = half & 0x3FFu;
+    u32 bits = 0;
+    if (exponent == 0) {
+        if (mantissa == 0) {
+            bits = sign << 31;
+        } else {
+            // Subnormal: normalize it.
+            u32 e = 0;
+            u32 m = mantissa;
+            while ((m & 0x400u) == 0) {
+                m <<= 1;
+                ++e;
+            }
+            m &= 0x3FFu;
+            bits = (sign << 31) | ((127 - 15 - e + 1) << 23) | (m << 13);
+        }
+    } else if (exponent == 0x1F) {
+        bits = (sign << 31) | 0x7F800000u | (mantissa << 13);
+    } else {
+        bits = (sign << 31) | ((exponent - 15 + 127) << 23) | (mantissa << 13);
+    }
+    float out = 0.0f;
+    std::memcpy(&out, &bits, sizeof(out));
+    return out;
+}
+
 void WriteFirstPackage(const char* directory) noexcept {
     try {
         std::scoped_lock lock{g_state.mutex};
@@ -605,6 +637,17 @@ void WriteFirstPackage(const char* directory) noexcept {
             // Weight three-dimensional structure heavily, so a small scene mesh outranks a large
             // screen-space element.
             score += static_cast<u64>(three_d_streams) * 1024ull * 1024ull;
+            // A draw whose texture content was actually captured is worth more than one whose
+            // texture is only a binding, because only the former can be replayed textured. The
+            // weight is large but not absolute: a draw with no geometry still cannot be replayed,
+            // so the geometry requirement above remains the gate.
+            //
+            // The weight is applied only to a draw that also has three-dimensional geometry. A
+            // screen-space quad with a captured texture would otherwise outrank a scene mesh, and
+            // a textured replay of a quad proves nothing about the recovered material path.
+            if (three_d_streams >= 2 && TextureCapture::HasContentFor(candidate.provenance_id)) {
+                score += 4ull * 1024ull * 1024ull * 1024ull;
+            }
             if (score > best_score) {
                 best_score = score;
                 best_index = i;
@@ -636,6 +679,7 @@ void WriteFirstPackage(const char* directory) noexcept {
             std::map<std::tuple<u64, u64, u64>, u32> by_content;
             u32 next_id = 1;
             u64 retained = 0;
+            u64 blob_offset = 0;
 
             for (u32 b = 0; b < draw.binding_count && b < MaxBindingsPerDraw; ++b) {
                 const auto& binding = draw.bindings[b];
@@ -834,6 +878,93 @@ void WriteFirstPackage(const char* directory) noexcept {
                     "largest second-axis span among 32-bit float attributes";
                 geo.is_three_dimensional = best_span > 1.0f;
 
+                // Texture coordinates: a two-component float attribute whose values sit in or
+                // near [0,1] on both axes, on a binding that is not the position. A normal or a
+                // tangent is normalized but three- or four-component; a colour is eight-bit. The
+                // range test is what separates a UV from those, and the evidence says so.
+                auto& uv = package.texture_coordinate;
+                uv.min_u = uv.min_v = 1e30f;
+                uv.max_u = uv.max_v = -1e30f;
+                u32 uv_binding = 0;
+                float uv_score = -1.0f;
+                for (const auto& vertex : package.vertex_bindings) {
+                    if (vertex.resource_ref == 0)
+                        continue;
+                    // A UV is usually its own two-component attribute, but a material can pack it
+                    // into a four-component stream alongside something else. Both are searched;
+                    // the range test is what decides, not the component count.
+                    if (vertex.element_count != 2 && vertex.element_count != 4)
+                        continue;
+                    // Two-component formats that can hold a UV: 32-bit float, 16-bit float, and
+                    // 16-bit normalized. A title screen uses whichever the material asked for, so
+                    // restricting to 32-bit float would miss most of them.
+                    const bool is_f32 = vertex.vk_format == 103;
+                    // R16G16_SFLOAT and R16G16B16A16_SFLOAT are both half-float streams; a
+                    // material commonly packs UV0 and UV1 into the four-component one.
+                    const bool is_f16 = vertex.vk_format == 83 || vertex.vk_format == 97;
+                    const bool is_unorm16 = vertex.vk_format == 84;
+                    if (!is_f32 && !is_f16 && !is_unorm16) {
+                        continue;
+                    }
+                    if (vertex.binding == geo.position_binding)
+                        continue;
+                    const auto& resource = package.resources[vertex.resource_ref - 1];
+                    if (vertex.stride == 0 || resource.bytes.size() < vertex.stride)
+                        continue;
+                    const u32 count = static_cast<u32>(resource.bytes.size() / vertex.stride);
+                    const u32 components = vertex.element_count;
+                    const u32 width = is_f32 ? 4u : 2u;
+                    std::array<float, 4> lo{1e30f, 1e30f, 1e30f, 1e30f};
+                    std::array<float, 4> hi{-1e30f, -1e30f, -1e30f, -1e30f};
+                    for (u32 v = 0; v < count; ++v) {
+                        for (u32 c = 0; c < components; ++c) {
+                            float value = 0.0f;
+                            if (is_f32) {
+                                std::memcpy(&value,
+                                            resource.bytes.data() + v * vertex.stride + c * 4,
+                                            sizeof(value));
+                            } else {
+                                u16 raw = 0;
+                                std::memcpy(&raw,
+                                            resource.bytes.data() + v * vertex.stride + c * 2,
+                                            sizeof(raw));
+                                value = is_unorm16 ? static_cast<float>(raw) / 65535.0f
+                                                   : HalfToFloat(raw);
+                            }
+                            if (!std::isfinite(value))
+                                continue;
+                            lo[c] = std::min(lo[c], value);
+                            hi[c] = std::max(hi[c], value);
+                        }
+                    }
+                    // Score how well a component pair matches normalized coordinates: both axes
+                    // inside a small margin around [0,1], and not degenerate.
+                    const auto in_unit = [](float a, float b) {
+                        return a >= -0.05f && b <= 1.05f && (b - a) > 0.01f;
+                    };
+                    for (u32 pair = 0; pair + 1 < components; pair += 2) {
+                        const float score =
+                            in_unit(lo[pair], hi[pair]) && in_unit(lo[pair + 1], hi[pair + 1])
+                                ? 1.0f
+                                : 0.0f;
+                        if (score > uv_score) {
+                            uv_score = score;
+                            uv_binding = vertex.binding;
+                            uv.component_u = pair;
+                            uv.component_v = pair + 1;
+                            uv.min_u = lo[pair];
+                            uv.max_u = hi[pair];
+                            uv.min_v = lo[pair + 1];
+                            uv.max_v = hi[pair + 1];
+                        }
+                    }
+                }
+                uv.binding = uv_binding;
+                uv.looks_like_uv = uv_score > 0.0f;
+                uv.evidence = uv.looks_like_uv
+                                  ? "two-component float attribute with both axes inside [0,1]"
+                                  : "no two-component float attribute had a normalized range";
+
                 // Triangle statistics from the captured indices.
                 if (package.has_index_binding && package.index_binding.resource_ref != 0) {
                     const auto& index_resource =
@@ -898,17 +1029,126 @@ void WriteFirstPackage(const char* directory) noexcept {
                 }
             }
 
-            // Textures and pipeline state are not captured by this phase, so those dimensions stay
-            // false and the limitation says why.
-            package.readiness.textures_ready = false;
+            // Textures: take the records the binding path observed for this draw, and give each
+            // captured subresource its own blob range.
+            {
+                const auto images = TextureCapture::Images();
+                const auto samplers = TextureCapture::Samplers();
+                for (const auto& sampler : samplers) {
+                    DrawPackage::Sampler out{};
+                    out.id = sampler.id;
+                    out.guest_hash = sampler.guest_hash;
+                    out.mag_filter = sampler.mag_filter;
+                    out.min_filter = sampler.min_filter;
+                    out.mip_filter = sampler.mip_filter;
+                    out.address_u = sampler.address_u;
+                    out.address_v = sampler.address_v;
+                    out.address_w = sampler.address_w;
+                    out.lod_bias = sampler.lod_bias;
+                    out.min_lod = sampler.min_lod;
+                    out.max_lod = sampler.max_lod;
+                    out.anisotropy_enable = sampler.anisotropy_enable;
+                    out.max_anisotropy = sampler.max_anisotropy;
+                    out.compare_enable = sampler.compare_enable;
+                    out.compare_op = sampler.compare_op;
+                    out.border_color = sampler.border_color;
+                    out.unnormalized_coordinates = sampler.unnormalized_coordinates;
+                    package.samplers.push_back(out);
+                }
+
+                u32 next_texture_id = 1;
+                for (const auto& image : images) {
+                    if (image.provenance_id != draw.provenance_id)
+                        continue;
+                    DrawPackage::Texture out{};
+                    out.id = next_texture_id++;
+                    out.vk_binding = image.vk_binding;
+                    out.stage = image.stage;
+                    out.stage_hash = image.stage_hash;
+                    out.guest_address = image.guest_address;
+                    out.image_id = image.image_id;
+                    out.image_uid = image.image_uid;
+                    out.image_format = image.image_format;
+                    out.view_format = image.view_format;
+                    out.aspect = image.aspect;
+                    out.mip_first = image.mip_first;
+                    out.mip_count = image.mip_count;
+                    out.layer_first = image.layer_first;
+                    out.layer_count = image.layer_count;
+                    out.width = image.width;
+                    out.height = image.height;
+                    out.depth = image.depth;
+                    out.samples = image.samples;
+                    out.status = image.status;
+
+                    if (!image.bytes.empty() && image.row_pitch != 0) {
+                        DrawPackage::TextureSubresource sub{};
+                        sub.mip = image.mip_first;
+                        sub.layer = image.layer_first;
+                        sub.width = image.width;
+                        sub.height = image.height;
+                        sub.row_pitch = image.row_pitch;
+                        sub.blob_offset = blob_offset;
+                        sub.byte_length = image.bytes.size();
+                        sub.content_hash = image.content_hash;
+                        blob_offset += image.bytes.size();
+                        retained += image.bytes.size();
+                        package.texture_bytes.insert(package.texture_bytes.end(),
+                                                     image.bytes.begin(), image.bytes.end());
+                        out.subresources.push_back(sub);
+                    } else if (image.status ==
+                               static_cast<u8>(TextureCapture::ContentStatus::Unsupported)) {
+                        out.limitation = "the image cannot be copied safely";
+                    } else {
+                        out.limitation = "content was not captured";
+                    }
+                    package.textures.push_back(std::move(out));
+                }
+            }
+
+            package.readiness.texture_binding_ready = !package.textures.empty();
+            // Content readiness means every texture the draw binds has captured bytes, not merely
+            // that one of them does. A draw with one captured and one uncaptured texture cannot be
+            // replayed textured, so claiming readiness for it would be wrong.
+            package.readiness.texture_contents_ready = !package.textures.empty();
+            for (const auto& texture : package.textures) {
+                if (texture.subresources.empty()) {
+                    package.readiness.texture_contents_ready = false;
+                    break;
+                }
+            }
+            package.readiness.sampler_ready = !package.samplers.empty();
             package.readiness.pipeline_state_ready = false;
             package.readiness.diagnostic_geometry_replay_ready =
                 package.readiness.geometry_ready;
-            package.readiness.full_draw_replay_ready = false;
-            if (package.readiness.diagnostic_geometry_replay_ready) {
+            // A diagnostic textured replay needs one usable texture, not every bound texture. The
+            // strict `texture_contents_ready` stays false while any binding is uncaptured, so the
+            // two claims stay distinct: a diagnostic can sample what was captured, but the draw's
+            // original material cannot be reproduced from an incomplete set.
+            bool any_texture_content = false;
+            for (const auto& texture : package.textures) {
+                if (!texture.subresources.empty()) {
+                    any_texture_content = true;
+                    break;
+                }
+            }
+            // A textured replay of a screen-space quad would prove nothing about the recovered
+            // material path, so the geometry must also be three-dimensional.
+            package.readiness.diagnostic_textured_replay_ready =
+                package.readiness.diagnostic_geometry_replay_ready && any_texture_content &&
+                package.readiness.sampler_ready && package.texture_coordinate.looks_like_uv &&
+                package.geometry.is_three_dimensional;
+            package.readiness.original_material_ready = false;
+
+            if (package.readiness.diagnostic_textured_replay_ready) {
                 package.readiness.limitation =
-                    "diagnostic geometry replay only: no textures, no original shaders, no "
-                    "material state";
+                    package.readiness.texture_contents_ready
+                        ? "diagnostic textured replay only: no original shaders, no material state"
+                        : "diagnostic textured replay from the captured texture only: another "
+                          "binding on this draw was not captured";
+            } else if (package.readiness.diagnostic_geometry_replay_ready) {
+                package.readiness.limitation =
+                    "diagnostic geometry replay only: no captured texture content";
             } else {
                 package.readiness.limitation = "geometry is incomplete or not host-verified";
             }

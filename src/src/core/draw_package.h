@@ -121,12 +121,19 @@ struct IndexBinding {
 struct Readiness {
     bool shader_buffers_ready{};
     bool geometry_ready{};
-    bool textures_ready{};
+    /// A texture binding was observed and its identity recorded.
+    bool texture_binding_ready{};
+    /// The bound image's contents were copied and hashed.
+    bool texture_contents_ready{};
+    /// The sampler state the production construction produced was recorded.
+    bool sampler_ready{};
     bool pipeline_state_ready{};
     /// Enough to run a diagnostic position-only replay of the captured geometry.
     bool diagnostic_geometry_replay_ready{};
+    /// Enough to run a diagnostic replay that samples the captured texture.
+    bool diagnostic_textured_replay_ready{};
     /// Enough to reproduce the draw with its original materials.
-    bool full_draw_replay_ready{};
+    bool original_material_ready{};
     /// Why the highest claimed level is not higher.
     std::string limitation;
 };
@@ -153,6 +160,96 @@ struct GeometryInterpretation {
     u32 nonfinite_vertices{};
 };
 
+/// One captured subresource of a texture: a mip level of an array layer, in the view's format.
+struct TextureSubresource {
+    u32 mip{};
+    u32 layer{};
+    u32 width{};
+    u32 height{};
+    /// Bytes per row, tightly packed.
+    u32 row_pitch{};
+    u64 blob_offset{};
+    u64 byte_length{};
+    u64 content_hash{};
+};
+
+/// One effective texture binding, with the image, view and sampler the production renderer used.
+struct Texture {
+    u32 id{};
+    /// The unified Vulkan descriptor binding number the descriptor write used.
+    u32 vk_binding{};
+    /// The shader stage and program the binding belongs to.
+    u32 stage{};
+    u64 stage_hash{};
+    /// The guest T# descriptor's address, for correlation only. It is not the binding identity.
+    u64 guest_address{};
+
+    /// The texture-cache image and its generation, so a stale capture is detectable.
+    u32 image_id{};
+    u64 image_uid{};
+
+    /// The image's own format and the view's format, which may differ.
+    u32 image_format{};
+    u32 view_format{};
+    u32 aspect{};
+    u32 mip_first{};
+    u32 mip_count{};
+    u32 layer_first{};
+    u32 layer_count{};
+    u32 width{};
+    u32 height{};
+    u32 depth{};
+    u32 samples{};
+
+    /// The sampler this binding pairs with, or zero.
+    u64 sampler_id{};
+
+    /// How the content was established.
+    u8 status{};
+    std::vector<TextureSubresource> subresources;
+    /// Why the content is not complete, when it is not.
+    std::string limitation;
+};
+
+/// The effective sampler state, as the production sampler construction produced it.
+struct Sampler {
+    u64 id{};
+    u64 guest_hash{};
+    u32 mag_filter{};
+    u32 min_filter{};
+    u32 mip_filter{};
+    u32 address_u{};
+    u32 address_v{};
+    u32 address_w{};
+    float lod_bias{};
+    float min_lod{};
+    float max_lod{};
+    bool anisotropy_enable{};
+    float max_anisotropy{};
+    bool compare_enable{};
+    u32 compare_op{};
+    u32 border_color{};
+    bool unnormalized_coordinates{};
+};
+
+/// How the diagnostic replay should read texture coordinates. This is an attribution, not a
+/// recovered fact: the game's own material is not captured.
+struct TextureCoordinate {
+    /// The vertex binding and component pair the diagnostic renderer treats as UV.
+    u32 binding{};
+    u32 component_u{};
+    u32 component_v{};
+    /// How that attribution was established.
+    std::string evidence;
+    /// The observed range, which is what distinguishes a UV from a normal or a colour.
+    float min_u{};
+    float max_u{};
+    float min_v{};
+    float max_v{};
+    /// Whether the range is consistent with normalized texture coordinates.
+    bool looks_like_uv{};
+};
+
 struct Package {
     u32 schema_version{SchemaVersion};
     std::string scene;
@@ -172,6 +269,12 @@ struct Package {
     bool has_index_binding{};
     IndexBinding index_binding{};
     GeometryInterpretation geometry;
+    std::vector<Texture> textures;
+    std::vector<Sampler> samplers;
+    TextureCoordinate texture_coordinate;
+    /// Texture payload, written to its own sidecar so a reader can stream it separately from the
+    /// geometry blob. Subresource offsets index into this vector.
+    std::vector<u8> texture_bytes;
 
     Readiness readiness;
 
@@ -338,11 +441,97 @@ struct Package {
             error = "diagnostic replay readiness claimed without geometry readiness";
             return false;
         }
+        // Texture readiness is derived, not trusted: a binding claim needs a binding, a content
+        // claim needs bytes whose hash matches, and a sampler claim needs a sampler.
+        if (package.readiness.texture_binding_ready && package.textures.empty()) {
+            error = "texture binding readiness claimed with no textures";
+            return false;
+        }
+        if (package.readiness.texture_contents_ready) {
+            if (!package.readiness.texture_binding_ready) {
+                error = "texture content readiness claimed without binding readiness";
+                return false;
+            }
+            for (const auto& texture : package.textures) {
+                if (texture.subresources.empty()) {
+                    error = "texture content readiness claimed with no subresources";
+                    return false;
+                }
+                for (const auto& subresource : texture.subresources) {
+                    if (subresource.byte_length == 0) {
+                        error = "texture subresource has no bytes";
+                        return false;
+                    }
+                    if (subresource.row_pitch < subresource.width) {
+                        error = "texture subresource row pitch is narrower than its width";
+                        return false;
+                    }
+                    if (subresource.byte_length <
+                        static_cast<u64>(subresource.row_pitch) * subresource.height) {
+                        error = "texture subresource is shorter than its rows";
+                        return false;
+                    }
+                }
+            }
+        }
+        if (package.readiness.sampler_ready && package.samplers.empty()) {
+            error = "sampler readiness claimed with no samplers";
+            return false;
+        }
+
+        // A texture's sampler reference must resolve.
+        for (const auto& texture : package.textures) {
+            if (texture.sampler_id == 0)
+                continue;
+            bool found = false;
+            for (const auto& sampler : package.samplers) {
+                if (sampler.id == texture.sampler_id) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                error = "texture references a missing sampler";
+                return false;
+            }
+        }
+
+        // Diagnostic textured replay needs geometry, a texture with content, and a sampler.
+        if (package.readiness.diagnostic_textured_replay_ready) {
+            if (!package.readiness.diagnostic_geometry_replay_ready) {
+                error = "textured replay readiness claimed without geometry replay readiness";
+                return false;
+            }
+            if (!package.readiness.sampler_ready) {
+                error = "textured replay readiness claimed without a sampler";
+                return false;
+            }
+            // A diagnostic textured replay needs one captured texture, not every bound texture.
+            bool any_content = false;
+            for (const auto& texture : package.textures) {
+                if (!texture.subresources.empty()) {
+                    any_content = true;
+                    break;
+                }
+            }
+            if (!any_content) {
+                error = "textured replay readiness claimed without any captured texture";
+                return false;
+            }
+            // A textured replay of a screen-space quad would prove nothing about the recovered
+            // material path, so the geometry must also be three-dimensional.
+            if (!package.geometry.is_three_dimensional) {
+                error = "textured replay readiness claimed without three-dimensional geometry";
+                return false;
+            }
+        }
+
         // Full draw readiness requires everything.
-        if (package.readiness.full_draw_replay_ready) {
+        if (package.readiness.original_material_ready) {
             if (!package.readiness.geometry_ready || !package.readiness.shader_buffers_ready ||
-                !package.readiness.textures_ready || !package.readiness.pipeline_state_ready) {
-                error = "full draw readiness claimed without every dimension";
+                !package.readiness.texture_contents_ready || !package.readiness.sampler_ready ||
+                !package.readiness.pipeline_state_ready) {
+                error = "original material readiness claimed without every dimension";
                 return false;
             }
         }

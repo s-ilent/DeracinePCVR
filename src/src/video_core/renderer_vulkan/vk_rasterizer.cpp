@@ -7,6 +7,7 @@
 #include "core/memory.h"
 #include "core/rhi_entry_probe.h"
 #include "core/shader_param_capture.h"
+#include "core/texture_capture.h"
 #include "core/vertex_input_capture.h"
 #include "shader_recompiler/runtime_info.h"
 #include "video_core/amdgpu/liverpool.h"
@@ -1125,6 +1126,7 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
     Core::ShaderParamCapture::BeginDrawBindings(
         Core::RhiEntryProbe::CurrentDrawProvenanceId());
     Core::ShaderParamCapture::BeginDrawGeometry();
+    Core::TextureCapture::BeginDraw();
 
     bool uses_dma = false;
 
@@ -1828,13 +1830,14 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
             }
             image_infos.emplace_back(VK_NULL_HANDLE, *image_view.image_view,
                                      image.backing->state.layout);
+
         }
     }
 
     u32 image_info_idx = first_image_idx;
     u32 image_binding_idx = 0;
     for (u32 array_size : image_descriptor_array_sizes) {
-        const auto& [_, desc] = image_bindings[image_binding_idx];
+        const auto& [image_id, desc] = image_bindings[image_binding_idx];
         const bool is_storage = desc.type == VideoCore::TextureCache::BindingType::Storage;
         auto& set_write = set_writes[set_write_index++];
         set_write.dstSet = VK_NULL_HANDLE;
@@ -1844,6 +1847,42 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
         set_write.descriptorType =
             is_storage ? vk::DescriptorType::eStorageImage : vk::DescriptorType::eSampledImage;
         set_write.pImageInfo = &image_infos[image_info_idx];
+
+        // Record the effective image binding here, where the unified binding number, the image
+        // binding and the image info all belong to the same descriptor. Inferring a Vulkan
+        // resource from the guest descriptor afterwards would not be the same observation.
+        if (Core::TextureCapture::Enabled() && image_id) {
+            auto& image = texture_cache.GetImage(image_id);
+            auto& image_view = texture_cache.FindTexture(image_id, desc);
+            Core::TextureCapture::ImageRecord record{};
+            record.provenance_id = Core::RhiEntryProbe::CurrentDrawProvenanceId();
+            record.stage_hash = stage.pgm_hash;
+            record.stage = static_cast<u32>(stage.stage);
+            record.vk_binding = binding.unified;
+            record.guest_slot = image_binding_idx;
+            record.guest_address = image.info.guest_address;
+            record.image_id = image_id.index;
+            record.image_uid = image.image_uid;
+            record.vk_image = reinterpret_cast<u64>(static_cast<VkImage>(image.GetImage()));
+            record.vk_image_view =
+                reinterpret_cast<u64>(static_cast<VkImageView>(*image_view.image_view));
+            record.image_format = static_cast<u32>(image.info.pixel_format);
+            record.view_format = static_cast<u32>(image_view.info.format);
+            record.component_mapping = 0;
+            record.aspect = image.info.props.is_depth ? 2u : 1u;
+            record.mip_first = image_view.info.range.base.level;
+            record.mip_count = image_view.info.range.extent.levels;
+            record.layer_first = image_view.info.range.base.layer;
+            record.layer_count = image_view.info.range.extent.layers;
+            record.descriptor_layout = static_cast<u32>(image.backing->state.layout);
+            record.width = image.info.size.width;
+            record.height = image.info.size.height;
+            record.depth = image.info.size.depth;
+            record.samples = image.info.num_samples;
+            record.row_pitch = image.info.pitch;
+            record.status = static_cast<u8>(Core::TextureCapture::ContentStatus::BindingOnly);
+            Core::TextureCapture::NoteImageBinding(record);
+        }
 
         image_info_idx += array_size;
         image_binding_idx += array_size;
@@ -1868,6 +1907,36 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
                                          has_texture ? &tsharp : nullptr);
         }
         const auto vk_sampler = texture_cache.GetSampler(ssharp, liverpool->regs.ta_bc_base);
+
+        // Record the sampler state the production construction actually produced. The guest words
+        // travel with it so the state can be re-derived independently of this run.
+        if (Core::TextureCapture::Enabled()) {
+            Core::TextureCapture::SamplerRecord record{};
+            record.guest_hash = XXH3_64bits(&ssharp, sizeof(ssharp));
+            std::memcpy(record.guest_words.data(), &ssharp, sizeof(record.guest_words));
+            record.mag_filter = static_cast<u32>(LiverpoolToVK::Filter(ssharp.xy_mag_filter));
+            record.min_filter = static_cast<u32>(LiverpoolToVK::Filter(ssharp.xy_min_filter));
+            record.mip_filter = static_cast<u32>(LiverpoolToVK::MipFilter(ssharp.mip_filter));
+            record.address_u = static_cast<u32>(LiverpoolToVK::ClampMode(ssharp.clamp_x));
+            record.address_v = static_cast<u32>(LiverpoolToVK::ClampMode(ssharp.clamp_y));
+            record.address_w = static_cast<u32>(LiverpoolToVK::ClampMode(ssharp.clamp_z));
+            record.lod_bias = ssharp.LodBias();
+            record.min_lod = ssharp.MinLod();
+            record.max_lod = ssharp.MaxLod();
+            record.guest_max_aniso = ssharp.MaxAniso();
+            // The host sampler's own state, which is what the draw actually sampled with.
+            const auto& cached_sampler = texture_cache.GetSamplerObject(ssharp);
+            record.anisotropy_enable = cached_sampler.AnisotropyEnabled();
+            record.max_anisotropy = cached_sampler.MaxAnisotropy();
+            record.compare_enable = ssharp.depth_compare_func != AmdGpu::DepthCompare::Never;
+            record.compare_op = static_cast<u32>(LiverpoolToVK::DepthCompare(
+                ssharp.depth_compare_func));
+            record.border_color = static_cast<u32>(
+                LiverpoolToVK::BorderColor(ssharp.border_color_type));
+            record.unnormalized_coordinates = false;
+            Core::TextureCapture::NoteSampler(record);
+        }
+
         image_infos.emplace_back(vk_sampler, VK_NULL_HANDLE, vk::ImageLayout::eGeneral);
         auto& set_write = set_writes[set_write_index++];
         set_write.dstSet = VK_NULL_HANDLE;
@@ -1876,6 +1945,43 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
         set_write.descriptorCount = 1;
         set_write.descriptorType = vk::DescriptorType::eSampler;
         set_write.pImageInfo = &image_infos.back();
+    }
+
+    // Snapshot the images this draw samples, once per run and only when the capture is opted in.
+    // The copy goes through the texture cache's own synchronized download path, so the bytes are
+    // the image's contents at this point in the command stream rather than a guess.
+    if (Core::TextureCapture::Enabled() && Core::TextureCapture::ShouldSnapshot()) {
+        const u64 provenance = Core::RhiEntryProbe::CurrentDrawProvenanceId();
+        // Only a draw the provenance chain matched is worth snapshotting: an unmatched draw has no
+        // identity to attach the capture to, and taking the snapshot there would consume the one
+        // budget on a draw nobody can reference.
+        if (provenance == 0) {
+            return;
+        }
+        // The first matched draws in the title screen are depth and shadow passes that sample
+        // nothing. Taking the snapshot there would spend the one budget on a draw with no texture,
+        // so the draw must actually bind a sampled image.
+        bool has_sampled_image = false;
+        for (const auto& [image_id, desc] : image_bindings) {
+            if (image_id && desc.type == VideoCore::TextureCache::BindingType::Texture) {
+                has_sampled_image = true;
+                break;
+            }
+        }
+        if (!has_sampled_image) {
+            return;
+        }
+        for (const auto& [image_id, desc] : image_bindings) {
+            if (!image_id)
+                continue;
+            if (desc.type != VideoCore::TextureCache::BindingType::Texture)
+                continue;
+            texture_cache.SnapshotImageForCapture(
+                image_id, desc.view_info.range.base.level, desc.view_info.range.extent.levels,
+                desc.view_info.range.base.layer, desc.view_info.range.extent.layers,
+                desc.info.props.is_depth ? 2u : 1u, provenance, 0);
+        }
+        Core::TextureCapture::CommitPendingImages(provenance);
     }
 }
 

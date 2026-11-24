@@ -87,6 +87,8 @@ Sampler::Sampler(const Vulkan::Instance& instance, const AmdGpu::Sampler& sample
         .borderColor = border_color,
         .unnormalizedCoordinates = false, // Handled in shader due to Vulkan limitations.
     };
+    this->anisotropy_enable = anisotropy_enable;
+    this->max_anisotropy = max_anisotropy;
     auto [sampler_result, smplr] = instance.GetDevice().createSamplerUnique(sampler_ci);
     ASSERT_MSG(sampler_result == vk::Result::eSuccess, "Failed to create sampler: {}",
                vk::to_string(sampler_result));

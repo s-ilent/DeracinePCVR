@@ -235,6 +235,90 @@ def main(argv: list[str]) -> int:
                     f"declared {geometry.get('unique_referenced_vertices')} unique vertices but "
                     f"the indices reference {unique}")
 
+    # --- Textures and samplers ----------------------------------------------------------------
+    textures = package.get("textures", [])
+    samplers = package.get("samplers", [])
+    texture_blob = b""
+    texture_path = os.path.join(directory, "textures.bin")
+    if os.path.exists(texture_path):
+        with open(texture_path, "rb") as handle:
+            texture_blob = handle.read()
+
+    sampler_ids = set()
+    for sampler in samplers:
+        sid = sampler.get("id")
+        if not sid:
+            return fail("sampler id 0 is reserved")
+        if sid in sampler_ids:
+            return fail(f"duplicate sampler id {sid}")
+        sampler_ids.add(sid)
+        # Sampler numeric ranges must be sane, or the state is not portable.
+        if sampler.get("min_lod", 0.0) > sampler.get("max_lod", 0.0):
+            return fail(f"sampler {sid} has min_lod above max_lod")
+        if sampler.get("max_anisotropy", 1.0) < 1.0:
+            return fail(f"sampler {sid} has max_anisotropy below 1")
+        for key in ("address_u", "address_v", "address_w"):
+            if not 0 <= sampler.get(key, 0) <= 4:
+                return fail(f"sampler {sid} has an out-of-range {key}")
+
+    texture_ids = set()
+    for texture in textures:
+        tid = texture.get("id")
+        if not tid:
+            return fail("texture id 0 is reserved")
+        if tid in texture_ids:
+            return fail(f"duplicate texture id {tid}")
+        texture_ids.add(tid)
+
+        sampler_ref = texture.get("sampler_id", 0)
+        if sampler_ref and sampler_ref not in sampler_ids:
+            return fail(f"texture {tid} references missing sampler {sampler_ref}")
+
+        # The view's mip and layer range must fit the image.
+        if texture.get("mip_first", 0) + texture.get("mip_count", 0) > 32:
+            return fail(f"texture {tid} has an implausible mip range")
+        if texture.get("layer_count", 0) == 0:
+            return fail(f"texture {tid} has no layers")
+
+        for sub in texture.get("subresources", []):
+            length = sub.get("byte_length", 0)
+            offset = sub.get("blob_offset", 0)
+            if length == 0:
+                return fail(f"texture {tid} has an empty subresource")
+            if offset + length > len(texture_blob):
+                return fail(f"texture {tid} subresource exceeds textures.bin")
+            data = texture_blob[offset:offset + length]
+            if sub.get("row_pitch", 0) * sub.get("height", 0) > length:
+                return fail(f"texture {tid} subresource is shorter than its rows")
+            if fnv1a(data) != sub.get("content_hash"):
+                return fail(f"texture {tid} subresource hash does not match its bytes")
+
+    # A texture content claim needs bytes; a binding claim needs a texture.
+    if readiness.get("texture_binding_ready") and not textures:
+        return fail("texture binding readiness claimed with no textures")
+    if readiness.get("texture_contents_ready"):
+        if not textures:
+            return fail("texture content readiness claimed with no textures")
+        for texture in textures:
+            if not texture.get("subresources"):
+                return fail(f"texture {texture.get('id')} claims content but has no subresources")
+    if readiness.get("sampler_ready") and not samplers:
+        return fail("sampler readiness claimed with no samplers")
+
+    # A textured replay needs one captured texture, a sampler, a UV, and 3D geometry.
+    if readiness.get("diagnostic_textured_replay_ready"):
+        if not readiness.get("diagnostic_geometry_replay_ready"):
+            return fail("textured replay readiness claimed without geometry replay readiness")
+        if not samplers:
+            return fail("textured replay readiness claimed without a sampler")
+        if not any(t.get("subresources") for t in textures):
+            return fail("textured replay readiness claimed without any captured texture")
+        uv = package.get("texture_coordinate", {})
+        if not uv.get("looks_like_uv"):
+            return fail("textured replay readiness claimed without a usable UV attribute")
+        if not geometry.get("is_three_dimensional"):
+            return fail("textured replay readiness claimed without three-dimensional geometry")
+
     # Readiness claims must be justified.
     if readiness.get("diagnostic_geometry_replay_ready") and not readiness.get("geometry_ready"):
         return fail("diagnostic replay readiness claimed without geometry readiness")
@@ -250,8 +334,9 @@ def main(argv: list[str]) -> int:
         f"resources={len(resources)} shader_bindings={len(bindings)} "
         f"vertex_bindings={len(vertex_bindings)} indexed={bool(index_binding)} "
         f"bytes={total} three_d={geometry.get('is_three_dimensional')} "
-        f"triangles={geometry.get('triangle_count')} "
-        f"diagnostic_ready={readiness.get('diagnostic_geometry_replay_ready')}"
+        f"triangles={geometry.get('triangle_count')} textures={len(textures)} "
+        f"samplers={len(samplers)} "
+        f"textured_ready={readiness.get('diagnostic_textured_replay_ready')}"
     )
     return 0
 

@@ -29,8 +29,19 @@ public:
         return *handle;
     }
 
+    /// The state the VkSampler was actually built from. Exposed so a draw-time observer records
+    /// the effective state rather than re-deriving it and risking a different answer.
+    bool AnisotropyEnabled() const noexcept {
+        return anisotropy_enable;
+    }
+    float MaxAnisotropy() const noexcept {
+        return max_anisotropy;
+    }
+
 private:
     vk::UniqueSampler handle;
+    bool anisotropy_enable{};
+    float max_anisotropy{1.0f};
 };
 
 } // namespace VideoCore

@@ -17,6 +17,7 @@
 #include "common/scope_exit.h"
 #include "core/emulator_settings.h"
 #include "core/memory.h"
+#include "core/texture_capture.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/page_manager.h"
 #include "video_core/renderer_vulkan/vk_gpu_profile.h"
@@ -187,6 +188,119 @@ ImageId TextureCache::GetNullImage(const vk::Format format) {
 
     null_images.emplace(format, null_id);
     return null_id;
+}
+
+bool TextureCache::SnapshotImageForCapture(ImageId image_id, u32 mip_first, u32 mip_count,
+                                           u32 layer_first, u32 layer_count, u32 aspect,
+                                           u64 provenance_id, u32 vk_binding) {
+    if (!Core::TextureCapture::Enabled()) {
+        return false;
+    }
+    if (!image_id) {
+        return false;
+    }
+    Image& image = slot_images[image_id];
+    if (!(image.flags & ImageFlagBits::Registered)) {
+        return false;
+    }
+    // A depth or multisampled image needs a different copy shape than a sampled colour image, and
+    // a compressed one needs its block extent. Report those as unsupported rather than copying
+    // them as if they were plain RGBA8.
+    if (image.info.props.is_depth || image.info.num_samples > 1) {
+        return false;
+    }
+    // A block-compressed image is a legal copy target: the copy works in blocks, so the row pitch
+    // is the block-row pitch and the extent is in blocks. It is not rejected, because a title
+    // screen's textures are frequently compressed and refusing them would capture nothing.
+    if (mip_count == 0 || layer_count == 0) {
+        return false;
+    }
+
+    // The copy covers the base of the requested range only when that range is a single mip; a
+    // multi-mip copy would need one copy per level, which this diagnostic does not do.
+    const u32 mip = mip_first;
+    if (mip >= image.info.resources.levels) {
+        return false;
+    }
+    const u32 mip_width = std::max(1u, image.info.size.width >> mip);
+    const u32 mip_height = std::max(1u, image.info.size.height >> mip);
+    // A compressed image's copy extent is in blocks, and its row pitch is the block-row pitch.
+    const u32 block_shift = image.info.props.is_block ? 2u : 0u;
+    const u32 copy_width = std::max(1u, mip_width >> block_shift);
+    const u32 copy_height = std::max(1u, mip_height >> block_shift);
+    const u32 bytes_per_pixel = image.info.num_bits / 8;
+    if (bytes_per_pixel == 0) {
+        return false;
+    }
+    const u32 row_pitch = copy_width * bytes_per_pixel;
+    const u32 layers = std::min(layer_count, image.info.resources.layers - layer_first);
+    if (layers == 0) {
+        return false;
+    }
+    const u64 download_size = static_cast<u64>(row_pitch) * copy_height * layers;
+    if (download_size == 0 || download_size > Core::TextureCapture::MaxBytesPerImage) {
+        return false;
+    }
+
+    auto& download_buffer = buffer_cache.GetUtilityBuffer(MemoryUsage::Download);
+    const auto [download, offset] = download_buffer.Map(download_size);
+    download_buffer.Commit();
+
+    const vk::BufferImageCopy copy = {
+        .bufferOffset = offset,
+        .bufferRowLength = copy_width,
+        .bufferImageHeight = copy_height,
+        .imageSubresource =
+            {
+                .aspectMask = static_cast<vk::ImageAspectFlagBits>(aspect),
+                .mipLevel = mip,
+                .baseArrayLayer = layer_first,
+                .layerCount = layers,
+            },
+        .imageOffset = {0, 0, 0},
+        .imageExtent = {copy_width, copy_height, 1},
+    };
+
+    // The same synchronized download the renderer uses: it ends the current rendering, barriers
+    // the image to transfer-source, copies, and barriers the buffer back. The bytes are read only
+    // after the copy's completion is established, in the deferred operation below.
+    image.Download(std::span{&copy, 1}, download_buffer.Handle(), offset, download_size);
+
+    Core::TextureCapture::ImageRecord record{};
+    record.provenance_id = provenance_id;
+    record.vk_binding = vk_binding;
+    record.image_id = image_id.index;
+    record.image_uid = image.image_uid;
+    record.vk_image = reinterpret_cast<u64>(static_cast<VkImage>(image.GetImage()));
+    record.image_format = static_cast<u32>(image.info.pixel_format);
+    record.mip_first = mip;
+    record.mip_count = 1;
+    record.layer_first = layer_first;
+    record.layer_count = layers;
+    record.aspect = aspect;
+    record.width = copy_width;
+    record.height = copy_height;
+    record.depth = 1;
+    record.samples = image.info.num_samples;
+    record.row_pitch = row_pitch;
+    record.subresources_requested = mip_count * layer_count;
+    record.subresources_captured = layers;
+    record.status = static_cast<u8>(Core::TextureCapture::ContentStatus::CopyPending);
+
+    // The readback is deferred until the copy has completed, which is what makes the bytes the
+    // image's contents rather than whatever the buffer held before.
+    scheduler.DeferPriorityOperation([download, download_size, record]() mutable {
+        std::vector<u8> bytes(download_size);
+        std::memcpy(bytes.data(), download, static_cast<size_t>(download_size));
+        record.bytes = std::move(bytes);
+        record.content_hash = Core::TextureCapture::HashBytes(record.bytes.data(),
+                                                             record.bytes.size());
+        record.status = static_cast<u8>(Core::TextureCapture::ContentStatus::HostContentCaptured);
+        // The copy completes after the draw was committed, so this record goes straight to the
+        // store rather than through the per-draw pending list.
+        Core::TextureCapture::StoreLateImage(std::move(record));
+    });
+    return true;
 }
 
 void TextureCache::ProcessDownloadImages() {
@@ -1319,6 +1433,13 @@ vk::Sampler TextureCache::GetSampler(const AmdGpu::Sampler& sampler,
     const u64 hash = XXH3_64bits(&sampler, sizeof(sampler));
     const auto [it, new_sampler] = samplers.try_emplace(hash, instance, sampler, border_color_base);
     return it->second.Handle();
+}
+
+const Sampler& TextureCache::GetSamplerObject(const AmdGpu::Sampler& sampler) {
+    const u64 hash = XXH3_64bits(&sampler, sizeof(sampler));
+    const auto it = samplers.find(hash);
+    ASSERT_MSG(it != samplers.end(), "Sampler object requested before it was created");
+    return it->second;
 }
 
 void TextureCache::RegisterImage(ImageId image_id) {

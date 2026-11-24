@@ -25,7 +25,11 @@ def run_validator(directory):
     return result.returncode, result.stdout.strip()
 
 
+blob_path_holder = [""]
+
+
 def load(directory):
+    blob_path_holder[0] = os.path.join(directory, "resources.bin")
     with open(os.path.join(directory, "package.json"), encoding="utf-8") as handle:
         package = json.load(handle)
     with open(os.path.join(directory, "resources.bin"), "rb") as handle:
@@ -128,6 +132,72 @@ def main(argv):
     def truncated_blob(package, blob):
         del blob[-16:]
 
+    def corrupt_texture_byte(package, blob):
+        path = os.path.join(os.path.dirname(blob_path_holder[0]), "textures.bin")
+        with open(path, "rb") as handle:
+            data = bytearray(handle.read())
+        if data:
+            data[0] ^= 0xFF
+            with open(path, "wb") as handle:
+                handle.write(bytes(data))
+
+    def texture_hash_mismatch(package, blob):
+        for texture in package.get("textures", []):
+            for sub in texture.get("subresources", []):
+                sub["content_hash"] = (sub["content_hash"] + 1) & ((1 << 64) - 1)
+                return
+
+    def texture_subresource_out_of_range(package, blob):
+        for texture in package.get("textures", []):
+            for sub in texture.get("subresources", []):
+                sub["blob_offset"] = 10 ** 9
+                return
+
+    def texture_empty_subresource(package, blob):
+        for texture in package.get("textures", []):
+            for sub in texture.get("subresources", []):
+                sub["byte_length"] = 0
+                return
+
+    def duplicate_texture_id(package, blob):
+        textures = package.get("textures", [])
+        if len(textures) >= 2:
+            textures[1]["id"] = textures[0]["id"]
+
+    def missing_sampler_reference(package, blob):
+        for texture in package.get("textures", []):
+            texture["sampler_id"] = 9999
+            return
+
+    def sampler_lod_inverted(package, blob):
+        for sampler in package.get("samplers", []):
+            sampler["min_lod"] = 10.0
+            sampler["max_lod"] = 0.0
+            return
+
+    def sampler_aniso_below_one(package, blob):
+        for sampler in package.get("samplers", []):
+            sampler["max_anisotropy"] = 0.0
+            return
+
+    def sampler_address_out_of_range(package, blob):
+        for sampler in package.get("samplers", []):
+            sampler["address_u"] = 99
+            return
+
+    def textured_ready_without_texture(package, blob):
+        package["readiness"]["diagnostic_textured_replay_ready"] = True
+        for texture in package.get("textures", []):
+            texture["subresources"] = []
+
+    def textured_ready_without_uv(package, blob):
+        package["readiness"]["diagnostic_textured_replay_ready"] = True
+        package["texture_coordinate"]["looks_like_uv"] = False
+
+    def textured_ready_without_3d(package, blob):
+        package["readiness"]["diagnostic_textured_replay_ready"] = True
+        package["geometry"]["is_three_dimensional"] = False
+
     case("corrupted blob byte", corrupt_blob)
     case("wrong schema version", wrong_schema)
     case("missing provenance", missing_provenance)
@@ -150,6 +220,18 @@ def main(argv):
     case("full draw readiness without textures", full_draw_without_textures)
     case("unverified vertex resource", unverified_vertex_resource)
     case("truncated blob", truncated_blob)
+    case("corrupted texture byte", corrupt_texture_byte)
+    case("texture hash mismatch", texture_hash_mismatch)
+    case("texture subresource out of range", texture_subresource_out_of_range)
+    case("texture empty subresource", texture_empty_subresource)
+    case("duplicate texture id", duplicate_texture_id)
+    case("missing sampler reference", missing_sampler_reference)
+    case("sampler lod inverted", sampler_lod_inverted)
+    case("sampler anisotropy below one", sampler_aniso_below_one)
+    case("sampler address out of range", sampler_address_out_of_range)
+    case("textured readiness without texture", textured_ready_without_texture)
+    case("textured readiness without uv", textured_ready_without_uv)
+    case("textured readiness without 3d", textured_ready_without_3d)
 
     failures = 0
     for name, mutate in cases:
