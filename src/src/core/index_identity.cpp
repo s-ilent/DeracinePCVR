@@ -8,12 +8,15 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <string>
 
 #include "common/logging/log.h"
 #include "core/module.h"
 #include "core/rhi_command_capture_contract.h"
+#include "core/rhi_entry_probe.h"
 
 namespace Core::IndexIdentity {
 namespace {
@@ -55,6 +58,18 @@ void TryInstallBeforeGuestThread(Module& module, std::string_view title_id,
                     "Index identity refused: expected native CUSA11919 eboot.bin, got "
                     "title={} module={}",
                     title_id, module.name);
+        return;
+    }
+
+    // The module and title checks above are necessary but not sufficient: they do not prove the
+    // executable is one of the approved images. The RHI entry probe performs the hash check, and
+    // this observer depends on the exact layout recovered from that image, so it must not become
+    // active unless the probe is active. Requiring the probe's own gate means the index observer
+    // cannot be enabled on an unapproved build by setting its flag alone.
+    if (!RhiEntryProbe::IsInstalled()) {
+        LOG_WARNING(Core_Linker,
+                    "Index identity refused: the RHI entry probe is not installed, so the approved "
+                    "executable hash was not verified");
         return;
     }
 
@@ -146,6 +161,93 @@ bool GetRetained(u32 index, OriginalIndexResourceIdentity& out) noexcept {
         return true;
     } catch (...) {
         return false;
+    }
+}
+
+/// Writes the machine-readable sidecar the replay consumes.
+///
+/// The replay cannot reconstruct the bridge from the package: the package carries a guest address,
+/// and the whole point of the bridge is that it was independently observed from the original UE4
+/// object. A replay that derived the bridge from the package would be comparing the package with
+/// itself.
+void ExportSidecar(const std::string& directory) noexcept {
+    try {
+        if (!g_state.enabled.load(std::memory_order_relaxed)) {
+            return;
+        }
+        const auto dir = std::filesystem::path{directory};
+        if (!std::filesystem::exists(dir)) {
+            LOG_WARNING(Core_Linker, "Index bridge sidecar refused: directory missing {}",
+                        dir.string());
+            return;
+        }
+        const auto path = dir / "index_bridge.json";
+        std::ofstream out{path, std::ios::trunc};
+        if (!out) {
+            LOG_WARNING(Core_Linker, "Index bridge sidecar refused: cannot open {}",
+                        path.string());
+            return;
+        }
+
+        std::scoped_lock lock{g_state.mutex};
+        const u32 count = g_state.count.load(std::memory_order_relaxed);
+        out << "{\n";
+        out << "  \"schema_version\": 1,\n";
+        out << "  \"records\": [\n";
+        for (u32 i = 0; i < count; ++i) {
+            const auto& record = g_state.records[i];
+            out << "    {\n";
+            out << "      \"provenance_id\": " << record.provenance_id << ",\n";
+            out << "      \"session_id\": " << record.session_id << ",\n";
+            out << "      \"has_session_id\": " << (record.has_session_id ? "true" : "false")
+                << ",\n";
+            out << "      \"execution_id\": " << record.execution_id << ",\n";
+            out << "      \"has_execution_id\": "
+                << (record.execution_id != 0 ? "true" : "false") << ",\n";
+            out << "      \"original_rhi_object\": " << record.original_rhi_object << ",\n";
+            out << "      \"has_original_rhi_object\": "
+                << (record.has_original_rhi_object ? "true" : "false") << ",\n";
+            out << "      \"resource_base\": " << record.resource_base << ",\n";
+            out << "      \"has_resource_base\": "
+                << (record.has_resource_base ? "true" : "false") << ",\n";
+            out << "      \"address_candidate_a\": " << record.address_candidate_a << ",\n";
+            out << "      \"has_address_candidate_a\": "
+                << (record.has_address_candidate_a ? "true" : "false") << ",\n";
+            out << "      \"address_candidate_b\": " << record.address_candidate_b << ",\n";
+            out << "      \"has_address_candidate_b\": "
+                << (record.has_address_candidate_b ? "true" : "false") << ",\n";
+            out << "      \"selected_slot\": \"" << AddressSlotName(record.address_slot)
+                << "\",\n";
+            out << "      \"selected_guest_address\": " << record.guest_allocation_base
+                << ",\n";
+            out << "      \"has_selected_guest_address\": "
+                << (record.has_guest_allocation_base ? "true" : "false") << ",\n";
+            out << "      \"index_element_width\": " << record.index_element_width << ",\n";
+            out << "      \"has_index_element_width\": "
+                << (record.has_index_element_width ? "true" : "false") << ",\n";
+            out << "      \"allocation_size\": " << record.guest_allocation_size << ",\n";
+            out << "      \"has_allocation_size\": "
+                << (record.has_guest_allocation_size ? "true" : "false") << ",\n";
+            out << "      \"allocation_offset\": " << record.allocation_offset << ",\n";
+            out << "      \"has_allocation_offset\": "
+                << (record.has_allocation_offset ? "true" : "false") << ",\n";
+            out << "      \"resource_generation\": " << record.resource_generation << ",\n";
+            out << "      \"has_resource_generation\": "
+                << (record.has_resource_generation ? "true" : "false") << ",\n";
+            out << "      \"predicate_determinable\": "
+                << (record.predicate.determinable ? "true" : "false") << ",\n";
+            out << "      \"address_evidence\": \""
+                << EvidenceClassName(record.address_evidence) << "\"\n";
+            out << "    }" << (i + 1 < count ? "," : "") << "\n";
+        }
+        out << "  ]\n";
+        out << "}\n";
+        out.close();
+
+        LOG_INFO(Core_Linker, "DERACINE_INDEX_IDENTITY_SIDECAR records={} path={}", count,
+                 path.string());
+    } catch (...) {
+        // Export must never throw during shutdown.
     }
 }
 

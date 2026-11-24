@@ -25,6 +25,7 @@
 #include "core/loader/elf.h"
 #include "core/memory.h"
 #include "core/module.h"
+#include "core/capture_session.h"
 #include "core/index_identity.h"
 #include "core/rhi_command_capture.h"
 #include "core/rhi_entry_probe_contract.h"
@@ -414,6 +415,8 @@ static void CaptureEntryImpl(const GuestEntryRegisterFrame* frame, void* user_da
             if (IndexIdentity::IsEnabled() && state->memory != nullptr) {
                 IndexIdentity::OriginalIndexResourceIdentity identity{};
                 identity.execution_id = IndexIdentity::ExecutionId();
+                identity.session_id = CaptureSession::SessionId();
+                identity.has_session_id = identity.session_id != 0;
                 identity.provenance_id = id;
                 identity.original_rhi_object = event.integer_arguments[1];
                 identity.has_original_rhi_object = identity.original_rhi_object != 0;
@@ -436,8 +439,7 @@ static void CaptureEntryImpl(const GuestEntryRegisterFrame* frame, void* user_da
                         identity.has_index_element_width = true;
                     }
 
-                    // Both address slots. The implementation selects one; the observer records
-                    // whichever holds a plausible guest address, and names the slot it used.
+                    // Both address slots, recorded separately so they are never conflated.
                     u64 address_a{};
                     u64 address_b{};
                     const bool have_a = ReadGuestWord(
@@ -446,19 +448,90 @@ static void CaptureEntryImpl(const GuestEntryRegisterFrame* frame, void* user_da
                     const bool have_b = ReadGuestWord(
                         *state->memory,
                         resource_base + IndexIdentity::ObjectLayout::AddressOffsetB, address_b);
+                    identity.address_candidate_a = address_a;
+                    identity.has_address_candidate_a = have_a;
+                    identity.address_candidate_b = address_b;
+                    identity.has_address_candidate_b = have_b;
 
-                    if (have_a && address_a != 0) {
+                    // Evaluate the game's own slot predicate rather than taking the first nonzero
+                    // slot. The implementation at 0xCBBCCE-0xCBBCF1 selects slot A when the global
+                    // thread record is null, when the global flag is non-zero, or when the current
+                    // guest thread id equals the id recorded at record+0x44; otherwise slot B.
+                    //
+                    // scePthreadGetthreadid returns g_curthread->tid, which is exactly what
+                    // CurrentGuestThreadId() reads, so the comparison is reproducible without a
+                    // host thread identity.
+                    auto& predicate = identity.predicate;
+                    predicate.current_thread_id = static_cast<u32>(CurrentGuestThreadId());
+                    predicate.has_current_thread_id = true;
+
+                    // The two globals the predicate reads. They are guest addresses in the
+                    // executable's own image, so they are read through the same validated helper.
+                    const VAddr thread_record_global =
+                        state->module_base + IndexIdentity::ThreadRecordGlobalRva;
+                    const VAddr thread_flag_global =
+                        state->module_base + IndexIdentity::ThreadFlagGlobalRva;
+
+                    u64 record_pointer{};
+                    if (ReadGuestWord(*state->memory, thread_record_global, record_pointer)) {
+                        predicate.record_present = record_pointer != 0;
+                        if (predicate.record_present) {
+                            u64 recorded_id{};
+                            if (ReadGuestWord(
+                                    *state->memory,
+                                    static_cast<VAddr>(record_pointer) +
+                                        IndexIdentity::ThreadRecordIdOffset,
+                                    recorded_id)) {
+                                predicate.recorded_thread_id =
+                                    static_cast<u32>(recorded_id & 0xFFFFFFFFull);
+                                predicate.has_recorded_thread_id = true;
+                            }
+                        }
+                    }
+
+                    u64 flag_word{};
+                    if (ReadGuestWord(*state->memory, thread_flag_global, flag_word)) {
+                        predicate.flag = static_cast<u32>(flag_word & 0xFFFFFFFFull);
+                        predicate.has_flag = true;
+                    }
+
+                    // The predicate is determinable only when every input it needs was read. A
+                    // null record needs no flag or id; a present record needs both.
+                    if (predicate.record_present) {
+                        predicate.determinable = predicate.has_flag &&
+                                                 predicate.has_current_thread_id &&
+                                                 predicate.has_recorded_thread_id;
+                    } else {
+                        predicate.determinable = true;
+                    }
+
+                    const IndexIdentity::AddressSlot slot =
+                        IndexIdentity::EvaluateSlotPredicate(predicate);
+                    identity.address_slot = slot;
+
+                    // The selected slot's value, and only that value, becomes the address. A
+                    // nonzero but unselected slot is not evidence of the buffer the draw consumed,
+                    // so it is recorded as a candidate and never promoted.
+                    if (slot == IndexIdentity::AddressSlot::Primary) {
                         identity.guest_allocation_base = address_a;
-                        identity.has_guest_allocation_base = true;
-                        identity.address_slot = IndexIdentity::AddressSlot::Primary;
-                        identity.address_evidence =
-                            IndexIdentity::EvidenceClass::RuntimeObserved;
-                    } else if (have_b && address_b != 0) {
+                        identity.has_guest_allocation_base = have_a;
+                        identity.address_evidence = have_a
+                                                       ? IndexIdentity::EvidenceClass::
+                                                             RuntimeObserved
+                                                       : IndexIdentity::EvidenceClass::None;
+                    } else if (slot == IndexIdentity::AddressSlot::Secondary) {
                         identity.guest_allocation_base = address_b;
-                        identity.has_guest_allocation_base = true;
-                        identity.address_slot = IndexIdentity::AddressSlot::Secondary;
-                        identity.address_evidence =
-                            IndexIdentity::EvidenceClass::RuntimeObserved;
+                        identity.has_guest_allocation_base = have_b;
+                        identity.address_evidence = have_b
+                                                       ? IndexIdentity::EvidenceClass::
+                                                             RuntimeObserved
+                                                       : IndexIdentity::EvidenceClass::None;
+                    } else {
+                        // The predicate could not be evaluated. The address stays unknown rather
+                        // than falling back to a slot the draw may not have used.
+                        identity.guest_allocation_base = 0;
+                        identity.has_guest_allocation_base = false;
+                        identity.address_evidence = IndexIdentity::EvidenceClass::None;
                     }
                 }
 
@@ -683,6 +756,10 @@ void TryInstallBeforeGuestThread(Module& module, std::string_view title_id,
              target, segment_rva, segment_file_size, segment_memory_size, MaxCapturedEvents,
              start_delay_seconds);
 #endif
+}
+
+bool IsInstalled() noexcept {
+    return g_probe_state.handle.active;
 }
 
 void CaptureGnmDrawIndex(std::uintptr_t cmdbuf, std::uint32_t size, std::uint32_t index_count,

@@ -46,6 +46,7 @@
 #include "core/rhi_command_capture.h"
 #include "core/rhi_entry_probe.h"
 #include "core/semantic_tape.h"
+#include "core/capture_session.h"
 #include "core/index_identity.h"
 #include "core/shader_param_capture.h"
 #include "core/vertex_input_capture.h"
@@ -107,6 +108,13 @@ void Emulator::Shutdown() {
     Core::VertexInputCapture::ExportVertexInputs();
     Core::ShaderParamCapture::ExportShaderParams();
     Core::IndexIdentity::ExportIdentities();
+    // The machine-readable sidecar the replay consumes. It goes into the capture directory, which
+    // is the same directory the resource package and the tape are written to.
+    if (const char* capture_dir = std::getenv("SHADPS4_DERACINE_CAPTURE_SESSION_DIR");
+        capture_dir != nullptr && *capture_dir != '\0') {
+        Core::IndexIdentity::ExportSidecar(capture_dir);
+    }
+    Core::CaptureSession::ExportManifest();
     // The tape reads the command capture and the draw package, so it must run after both.
     Core::SemanticTape::ExportTape();
     Common::Log::Flush();
