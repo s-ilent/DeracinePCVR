@@ -153,6 +153,9 @@ struct CaptureState {
     std::mutex mutex;
     std::vector<BindingRecord> records;
     std::vector<BinderRecord> binder_records;
+    std::vector<GroupedRecord> grouped_records;
+    std::array<HelperStats, GroupedHelpers.size()> helper_stats{};
+    std::atomic<u32> grouped_dropped{};
     std::atomic<u32> binder_no_pending{};
     std::atomic<u32> upload_calls{};
     std::atomic<u32> upload_overflow{};
@@ -165,6 +168,7 @@ struct CaptureState {
     VAddr module_base{};
     GuestEntryObserverHandle writer_handle{};
     GuestEntryObserverHandle binder_handle{};
+    std::array<GuestEntryObserverHandle, GroupedHelpers.size()> grouped_handles{};
     GuestEntryObserverHandle upload_handle{};
 };
 
@@ -560,13 +564,30 @@ PS4_SYSV_ABI void UploadCallerObserver(const GuestEntryRegisterFrame* frame, voi
     }
 }
 
-/// The grouped-binder observer, so a writer call can be attributed to a binder invocation.
-PS4_SYSV_ABI void BinderObserver(const GuestEntryRegisterFrame* frame, void*) noexcept {
+/// The grouped-binder observer, one instance per helper.
+///
+/// Every invocation is counted, so a zero-pending result is a measurement rather than an absence of
+/// instrumentation. Detailed records are kept only for invocations whose pending mask is nonzero,
+/// which is the transition budget that matters.
+///
+/// The helper index arrives through the observer's user-data pointer, so one function serves all
+/// five helpers while each keeps its own context offsets.
+PS4_SYSV_ABI void GroupedHelperObserver(const GuestEntryRegisterFrame* frame, void* user) noexcept {
     try {
         if (frame == nullptr) {
             return;
         }
+        const auto index = static_cast<size_t>(reinterpret_cast<uintptr_t>(user));
+        if (index >= GroupedHelpers.size()) {
+            return;
+        }
+        const GroupedHelper& helper = GroupedHelpers[index];
+
         g_state.binder_calls.fetch_add(1, std::memory_order_relaxed);
+        {
+            std::scoped_lock lock{g_state.mutex};
+            ++g_state.helper_stats[index].invocations;
+        }
 
         // Binder ABI, from the original prologue: rdi=context, rsi=shader_resource.
         const VAddr context = frame->rdi;
@@ -575,12 +596,11 @@ PS4_SYSV_ABI void BinderObserver(const GuestEntryRegisterFrame* frame, void*) no
             return;
         }
 
-        // The binder's own gate: pending = context_dirty & resource_group_mask. A zero result
-        // means no group is dirty and no writer call follows, which is why not every declaration
-        // produces a descriptor write.
+        // The helper's own gate: pending = context_dirty & resource_group_mask. Each helper reads a
+        // different context offset, which is why the table carries them.
         u32 dirty_mask{};
         u32 group_mask{};
-        if (!ReadGuestValue(context + BinderDirtyMask, dirty_mask) ||
+        if (!ReadGuestValue(context + helper.dirty_mask_offset, dirty_mask) ||
             !ReadGuestValue(shader_resource + BinderGroupMask, group_mask)) {
             return;
         }
@@ -588,6 +608,10 @@ PS4_SYSV_ABI void BinderObserver(const GuestEntryRegisterFrame* frame, void*) no
         if (pending == 0) {
             g_state.binder_no_pending.fetch_add(1, std::memory_order_relaxed);
             return;
+        }
+        {
+            std::scoped_lock lock{g_state.mutex};
+            ++g_state.helper_stats[index].nonzero_pending;
         }
 
         // The lowest set bit selects the group, exactly as the original blsi does.
@@ -612,7 +636,7 @@ PS4_SYSV_ABI void BinderObserver(const GuestEntryRegisterFrame* frame, void*) no
         if (!ReadGuestValue(list + 4 * list_index, packed_entry)) {
             return;
         }
-        if (!ReadGuestValue(context + BinderGroupCache + 8 * group, cached_group) ||
+        if (!ReadGuestValue(context + helper.group_cache_offset + 8 * group, cached_group) ||
             cached_group == 0) {
             return;
         }
@@ -632,14 +656,131 @@ PS4_SYSV_ABI void BinderObserver(const GuestEntryRegisterFrame* frame, void*) no
             ReadGuestValue(selected_object, object_vptr);
         }
 
+        // Resolve the virtual +0x38 target through the live vptr. This is the provider method the
+        // binder will call; reading it from the object's own vtable is what makes the target an
+        // observation rather than an assumption about a candidate class.
+        VAddr provider_target{};
+        bool provider_target_resolved = false;
+        if (object_vptr != 0) {
+            VAddr vtable_entry{};
+            if (ReadGuestValue(object_vptr + ResourceProviderSlot, vtable_entry) &&
+                vtable_entry != 0) {
+                provider_target = vtable_entry;
+                provider_target_resolved = true;
+            }
+        }
+
+        // The timestamp writeback pointer and its value before the binder's comparison. The binder
+        // writes through this pointer before calling the provider, so reading it here is the
+        // "before" half of an observed write.
+        VAddr timestamp_pointer{};
+        u64 timestamp_before{};
+        bool timestamp_readable = false;
+        if (selected_object != 0) {
+            if (ReadGuestValue(selected_object + ResourceTimestampPointer, timestamp_pointer) &&
+                timestamp_pointer != 0) {
+                if (ReadGuestValue(timestamp_pointer, timestamp_before)) {
+                    timestamp_readable = true;
+                }
+            }
+        }
+
+        // The shader behind this shader resource, when the metadata is reachable.
+        //
+        // The binder's rsi is the shader resource that owns the group mask and the binding lists,
+        // but its +0xB0 is not necessarily the same object the typed writer reads: A-025 records
+        // that the writer's stage map may be resource metadata *or* writer-owned scratch state.
+        // Both are tried, and which one worked is recorded rather than assumed.
+        u64 shader_hash{};
+        bool shader_hash_valid = false;
+        u8 shader_source = 0;
+        {
+            VAddr metadata{};
+            if (ReadGuestValue(shader_resource + ShaderResourceMetadataOffset, metadata) &&
+                metadata != 0) {
+                VAddr resource{};
+                VAddr program{};
+                VAddr code{};
+                u32 size{};
+                VAddr trailer{};
+                if (ResolveShader(metadata, resource, program, code, size, trailer, shader_hash)) {
+                    shader_hash_valid = true;
+                    shader_source = 1;
+                }
+            }
+            if (!shader_hash_valid) {
+                // The binder's shader resource is not the writer's metadata object. The shader
+                // identity comes from the context's shader state instead (SC-02): the primary
+                // resource slot, or the alternate when the primary is null.
+                VAddr shader_state{};
+                if (ReadGuestValue(context + ContextShaderState, shader_state) &&
+                    shader_state != 0) {
+                    VAddr resource{};
+                    if (!ReadGuestValue(shader_state + ShaderStatePrimaryResource, resource) ||
+                        resource == 0) {
+                        ReadGuestValue(shader_state + ShaderStateAlternateResource, resource);
+                    }
+                    if (resource != 0) {
+                        VAddr program{};
+                        if (ReadGuestValue(resource + ShaderResourceProgramData, program) &&
+                            program != 0) {
+                            u32 stage_record[4]{};
+                            if (ReadGuest(program, stage_record, sizeof(stage_record))) {
+                                const u32 size_field = stage_record[0] & 0x7FFFFF;
+                                const VAddr code_address =
+                                    static_cast<VAddr>(stage_record[2]) << 8;
+                                if (size_field >= GnmShaderMetadata::TrailerSize &&
+                                    code_address != 0) {
+                                    const VAddr trailer =
+                                        code_address + size_field -
+                                        GnmShaderMetadata::TrailerSize;
+                                    std::array<u8, GnmShaderMetadata::TrailerSize> tb{};
+                                    if (ReadGuest(trailer, tb.data(), tb.size()) &&
+                                        std::memcmp(tb.data(),
+                                                    GnmShaderMetadata::OrbShdrSignature.data(),
+                                                    GnmShaderMetadata::OrbShdrSignature.size()) ==
+                                            0) {
+                                        std::memcpy(&shader_hash,
+                                                    tb.data() + GnmShaderMetadata::OffHash,
+                                                    sizeof(shader_hash));
+                                        shader_hash_valid = true;
+                                        shader_source = 2;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (!shader_hash_valid &&
+                g_state.diag_dump_count.fetch_add(1, std::memory_order_relaxed) < 4) {
+                // Record the binder's shader resource layout once, so the path to the shader is
+                // identified from the data rather than guessed from an offset that belongs to a
+                // different object family.
+                CaptureState::DiagDump dump{};
+                dump.program_data = shader_resource;
+                dump.shader_resource = context;
+                u32 words[16]{};
+                if (ReadGuest(shader_resource, words, sizeof(words))) {
+                    std::memcpy(dump.words, words, sizeof(words));
+                    std::scoped_lock lock{g_state.mutex};
+                    g_state.diag_dumps.push_back(dump);
+                }
+            }
+        }
+
         std::scoped_lock lock{g_state.mutex};
-        if (g_state.binder_records.size() >= MaxRecords) {
+        if (g_state.grouped_records.size() >= MaxGroupedRecords) {
+            ++g_state.helper_stats[index].records_dropped;
+            g_state.grouped_dropped.fetch_add(1, std::memory_order_relaxed);
             return;
         }
-        BinderRecord record{};
+        GroupedRecord record{};
         record.sequence = g_state.next_sequence.fetch_add(1, std::memory_order_relaxed) + 1;
         record.native_thread_id = CurrentNativeThreadId();
         record.guest_thread_id = CurrentGuestThreadId();
+        record.helper_index = static_cast<u8>(index);
+        record.helper_address = g_state.module_base + helper.rva;
         record.context = context;
         record.shader_resource = shader_resource;
         record.dirty_mask = dirty_mask;
@@ -652,11 +793,21 @@ PS4_SYSV_ABI void BinderObserver(const GuestEntryRegisterFrame* frame, void*) no
         record.packed_api_slot = api_slot;
         record.packed_object_index = object_index;
         record.packed_group = entry_group;
+        record.packed_group_agrees = entry_group == group;
         record.cached_group = cached_group;
         record.object_array = object_array;
         record.selected_object = selected_object;
         record.object_vptr = object_vptr;
-        g_state.binder_records.push_back(record);
+        record.provider_target = provider_target;
+        record.provider_target_resolved = provider_target_resolved;
+        record.timestamp_pointer = timestamp_pointer;
+        record.timestamp_before = timestamp_before;
+        record.timestamp_readable = timestamp_readable;
+        record.shader_hash = shader_hash;
+        record.shader_hash_valid = shader_hash_valid;
+        record.shader_source = shader_source;
+        g_state.grouped_records.push_back(record);
+        ++g_state.helper_stats[index].records_kept;
     } catch (...) {
     }
 }
@@ -677,10 +828,22 @@ std::span<const BinderRecord> BinderRecords() noexcept {
                                          g_state.binder_records.size()};
 }
 
+std::span<const GroupedRecord> GroupedRecords() noexcept {
+    return std::span<const GroupedRecord>{g_state.grouped_records.data(),
+                                          g_state.grouped_records.size()};
+}
+
+const std::array<HelperStats, GroupedHelpers.size()>& HelperStatistics() noexcept {
+    return g_state.helper_stats;
+}
+
 void ResetForTesting() noexcept {
     std::scoped_lock lock{g_state.mutex};
     g_state.records.clear();
     g_state.binder_records.clear();
+    g_state.grouped_records.clear();
+    g_state.helper_stats = {};
+    g_state.grouped_dropped.store(0, std::memory_order_relaxed);
     g_state.dropped.store(0, std::memory_order_relaxed);
     g_state.exported.store(false, std::memory_order_relaxed);
 }
@@ -737,7 +900,8 @@ void TryInstallBeforeGuestThread(Module& module, std::string_view title_id,
     g_state.module_base = module.base_virtual_addr;
 
     const auto install = [&](u32 rva, std::span<const u8> prologue, GuestEntryObserver observer,
-                             GuestEntryObserverHandle& handle, const char* label) {
+                             GuestEntryObserverHandle& handle, const char* label,
+                             void* user_data = nullptr) {
         const VAddr target = module.base_virtual_addr + rva;
         void* start{};
         void* end{};
@@ -758,7 +922,7 @@ void TryInstallBeforeGuestThread(Module& module, std::string_view title_id,
                         "GNM binding capture refused: {} prologue mismatch at {:#x}", label, target);
             return false;
         }
-        if (!InstallGuestEntryObserver(*module.memory, target, observer, nullptr, handle)) {
+        if (!InstallGuestEntryObserver(*module.memory, target, observer, user_data, handle)) {
             LOG_WARNING(Core_Linker, "GNM binding capture refused: {} install failed", label);
             return false;
         }
@@ -774,8 +938,13 @@ void TryInstallBeforeGuestThread(Module& module, std::string_view title_id,
     }
     // The binder is optional: the writer chain is the proof, and a binder that fails to install
     // must not take the writer down with it.
-    install(GroupedBinderRva, BinderPrologue, BinderObserver, g_state.binder_handle,
-            "grouped binder");
+    // Every grouped helper is instrumented, not just the one A-038R happened to observe. Each
+    // keeps its own context offsets, so a zero result from one says nothing about the others.
+    for (size_t i = 0; i < GroupedHelpers.size(); ++i) {
+        install(GroupedHelpers[i].rva, BinderPrologue, GroupedHelperObserver,
+                g_state.grouped_handles[i], GroupedHelpers[i].name,
+                reinterpret_cast<void*>(static_cast<uintptr_t>(i)));
+    }
     install(DeferredUploadCallerRva, BinderPrologue, UploadCallerObserver, g_state.upload_handle,
             "deferred upload caller");
 #endif
@@ -884,6 +1053,70 @@ void Export() noexcept {
                       ImageVerdictName(
                           static_cast<ImageVerdict>(g_state.image_verdict.load())));
         json += summary;
+        json += "  \"grouped_helpers\": [\n";
+        for (size_t i = 0; i < GroupedHelpers.size(); ++i) {
+            const HelperStats& s = g_state.helper_stats[i];
+            char buffer[512];
+            std::snprintf(buffer, sizeof(buffer),
+                          "    {\"index\": %zu, \"name\": \"%s\", \"rva\": \"0x%x\", "
+                          "\"dirty_mask_offset\": \"0x%x\", \"group_cache_offset\": \"0x%x\", "
+                          "\"invocations\": %u, \"nonzero_pending\": %u, "
+                          "\"records_kept\": %u, \"records_dropped\": %u}",
+                          i, GroupedHelpers[i].name, GroupedHelpers[i].rva,
+                          GroupedHelpers[i].dirty_mask_offset,
+                          GroupedHelpers[i].group_cache_offset, s.invocations, s.nonzero_pending,
+                          s.records_kept, s.records_dropped);
+            json += buffer;
+            json += i + 1 == GroupedHelpers.size() ? "\n" : ",\n";
+        }
+        json += "  ],\n";
+
+        json += "  \"grouped_records\": [\n";
+        for (size_t i = 0; i < g_state.grouped_records.size(); ++i) {
+            const GroupedRecord& g = g_state.grouped_records[i];
+            char buffer[1024];
+            std::snprintf(buffer, sizeof(buffer),
+                          "    {\"sequence\": %llu, \"native_thread\": %llu, "
+                          "\"guest_thread\": %llu, \"helper_index\": %u, "
+                          "\"helper_address\": \"0x%llx\", \"context\": \"0x%llx\", "
+                          "\"shader_resource\": \"0x%llx\", \"dirty_mask\": \"0x%08x\", "
+                          "\"group_mask\": \"0x%08x\", \"pending\": \"0x%08x\", "
+                          "\"group\": %u, \"list\": \"0x%llx\", \"list_index\": %u, "
+                          "\"packed_entry\": \"0x%08x\", \"packed_api_slot\": %u, "
+                          "\"packed_object_index\": %u, \"packed_group\": %u, "
+                          "\"packed_group_agrees\": %s, \"cached_group\": \"0x%llx\", "
+                          "\"object_array\": \"0x%llx\", \"selected_object\": \"0x%llx\", "
+                          "\"object_vptr\": \"0x%llx\", \"provider_target\": \"0x%llx\", "
+                          "\"provider_target_resolved\": %s, \"timestamp_pointer\": \"0x%llx\", "
+                          "\"timestamp_before\": \"0x%016llx\", \"timestamp_readable\": %s, "
+                          "\"shader_hash\": \"%016llx\", "
+                          "\"shader_hash_valid\": %s, \"shader_source\": %u}",
+                          static_cast<unsigned long long>(g.sequence),
+                          static_cast<unsigned long long>(g.native_thread_id),
+                          static_cast<unsigned long long>(g.guest_thread_id), g.helper_index,
+                          static_cast<unsigned long long>(g.helper_address),
+                          static_cast<unsigned long long>(g.context),
+                          static_cast<unsigned long long>(g.shader_resource), g.dirty_mask,
+                          g.group_mask, g.pending, g.group,
+                          static_cast<unsigned long long>(g.list), g.list_index, g.packed_entry,
+                          g.packed_api_slot, g.packed_object_index, g.packed_group,
+                          g.packed_group_agrees ? "true" : "false",
+                          static_cast<unsigned long long>(g.cached_group),
+                          static_cast<unsigned long long>(g.object_array),
+                          static_cast<unsigned long long>(g.selected_object),
+                          static_cast<unsigned long long>(g.object_vptr),
+                          static_cast<unsigned long long>(g.provider_target),
+                          g.provider_target_resolved ? "true" : "false",
+                          static_cast<unsigned long long>(g.timestamp_pointer),
+                          static_cast<unsigned long long>(g.timestamp_before),
+                          g.timestamp_readable ? "true" : "false",
+                          static_cast<unsigned long long>(g.shader_hash),
+                          g.shader_hash_valid ? "true" : "false", g.shader_source);
+            json += buffer;
+            json += i + 1 == g_state.grouped_records.size() ? "\n" : ",\n";
+        }
+        json += "  ],\n";
+
         json += "  \"binder_records\": [\n";
         for (size_t i = 0; i < g_state.binder_records.size(); ++i) {
             const BinderRecord& b = g_state.binder_records[i];

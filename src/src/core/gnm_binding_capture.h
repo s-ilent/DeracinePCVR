@@ -32,6 +32,31 @@ inline constexpr u32 CbufWriterRva = 0x02F62440;
 /// The grouped graphics binder. Atlas A-031's first helper.
 inline constexpr u32 GroupedBinderRva = 0x0CC0070;
 
+/// Every grouped binding helper the Atlas recovered, with the context offsets each one uses.
+///
+/// The helpers are not interchangeable: each reads a different context dirty mask and a different
+/// cached-group array. A-038R only observed 0x0CC0070 and found a zero pending mask on every call,
+/// which says nothing about the other four. All five are counted here so a gameplay capture can
+/// establish which, if any, actually dispatch.
+struct GroupedHelper {
+    u32 rva;
+    u32 dirty_mask_offset;
+    u32 group_cache_offset;
+    const char* name;
+};
+
+inline constexpr std::array<GroupedHelper, 5> GroupedHelpers = {{
+    {0x0CC0070, 0x928, 0x568, "graphics-0"},
+    {0x0CC0300, 0x934, 0x748, "graphics-1"},
+    {0x0CC0670, 0x92C, 0x608, "graphics-2"},
+    {0x0CC09E0, 0x938, 0x7E8, "graphics-3"},
+    {0x0CC71A0, 0x93C, 0x888, "compute-0"},
+}};
+
+/// Bounded number of detailed grouped-binding records kept for the export. Only invocations with a
+/// nonzero pending mask are eligible, so this is a transition budget rather than a call budget.
+inline constexpr size_t MaxGroupedRecords = 64;
+
 /// The deferred-upload caller that actually invokes the 16-byte constant-buffer writer. Atlas
 /// A-023's deferred upload family; the descriptor source is a stack buffer filled by the provider
 /// at 0x0CC1010 from the upload object's +0x48.
@@ -60,6 +85,28 @@ inline constexpr u32 BinderGroupMask = 0x200;
 inline constexpr u32 BinderGroupCache = 0x568;
 inline constexpr u32 BinderObjectArray = 0x20;
 inline constexpr u32 BinderResourceList = 0x248;
+
+/// The virtual provider slot on a resource object's vtable (Atlas A-031/A-035).
+inline constexpr u32 ResourceProviderSlot = 0x38;
+
+/// The graphics context's typed-writer pointer. The deferred-upload caller reads it at
+/// `context+0x460` and adds 0x2E8; the binder path uses the same object.
+inline constexpr u32 BinderWriterPointer = 0x460;
+
+/// The context's shader-state pointer, and the two resource slots inside it (SC-02).
+///
+/// The binder's `rsi` is the shader resource that owns the group mask and binding lists, but its
+/// `+0xB0` is not the metadata the typed writer reads: the two are different object families. The
+/// shader identity comes from the context's own shader state instead, which SC-02 established
+/// independently: `context+0x468` -> shader state, `+0x200` primary resource, `+0x1E0` alternate
+/// when the primary is null, and `resource+0x1D8` the stage record.
+inline constexpr u32 ContextShaderState = 0x468;
+inline constexpr u32 ShaderStatePrimaryResource = 0x200;
+inline constexpr u32 ShaderStateAlternateResource = 0x1E0;
+
+/// The resource object's timestamp writeback pointer (Atlas A-035). The binder compares and may
+/// overwrite the double it points at, before calling the provider.
+inline constexpr u32 ResourceTimestampPointer = 0x40;
 
 /// Writer field offsets, from the original disassembly.
 inline constexpr u32 WriterStageMapBase = 0xC180;
@@ -171,6 +218,69 @@ struct BindingRecord {
     u8 declaration_flags{};
 };
 
+/// Per-helper counters. Cheap enough to run on every invocation, so a zero result is a measurement
+/// rather than an absence of instrumentation.
+struct HelperStats {
+    u32 invocations{};
+    u32 nonzero_pending{};
+    u32 records_kept{};
+    u32 records_dropped{};
+};
+
+/// One captured grouped-binder invocation with a nonzero pending mask: the layer between a shader
+/// declaration and a typed writer call. Atlas A-031's packed entry selects a live guest resource
+/// object.
+struct GroupedRecord {
+    u64 sequence{};
+    u64 native_thread_id{};
+    u64 guest_thread_id{};
+    /// Index into GroupedHelpers, so the record says which helper dispatched.
+    u8 helper_index{};
+    VAddr helper_address{};
+    VAddr context{};
+    VAddr shader_resource{};
+
+    u32 dirty_mask{};
+    u32 group_mask{};
+    u32 pending{};
+    u32 group{};
+
+    /// The packed binding list and the entry it selected.
+    VAddr list{};
+    u32 list_index{};
+    u32 packed_entry{};
+    u8 packed_api_slot{};
+    u16 packed_object_index{};
+    u8 packed_group{};
+    /// Whether the packed entry's own group byte agrees with the group the mask selected.
+    bool packed_group_agrees{};
+
+    /// The cached group and the resource object the entry selected.
+    VAddr cached_group{};
+    VAddr object_array{};
+    VAddr selected_object{};
+    u64 object_vptr{};
+    /// The virtual +0x38 target resolved through that vptr, when readable.
+    VAddr provider_target{};
+    bool provider_target_resolved{};
+
+    /// The timestamp writeback (Atlas A-035). The binder compares the double at
+    /// `*(object+0x40)` with a float-rounded process time and may overwrite it before calling the
+    /// provider. Both the pointer and the value before the call are recorded; the value after is
+    /// read on the next invocation of the same object, so the write is observed rather than
+    /// inferred.
+    VAddr timestamp_pointer{};
+    u64 timestamp_before{};
+    bool timestamp_readable{};
+
+    /// The shader behind this shader resource, when resolvable.
+    u64 shader_hash{};
+    bool shader_hash_valid{};
+    /// Where the shader was resolved from: 0 none, 1 the binder's shader resource, 2 the writer's
+    /// stage map. Recorded so the two paths are never conflated.
+    u8 shader_source{};
+};
+
 /// One captured grouped-binder invocation: the layer between a shader declaration and a typed
 /// writer call. Atlas A-031's packed entry selects a live guest resource object.
 struct BinderRecord {
@@ -213,6 +323,8 @@ void Export() noexcept;
 [[nodiscard]] size_t RecordCount() noexcept;
 [[nodiscard]] std::span<const BindingRecord> Records() noexcept;
 [[nodiscard]] std::span<const BinderRecord> BinderRecords() noexcept;
+[[nodiscard]] std::span<const GroupedRecord> GroupedRecords() noexcept;
+[[nodiscard]] const std::array<HelperStats, GroupedHelpers.size()>& HelperStatistics() noexcept;
 void ResetForTesting() noexcept;
 
 /// Test seam: the map-word decode, exposed so the arithmetic is pinned without a guest.

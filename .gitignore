@@ -60,6 +60,7 @@ tools/download*
 # Private benchmark runtime, builds and run evidence (never shared, never committed)
 _lab/
 _out/
+_build/
 build-tests/
 __pycache__/
 *.pyc
