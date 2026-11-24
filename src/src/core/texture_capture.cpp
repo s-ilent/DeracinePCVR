@@ -76,9 +76,12 @@ bool ShouldSnapshot() noexcept {
     return g_state.snapshots_taken < MaxSnapshotDraws;
 }
 
-void NoteSnapshotTaken() noexcept {
+void NoteSnapshotTaken(u64 provenance_id) noexcept {
     std::scoped_lock lock{g_state.mutex};
     ++g_state.snapshots_taken;
+    // The draw this snapshot belongs to. CommitPendingImages compares against this, so the records
+    // kept are the ones for the draw whose contents were actually copied.
+    g_state.snapshot_provenance = provenance_id;
 }
 
 bool CapacityExhausted() noexcept {
@@ -124,19 +127,13 @@ void NoteImageBinding(const ImageRecord& record) noexcept {
 void CommitPendingImages(u64 provenance_id) noexcept {
     try {
         std::scoped_lock lock{g_state.mutex};
-        // A draw's bindings can be committed more than once: BindTextures runs per stage, and a
-        // stage can be visited again. Committing is therefore incremental rather than a one-shot
-        // latch. The draw is counted once, and a record already stored for this draw is not
-        // stored again, so a repeated stage does not duplicate its bindings.
+        // Only the draw a snapshot was actually taken for contributes records. `snapshot_provenance`
+        // is set by NoteSnapshotTaken, which runs when a copy was successfully scheduled, so this
+        // compares against a value that was established rather than assigning it here and then
+        // testing the assignment. A binding record for a draw whose contents were never captured
+        // cannot be replayed, and keeping every draw's bindings fills the budget before the
+        // selected draw is reached.
         if (g_state.snapshot_provenance != provenance_id) {
-            g_state.snapshot_provenance = provenance_id;
-        }
-        // Only the draw that is actually snapshotted contributes records. A binding record for a
-        // draw whose contents were never captured cannot be replayed, and keeping every draw's
-        // bindings fills the budget before the selected draw is reached.
-        const bool snapshot_draw = g_state.snapshot_provenance == provenance_id &&
-                                   g_state.snapshots_taken != 0;
-        if (!snapshot_draw) {
             g_pending_images.clear();
             return;
         }

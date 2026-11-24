@@ -118,6 +118,10 @@ struct ProvenanceRecord {
     u32 ue4_primitive_type{};
     u32 rhi_index_resource_lo{};
     u32 rhi_index_resource_hi{};
+    /// The effective viewport the RHI context held when this draw was issued. Read from the
+    /// context, not from the command stream, because the RHI caches it and only emits a packet on
+    /// change: a draw can depend on a viewport set by an earlier command on another list.
+    EffectiveViewport viewport{};
     std::chrono::steady_clock::time_point captured_at{};
     ProvenanceState state{ProvenanceState::Selected};
     /// Number of Vulkan draws this one guest packet produced.
@@ -272,6 +276,75 @@ thread_local PendingGnmCorrelation g_pending_gnm_correlation{};
     return true;
 }
 
+/// The PS4 RHI context caches the effective viewport. The offsets are established from the target
+/// binary: SetViewport at 0x0CB8AE0 compares the incoming rectangle against +0x80/+0x84/+0x88/+0x8C
+/// and +0xA0/+0xA4, and stores it back there only when it differs. Reading the cache at the draw's
+/// entry therefore yields the viewport the draw actually consumed, including one set by an earlier
+/// command on a different list.
+inline constexpr u32 ContextViewportMinXOffset = 0x80;
+inline constexpr u32 ContextViewportMinYOffset = 0x84;
+inline constexpr u32 ContextViewportMaxXOffset = 0x88;
+inline constexpr u32 ContextViewportMaxYOffset = 0x8C;
+inline constexpr u32 ContextViewportMinZOffset = 0xA0;
+inline constexpr u32 ContextViewportMaxZOffset = 0xA4;
+
+/// Proves a whole guest span is readable, once, so a multi-field read does not re-query the
+/// mapping for every word.
+[[nodiscard]] bool IsGuestSpanReadable(MemoryManager& memory, VAddr address,
+                                       VAddr length) noexcept {
+    if (address == 0 || length == 0 || address > (std::numeric_limits<VAddr>::max)() - length)
+        return false;
+    void* mapped_start{};
+    void* mapped_end{};
+    u32 protection{};
+    if (memory.QueryProtection(address, &mapped_start, &mapped_end, &protection) != 0 ||
+        (protection & static_cast<u32>(MemoryProt::CpuRead)) == 0) {
+        return false;
+    }
+    const VAddr region_start = reinterpret_cast<VAddr>(mapped_start);
+    const VAddr region_end = reinterpret_cast<VAddr>(mapped_end);
+    return region_start <= address && region_end >= address + length;
+}
+
+/// Reads one guest word from an already-validated span.
+[[nodiscard]] bool ReadGuestWord(MemoryManager& memory, VAddr address, u64& value) noexcept {
+    if (!IsGuestSpanReadable(memory, address, sizeof(u64)))
+        return false;
+    std::memcpy(&value, reinterpret_cast<const void*>(address), sizeof(u64));
+    return true;
+}
+
+[[nodiscard]] bool ReadEffectiveViewport(MemoryManager& memory, VAddr context,
+                                         EffectiveViewport& out) noexcept {
+    out = {};
+    if (context == 0)
+        return false;
+    // One query covers the whole span: the cache is contiguous from +0x80 to +0xA8.
+    if (!IsGuestSpanReadable(memory, context + ContextViewportMinXOffset, 0x28))
+        return false;
+
+    // ReadGuestWord returns a full word; the viewport fields are 32-bit floats.
+    const auto read_field = [&memory, context](u32 offset, float& value) -> bool {
+        u64 word{};
+        if (!ReadGuestWord(memory, context + offset, word))
+            return false;
+        const u32 bits = static_cast<u32>(word & 0xFFFFFFFFull);
+        std::memcpy(&value, &bits, sizeof(value));
+        return true;
+    };
+    if (!read_field(ContextViewportMinXOffset, out.min_x) ||
+        !read_field(ContextViewportMinYOffset, out.min_y) ||
+        !read_field(ContextViewportMaxXOffset, out.max_x) ||
+        !read_field(ContextViewportMaxYOffset, out.max_y) ||
+        !read_field(ContextViewportMinZOffset, out.min_z) ||
+        !read_field(ContextViewportMaxZOffset, out.max_z)) {
+        out = {};
+        return false;
+    }
+    out.valid = true;
+    return true;
+}
+
 static void CaptureEntryImpl(const GuestEntryRegisterFrame* frame, void* user_data) {
     auto* state = static_cast<ProbeState*>(user_data);
     if (frame == nullptr || state == nullptr)
@@ -341,6 +414,15 @@ static void CaptureEntryImpl(const GuestEntryRegisterFrame* frame, void* user_da
                 // One RHI invocation per deferred command: consume it so a second call cannot
                 // inherit the same identity.
                 RhiCommandCapture::ConsumeDeferredCommand();
+            }
+
+            // The viewport is cached on the RHI context, not carried by the command list, so the
+            // command stream alone cannot describe it. Read the effective value at the draw's
+            // entry, which is what the draw actually consumed. The context pointer is the entry's
+            // first argument.
+            if (state->memory != nullptr) {
+                ReadEffectiveViewport(*state->memory, static_cast<VAddr>(event.integer_arguments[0]),
+                                      record.viewport);
             }
 
             {
@@ -887,6 +969,60 @@ std::uint64_t CurrentDrawProvenanceId() noexcept {
 
 void ClearCurrentDrawProvenance() noexcept {
     g_current_draw_provenance_id = 0;
+}
+
+bool GetProvenanceSnapshot(u64 record_id, ProvenanceSnapshot& out) noexcept {
+    try {
+        out = {};
+        if (!g_provenance.enabled.load(std::memory_order_relaxed) || record_id == 0)
+            return false;
+        if (record_id > MaxProvenanceRecords)
+            return false;
+
+        std::scoped_lock lock{g_provenance.mutex};
+        const auto& record = g_provenance.records[record_id - 1];
+        if (record.id != record_id)
+            return false;
+
+        out.id = record.id;
+        out.command_capture_id = record.command_capture_id;
+        out.command_type = record.command_type;
+        out.command_list = record.command_list;
+        out.rhi_context = record.rhi_context;
+        out.submission_id = record.submission_id;
+        out.packet_offset = record.packet_offset;
+        // A record that reached Submitted has a known offset, including a valid offset of zero.
+        out.packet_offset_known = record.submission_id != 0;
+        out.index_count = record.index_count;
+        out.instance_count = record.instance_count;
+        out.index_addr = record.index_addr;
+        out.ue4_primitive_type = record.ue4_primitive_type;
+        out.rhi_index_resource = (static_cast<u64>(record.rhi_index_resource_hi) << 32) |
+                                 record.rhi_index_resource_lo;
+        out.child_draws = record.child_draws;
+        out.viewport = record.viewport;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+u64 LastRecordedProvenanceId() noexcept {
+    try {
+        if (!g_provenance.enabled.load(std::memory_order_relaxed))
+            return 0;
+        std::scoped_lock lock{g_provenance.mutex};
+        const u32 records = g_provenance.record_count.load(std::memory_order_relaxed);
+        u64 last = 0;
+        for (u32 i = 0; i < MaxProvenanceRecords && i < records; ++i) {
+            const auto& record = g_provenance.records[i];
+            if (record.id != 0 && record.state == ProvenanceState::Recorded)
+                last = record.id;
+        }
+        return last;
+    } catch (...) {
+        return 0;
+    }
 }
 
 void ExportProvenance() noexcept {

@@ -1998,11 +1998,16 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
                 continue;
             if (desc.type != VideoCore::TextureCache::BindingType::Texture)
                 continue;
-            texture_cache.SnapshotImageForCapture(
-                image_id, desc.view_info.range.base.level, desc.view_info.range.extent.levels,
-                desc.view_info.range.base.layer, desc.view_info.range.extent.layers,
-                desc.info.props.is_depth ? 2u : 1u, provenance, unified, stage.pgm_hash,
-                binding_index - 1);
+            // The return value is what decides whether the snapshot budget is consumed. A draw
+            // whose image the cache refused, because of its format, size or state, must not spend
+            // the budget on a copy that never happened.
+            if (texture_cache.SnapshotImageForCapture(
+                    image_id, desc.view_info.range.base.level,
+                    desc.view_info.range.extent.levels, desc.view_info.range.base.layer,
+                    desc.view_info.range.extent.layers, desc.info.props.is_depth ? 2u : 1u,
+                    provenance, unified, stage.pgm_hash, binding_index - 1)) {
+                Core::TextureCapture::NoteSnapshotTaken(provenance);
+            }
         }
     }
 }

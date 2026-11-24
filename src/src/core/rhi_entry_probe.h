@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <string_view>
 
+#include "common/types.h"
+
 namespace Core {
 
 class Module;
@@ -69,6 +71,52 @@ void ClearCurrentDrawProvenance() noexcept;
 
 /// Writes the provenance summary and per-record lines. Runs after the guest has stopped.
 void ExportProvenance() noexcept;
+
+/// The effective viewport the RHI context held when the draw was issued.
+///
+/// The PS4 RHI caches the viewport on the context (MinX at +0x80, MinY at +0x84, MaxX at +0x88,
+/// MaxY at +0x8C, MinZ at +0xA0, MaxZ at +0xA4) and only emits a GNM viewport packet when the
+/// value changes. A draw therefore depends on state set by an earlier command, possibly on a
+/// different command list, so the command stream alone cannot describe it. This is read from the
+/// context at the draw's RHI entry, which is the value the draw actually consumed.
+struct EffectiveViewport {
+    float min_x{};
+    float min_y{};
+    float min_z{};
+    float max_x{};
+    float max_y{};
+    float max_z{};
+    /// False when the context could not be read, so a zero viewport is never mistaken for a real
+    /// one.
+    bool valid{};
+};
+
+/// A snapshot of one provenance record, for consumers that run after the guest has stopped.
+struct ProvenanceSnapshot {
+    u64 id{};
+    u64 command_capture_id{};
+    u8 command_type{};
+    u64 command_list{};
+    u64 rhi_context{};
+    u64 submission_id{};
+    u64 packet_offset{};
+    bool packet_offset_known{};
+    u32 index_count{};
+    u32 instance_count{};
+    u64 index_addr{};
+    u32 ue4_primitive_type{};
+    u64 rhi_index_resource{};
+    u32 child_draws{};
+    EffectiveViewport viewport{};
+};
+
+/// Reads one provenance record by id. Returns false when the record does not exist or provenance
+/// was not enabled.
+[[nodiscard]] bool GetProvenanceSnapshot(u64 record_id, ProvenanceSnapshot& out) noexcept;
+
+/// Returns the id of the last provenance record that produced a recorded draw, or 0. Used to select
+/// a tape target when no explicit selection was given.
+[[nodiscard]] u64 LastRecordedProvenanceId() noexcept;
 
 } // namespace RhiEntryProbe
 } // namespace Core

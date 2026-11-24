@@ -194,9 +194,11 @@ struct ImageRecord {
 /// first few draws the title screen binds.
 void CommitPendingImages(u64 provenance_id) noexcept;
 
-/// Records that one snapshot was actually taken. The budget counts snapshots that produced a copy,
-/// not commits: a draw rejected by the format or size guards must not consume it.
-void NoteSnapshotTaken() noexcept;
+/// Records that one snapshot was actually taken, for the given draw. The budget counts snapshots
+/// that produced a copy, not commits: a draw rejected by the format or size guards must not consume
+/// it. The provenance is what ties the retained binding records to the draw whose contents were
+/// copied, so a later unrelated draw cannot inherit them.
+void NoteSnapshotTaken(u64 provenance_id) noexcept;
 
 /// Drops the pending records for a draw that was not selected.
 void DiscardPendingImages() noexcept;

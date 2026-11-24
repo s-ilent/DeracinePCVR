@@ -594,9 +594,16 @@ Image::Barriers Image::GetBarriers(vk::ImageLayout dst_layout, vk::AccessFlags2 
         });
     }
 
-    last_state.layout = dst_layout;
-    last_state.access_mask = dst_mask;
-    last_state.pl_stage = dst_stage;
+    // The aggregate state describes the whole image, so it may only be advanced when the request
+    // covered the whole image. A partial transition leaves the subresources in different states,
+    // and the per-subresource table is what describes them; advancing the aggregate here would
+    // make it claim a layout no subresource is in, and every later whole-image decision would be
+    // made from that false premise.
+    if (!needs_partial_transition) {
+        last_state.layout = dst_layout;
+        last_state.access_mask = dst_mask;
+        last_state.pl_stage = dst_stage;
+    }
 
     return barriers;
 }

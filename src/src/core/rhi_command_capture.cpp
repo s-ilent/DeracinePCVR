@@ -365,6 +365,14 @@ static void CaptureCommandImpl(const GuestEntryRegisterFrame* frame, void* user_
                 g_deferred_scope.command_type = command_id;
                 g_deferred_scope.command_list = frame->rsi;
                 g_deferred_scope.entry_rsp = frame->OriginalStackPointer();
+                // The command list's RHI context, so the provenance record can name the context the
+                // draw was issued against. Without this the field stayed zero and a consumer could
+                // not tell which context's cached state the draw consumed.
+                u64 context{};
+                if (frame->rsi != 0 &&
+                    ReadGuestWord(*state->memory, frame->rsi + CommandListContextOffset, context)) {
+                    g_deferred_scope.rhi_context = context;
+                }
             }
         }
     }
@@ -409,6 +417,15 @@ static void CaptureCommandImpl(const GuestEntryRegisterFrame* frame, void* user_
         captured.payload_words = CapturePayload(*state->memory, command, command_id, captured);
         if (command_id == CommandSetRenderTargets)
             CaptureRenderTargets(*state->memory, command, captured);
+        // Record the RHI context for every command, not only draws. The PS4 RHI caches state such
+        // as the viewport on the context, so a state command's context is what attributes it to the
+        // draws that consumed it. Reading it only for draws left every viewport and render-target
+        // record with a zero context, which made the state unattributable after the fact.
+        if (list != 0) {
+            u64 context{};
+            if (ReadGuestWord(*state->memory, list + CommandListContextOffset, context))
+                captured.context_pointer = context;
+        }
         if (command_id == CommandDrawIndexedPrimitive && list != 0)
             CaptureShaderSnapshot(*state->memory, list, captured);
     }
@@ -632,6 +649,48 @@ void TryInstallBeforeGuestThread(Module& module, std::string_view title_id,
              title_id, app_version, *image_hash, ModuleName, module.base_virtual_addr, installed,
              MaxCapturedCommands, start_delay_seconds);
 #endif
+}
+
+std::uint32_t CapturedCommandCount() noexcept {
+    if (!g_capture_state.installed.load(std::memory_order_relaxed))
+        return 0;
+    return g_capture_state.captured_count.load(std::memory_order_relaxed);
+}
+
+bool GetCapturedCommand(std::uint32_t index, CapturedCommandView& out) noexcept {
+    try {
+        out = {};
+        if (!g_capture_state.installed.load(std::memory_order_relaxed))
+            return false;
+        const u32 captured = g_capture_state.captured_count.load(std::memory_order_relaxed);
+        if (index >= captured || index >= MaxCapturedCommands)
+            return false;
+        const auto& c = g_capture_state.commands[index];
+        out.sequence = c.sequence;
+        out.native_thread_id = c.native_thread_id;
+        out.guest_thread_id = c.guest_thread_id;
+        out.list_pointer = c.list_pointer;
+        out.context_pointer = c.context_pointer;
+        out.vtable_rva = c.vtable_rva;
+        for (size_t i = 0; i < 8; ++i) {
+            out.payload[i] = c.payload[i];
+            out.render_targets[i] = c.render_targets[i];
+            out.uavs[i] = c.uavs[i];
+        }
+        out.depth_target = c.depth_target;
+        out.shader_state = c.shader_state;
+        out.shader_resource = c.shader_resource;
+        out.program_data = c.program_data;
+        out.shader_modifier = c.shader_modifier;
+        out.command_id = c.command_id;
+        out.payload_words = c.payload_words;
+        out.render_target_count = c.render_target_count;
+        out.uav_count = c.uav_count;
+        out.shader_status = c.shader_status;
+        return true;
+    } catch (...) {
+        return false;
+    }
 }
 
 void ExportCapturedCommands() {
