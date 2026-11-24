@@ -25,6 +25,20 @@ std::string SignedDec(s32 value) {
 
 } // namespace
 
+const char* IndexDomainName(IndexDomain domain) noexcept {
+    switch (domain) {
+    case IndexDomain::Unknown:
+        return "unknown";
+    case IndexDomain::Ue4Object:
+        return "ue4_object";
+    case IndexDomain::GuestAddress:
+        return "guest_address";
+    case IndexDomain::HostBuffer:
+        return "host_buffer";
+    }
+    return "unknown";
+}
+
 const char* JoinOutcomeName(JoinOutcome outcome) noexcept {
     switch (outcome) {
     case JoinOutcome::Joined:
@@ -68,18 +82,47 @@ JoinResult JoinTapeToPackage(const TapeIdentity& tape_identity,
     // observed the same resource rather than a same-sized one.
     bool index_identity_agrees = false;
     {
+        // A comparison is only meaningful when both values are in the same namespace. The tape
+        // records the RHI invocation's index-buffer argument, which is an original UE4 object
+        // pointer; the package records the guest GPU address. Comparing those numbers would
+        // produce a meaningless match or a meaningless mismatch, so a cross-domain pair is
+        // reported as not comparable and the join cannot rest on it.
+        const bool same_domain = tape_identity.index_domain != IndexDomain::Unknown &&
+                                 tape_identity.index_domain == package_identity.index_domain;
         IdentityField field{};
         field.name = "index_guest_base";
         field.tape_value = Hex(tape_identity.index_guest_base);
         field.package_value = Hex(package_identity.index_guest_base);
-        field.comparable =
-            tape_identity.index_guest_base != 0 && package_identity.index_guest_base != 0;
+        field.comparable = same_domain && tape_identity.index_guest_base != 0 &&
+                           package_identity.index_guest_base != 0;
         field.agrees =
             field.comparable && tape_identity.index_guest_base == package_identity.index_guest_base;
         result.fields.push_back(field);
+
+        // The domains themselves are reported, so a reader can see why a comparison was refused.
+        IdentityField domains{};
+        domains.name = "index_domain";
+        domains.tape_value = IndexDomainName(tape_identity.index_domain);
+        domains.package_value = IndexDomainName(package_identity.index_domain);
+        domains.comparable = true;
+        domains.agrees = same_domain;
+        result.fields.push_back(domains);
+
         if (field.comparable && !field.agrees) {
             result.outcome = JoinOutcome::Mismatched;
             result.reason = "the tape and the package name different index buffers";
+            return result;
+        }
+        if (!same_domain) {
+            // The domains differ or are unknown, so the index resource cannot establish the join.
+            // This is reported rather than silently falling through to the derived fields, which
+            // are a consistency check and never identity.
+            result.outcome = JoinOutcome::InsufficientEvidence;
+            result.reason =
+                std::string{"the index resource cannot be compared: the tape records a "} +
+                IndexDomainName(tape_identity.index_domain) + " and the package a " +
+                IndexDomainName(package_identity.index_domain) +
+                ", which are different namespaces";
             return result;
         }
         index_identity_agrees = field.agrees;

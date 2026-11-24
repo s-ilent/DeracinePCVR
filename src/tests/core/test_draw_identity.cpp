@@ -27,6 +27,7 @@ TapeIdentity MakeTape() {
     identity.provenance_id = 42;
     identity.index_guest_base = 0x2015e40000ull;
     identity.index_guest_size = 6072;
+    identity.index_domain = tape::IndexDomain::GuestAddress;
     identity.index_element_size = 2;
     identity.primitive_type = 0;
     identity.num_primitives = 1012;
@@ -44,6 +45,7 @@ PackageIdentity MakePackage() {
     identity.provenance_id = 42;
     identity.index_guest_base = 0x2015e40000ull;
     identity.index_guest_size = 6072;
+    identity.index_domain = tape::IndexDomain::GuestAddress;
     identity.index_element_size = 2;
     identity.index_count = 3036;
     identity.first_index = 0;
@@ -296,6 +298,54 @@ TEST(DrawIdentity, TheConsistencyReportNamesEveryDisagreement) {
     EXPECT_EQ(result.outcome, JoinOutcome::Joined);
     EXPECT_FALSE(result.derived_consistent);
     EXPECT_GE(result.derived_disagreements.size(), 3u);
+}
+
+TEST(DrawIdentity, ACrossDomainIndexComparisonIsRefused) {
+    // The tape records the RHI invocation's index-buffer argument, which is an original UE4 object
+    // pointer. The package records the guest GPU address. Those are different namespaces, so their
+    // numeric equality is not evidence of anything. This is the case a genuine capture will hit.
+    auto tape = MakeTape();
+    tape.index_domain = tape::IndexDomain::Ue4Object;
+    auto package = MakePackage();
+    package.index_domain = tape::IndexDomain::GuestAddress;
+    // The numbers are made equal on purpose: a naive comparison would join them.
+    tape.index_guest_base = package.index_guest_base;
+    const auto result = JoinTapeToPackage(tape, package);
+    EXPECT_EQ(result.outcome, JoinOutcome::InsufficientEvidence);
+    EXPECT_NE(result.reason.find("different namespaces"), std::string::npos);
+}
+
+TEST(DrawIdentity, TheDomainsAreReportedEvenWhenTheyAgree) {
+    const auto result = JoinTapeToPackage(MakeTape(), MakePackage());
+    ASSERT_EQ(result.outcome, JoinOutcome::Joined) << result.reason;
+    bool found = false;
+    for (const auto& field : result.fields) {
+        if (field.name == "index_domain") {
+            found = true;
+            EXPECT_TRUE(field.comparable);
+            EXPECT_TRUE(field.agrees);
+            EXPECT_EQ(field.tape_value, "guest_address");
+        }
+    }
+    EXPECT_TRUE(found);
+}
+
+TEST(DrawIdentity, AnUnknownDomainCannotEstablishTheJoin) {
+    // A capture that did not record which namespace its index value belongs to cannot be joined on
+    // it. Reporting the absence is correct; guessing the domain would be a fabricated match.
+    auto tape = MakeTape();
+    tape.index_domain = tape::IndexDomain::Unknown;
+    const auto result = JoinTapeToPackage(tape, MakePackage());
+    EXPECT_EQ(result.outcome, JoinOutcome::InsufficientEvidence);
+}
+
+TEST(DrawIdentity, AHostBufferDomainIsNotAGuestAddress) {
+    auto tape = MakeTape();
+    tape.index_domain = tape::IndexDomain::HostBuffer;
+    auto package = MakePackage();
+    package.index_domain = tape::IndexDomain::GuestAddress;
+    const auto result = JoinTapeToPackage(tape, package);
+    EXPECT_EQ(result.outcome, JoinOutcome::InsufficientEvidence);
 }
 
 } // namespace

@@ -607,12 +607,18 @@ int main(int argc, char** argv) {
     bool substitute_targets = false;
     bool force_untextured = false;
     bool instance_id_mode = false;
+    bool synthetic_fixture = false;
     for (int i = 2; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--substitute-viewport") {
             substitute_viewport = true;
         } else if (arg == "--substitute-render-targets") {
             substitute_targets = true;
+        } else if (arg == "--synthetic-fixture") {
+            // The tape was built from the package rather than captured alongside it. That is a
+            // legitimate way to exercise the integration path, but it is not provenance evidence,
+            // so it must be declared and is reported as synthetic throughout.
+            synthetic_fixture = true;
         } else if (arg == "--instance-id") {
             // A diagnostic substitution: the draw is unchanged, the fragment colour is tinted by
             // the instance index so a mutation of the instance range is visible. The captured draw
@@ -731,6 +737,18 @@ int main(int argc, char** argv) {
                 tape_identity.index_guest_base = resource.guest_base;
                 tape_identity.index_guest_size = resource.guest_size;
                 tape_identity.index_element_size = resource.element_size;
+                // The tape declares which namespace its index value belongs to. A real capture
+                // records the RHI invocation argument, an original UE4 object pointer, which is not
+                // a guest GPU address and must not be compared as one.
+                if (resource.index_domain == "guest_address") {
+                    tape_identity.index_domain = tape::IndexDomain::GuestAddress;
+                } else if (resource.index_domain == "host_buffer") {
+                    tape_identity.index_domain = tape::IndexDomain::HostBuffer;
+                } else if (resource.index_domain == "ue4_object") {
+                    tape_identity.index_domain = tape::IndexDomain::Ue4Object;
+                } else {
+                    tape_identity.index_domain = tape::IndexDomain::Unknown;
+                }
                 break;
             }
         }
@@ -752,6 +770,8 @@ int main(int argc, char** argv) {
         package_identity.provenance_id = pkg.provenance_id;
         package_identity.index_guest_base = pkg.index.guest_base;
         package_identity.index_guest_size = pkg.index.guest_size;
+        // The package records the guest GPU address the draw consumed.
+        package_identity.index_domain = tape::IndexDomain::GuestAddress;
         package_identity.index_element_size = pkg.index.index_size;
         package_identity.index_count = pkg.index.index_count;
         package_identity.first_index = pkg.index.first_index;
@@ -778,11 +798,50 @@ int main(int argc, char** argv) {
             }
             std::cout << ")\n";
         }
+        // The provenance classification. A synthetic fixture can execute, but it can never be
+        // promoted to a verified original draw: the label is what carries that distinction.
+        const char* provenance_class = nullptr;
+        if (join.outcome == tape::JoinOutcome::Joined) {
+            provenance_class = synthetic_fixture ? "synthetic_fixture" : "original_tape_matched";
+        } else if (join.outcome == tape::JoinOutcome::Mismatched) {
+            provenance_class = "rejected";
+        } else if (join.outcome == tape::JoinOutcome::InsufficientEvidence) {
+            provenance_class = "insufficient_evidence";
+        } else {
+            provenance_class = "rejected";
+        }
+        std::cout << "provenance: " << provenance_class << "\n";
+
         if (join.outcome != tape::JoinOutcome::Joined) {
-            std::cerr << "identity rejected: " << join.reason << "\n";
-            std::cerr << "  the tape and the package do not describe the same draw, so executing "
-                         "them together would be a fabricated match\n";
-            return 1;
+            // A mismatch is always fatal, synthetic or not. The synthetic label relaxes only the
+            // requirement for an original identity to exist; it never permits two captures that
+            // positively disagree to be executed together.
+            if (join.outcome == tape::JoinOutcome::Mismatched) {
+                std::cerr << "identity rejected: " << join.reason << "\n";
+                std::cerr << "  the tape and the package positively disagree, so executing them "
+                             "together would be a fabricated match\n";
+                return 1;
+            }
+            if (synthetic_fixture) {
+                // A synthetic fixture has no original UE4 object, so the index resource cannot
+                // establish the join. Running it is still useful, but only under the synthetic
+                // label, and only when the derived draw agrees so the fixture is at least
+                // self-consistent.
+                if (!join.derived_consistent) {
+                    std::cerr << "synthetic fixture is not self-consistent: " << join.reason
+                              << "\n";
+                    return 1;
+                }
+                std::cout << "identity: synthetic fixture accepted under the synthetic label "
+                             "(no original UE4 identity to compare)\n";
+            } else {
+                std::cerr << "identity rejected: " << join.reason << "\n";
+                std::cerr << "  the tape and the package do not describe the same draw, so "
+                             "executing them together would be a fabricated match\n";
+                std::cerr << "  pass --synthetic-fixture only when the tape was built from the "
+                             "package rather than captured alongside it\n";
+                return 1;
+            }
         }
     }
 
@@ -1790,6 +1849,8 @@ int main(int argc, char** argv) {
     }
 
     std::cout << "\n-- provenance separation --\n";
+    std::cout << "provenance: " << (synthetic_fixture ? "synthetic_fixture" : "original_tape")
+              << "\n";
     std::cout << "semantic_commands: recovered from the UE4 deferred command record\n";
     std::cout << "resource_contents: supplied by the SC-09H pkg (shadPS4-exported)\n";
     std::cout << "shaders: diagnostic substitute, not the game's\n";

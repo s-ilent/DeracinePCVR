@@ -35,8 +35,15 @@ def save(path, data):
         json.dump(data, handle, indent=1)
 
 
+PROVENANCE_RE = re.compile(r"^provenance: (\w+)$", re.MULTILINE)
+VALIDATION_RE = re.compile(r"validation: errors=(\d+)")
+
+
 def run(replay, directory, extra=()):
-    result = subprocess.run([replay, directory, *extra], capture_output=True, text=True)
+    # The fixture is built from the package rather than captured alongside it, so every run declares
+    # that. Without the flag the replay refuses the join, which is the correct behaviour.
+    args = [replay, directory, "--synthetic-fixture", *extra]
+    result = subprocess.run(args, capture_output=True, text=True)
     return result.returncode, result.stdout + result.stderr
 
 
@@ -44,7 +51,11 @@ def parse(output):
     draw = DRAW_RE.search(output)
     images = IMAGE_RE.findall(output)
     mode = MODE_RE.search(output)
+    provenance = PROVENANCE_RE.findall(output)
+    validation = VALIDATION_RE.search(output)
     return {
+        "provenance": provenance[-1] if provenance else None,
+        "validation_errors": int(validation.group(1)) if validation else None,
         "index_count": int(draw.group(1)) if draw else None,
         "first_index": int(draw.group(2)) if draw else None,
         "vertex_offset": int(draw.group(3)) if draw else None,
@@ -218,22 +229,43 @@ def main(argv):
            "draw arguments must be identical to A")
 
     # --- J: identity rejection, different index resource ---------------------------------------
+    # This case needs a fixture whose index identity is in a comparable domain, otherwise the join
+    # reports insufficient evidence and the rejection path is never exercised. The matcher-test
+    # variant supplies one. It is still synthetic: copying the package's address into the tape
+    # proves nothing about provenance.
+    matcher_tape = os.path.join(work_root, "j-matcher-tape")
+    if os.path.exists(matcher_tape):
+        shutil.rmtree(matcher_tape)
+    shutil.copytree(package_dir, matcher_tape)
+    subprocess.run([sys.executable,
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "make_synthetic_tape.py"),
+                    matcher_tape, "guest"], check=True, capture_output=True)
+
     def mutate_index_identity(package):
         package["index_binding"]["guest_base"] = 0x2015E80000
 
-    work = prepare(os.path.join(work_root, "j-identity"), base_tape, package_dir,
+    work = prepare(os.path.join(work_root, "j-identity"), matcher_tape, package_dir,
                    mutate_package=mutate_index_identity)
     code, out = run(replay, work, ["--substitute-render-targets"])
     record("J package index identity changed, tape unchanged", code, parse(out),
            "must be rejected before GPU execution")
 
+    # --- K: the same matcher fixture unmutated, to show the rejection is the mutation ----------
+    work = prepare(os.path.join(work_root, "k-matcher-baseline"), matcher_tape, package_dir)
+    code, out = run(replay, work, ["--substitute-render-targets"])
+    record("K matcher fixture, package unchanged", code, parse(out),
+           "joins, so J's rejection is caused by the mutation rather than the fixture")
+
     # --- Summary -------------------------------------------------------------------------------
     print("\n\n=== summary ===")
-    print(f"{'case':<58} {'exit':>4} {'mode':>12} {'indices':>8} {'inst':>5} {'hash':>21}")
+    print(f"{'case':<52} {'exit':>4} {'provenance':>20} {'valid':>5} {'indices':>8} "
+          f"{'inst':>5} {'hash':>21}")
     for r in results:
         h = r["images"][0][0] if r["images"] else "-"
-        print(f"{r['name'][:58]:<58} {r['exit']:>4} {str(r['mode']):>12} "
-              f"{str(r['index_count']):>8} {str(r['instance_count']):>5} {str(h):>21}")
+        print(f"{r['name'][:52]:<52} {r['exit']:>4} {str(r['provenance']):>20} "
+              f"{str(r['validation_errors']):>5} {str(r['index_count']):>8} "
+              f"{str(r['instance_count']):>5} {str(h):>21}")
 
     with open(os.path.join(work_root, "mutations.json"), "w", encoding="utf-8") as handle:
         json.dump(results, handle, indent=1)

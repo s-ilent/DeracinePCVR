@@ -73,12 +73,34 @@ struct JoinResult {
     std::vector<std::string_view> derived_disagreements;
 };
 
+/// Which namespace an index-resource value belongs to.
+///
+/// This is the distinction that decides whether a comparison means anything. The semantic tape
+/// records the RHI invocation's index-buffer argument, which is an original UE4 `FRHIIndexBuffer`
+/// object pointer. The resource package records the guest GPU address the draw consumed. Those are
+/// different namespaces: their numeric equality or inequality is not evidence either way, and
+/// comparing them would produce a meaningless match or a meaningless mismatch.
+enum class IndexDomain : u8 {
+    /// The value is not known, so nothing can be compared.
+    Unknown = 0,
+    /// An original UE4 RHI resource object pointer.
+    Ue4Object = 1,
+    /// A guest GPU virtual address.
+    GuestAddress = 2,
+    /// A host-side buffer identity observed downstream.
+    HostBuffer = 3,
+};
+
+[[nodiscard]] const char* IndexDomainName(IndexDomain domain) noexcept;
+
 /// The identity facts a tape contributes.
 struct TapeIdentity {
     u64 provenance_id{};
-    /// The guest address of the index buffer the RHI invocation was given.
+    /// The index-buffer value the RHI invocation was given, in whatever domain it was recorded.
     u64 index_guest_base{};
     u64 index_guest_size{};
+    /// Which namespace `index_guest_base` belongs to.
+    IndexDomain index_domain{IndexDomain::Unknown};
     /// The index element width the tape resolved, or zero when it did not.
     u32 index_element_size{};
     /// The semantic payload's own fields.
@@ -98,6 +120,8 @@ struct PackageIdentity {
     u64 provenance_id{};
     u64 index_guest_base{};
     u64 index_guest_size{};
+    /// Which namespace `index_guest_base` belongs to.
+    IndexDomain index_domain{IndexDomain::Unknown};
     u32 index_element_size{};
     u32 index_count{};
     u32 first_index{};

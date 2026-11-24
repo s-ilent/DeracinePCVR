@@ -131,6 +131,7 @@ bool ReadTape(const std::string& directory, Tape& out, std::string& error) {
             resource.guest_base = entry.value("guest_base", 0ull);
             resource.guest_size = entry.value("guest_size", 0ull);
             resource.element_size = entry.value("element_size", 0u);
+            resource.index_domain = entry.value("index_domain", std::string{"ue4_object"});
             out.resources.push_back(resource);
         }
 

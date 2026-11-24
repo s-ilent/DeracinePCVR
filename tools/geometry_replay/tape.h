@@ -94,6 +94,9 @@ struct Resource {
     u64 guest_base{};
     u64 guest_size{};
     u32 element_size{};
+    /// Which namespace `guest_base` belongs to. A real tape records the RHI invocation argument,
+    /// which is an original UE4 object pointer; a matcher-test fixture may declare a guest address.
+    std::string index_domain;
 };
 
 struct Operation {
