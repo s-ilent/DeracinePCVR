@@ -157,11 +157,12 @@ TEST(PackageReader, AnUnknownSchemaIsRefused) {
     // A version outside the accepted set is refused rather than reinterpreted, because a missing
     // field read as a default is not a captured value.
     TempDir dir;
-    Write(dir.path() / "package.json", R"({"schema_version": 3, "provenance_id": 1})");
+    // Schema 3 is accepted as a compatibility path, so the unknown version here is 5.
+    Write(dir.path() / "package.json", R"({"schema_version": 5, "provenance_id": 1})");
     package::Package out{};
     std::string error;
     EXPECT_FALSE(package::Read(dir.path().string(), out, error));
-    EXPECT_NE(error.find("is not 2 or 4"), std::string::npos);
+    EXPECT_NE(error.find("is not 2, 3 or 4"), std::string::npos);
 }
 
 TEST(PackageReader, ASchemaFourPackageReadsItsShaderState) {

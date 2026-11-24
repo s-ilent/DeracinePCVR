@@ -279,6 +279,8 @@ struct Readiness {
 
 struct Package {
     u32 schema_version{};
+    /// The capture session the package was exported in. Zero for a legacy package.
+    u64 session_id{};
     u64 provenance_id{};
     bool is_indexed{};
     std::vector<Resource> resources;
@@ -300,18 +302,24 @@ struct Package {
     std::vector<ShaderBinding> shader_bindings;
     PipelineState pipeline_state;
     ReferenceOutput reference;
-    /// The capture session the package belongs to, when the producer recorded one.
-    u64 session_id{};
+    /// The execution identity within the session, when the producer recorded one. The session id
+    /// itself is declared above, because RHI-02I-R2 introduced it before schema 4 existed.
     u64 execution_id{};
 };
 
 /// The schema versions this reader accepts.
 ///
-/// Schema 2 is the resource-only package. Schema 4 adds the effective shader stages, their
-/// descriptor interfaces, the pipeline state and the reference images. A version outside this set
-/// is refused rather than reinterpreted, because a missing field would otherwise read as a default
-/// and a default is not a captured value.
+/// Schema 2 is the resource-only package. Schema 3 adds the capture session identity and the
+/// effective shader binaries, and is what RHI-02I-R2 and RHI-02I-R3 write. Schema 4 adds the
+/// descriptor interface of each effective permutation, the explicit pipeline-state presence flags
+/// and the reference images.
+///
+/// Schema 3 is accepted as a compatibility path, not as an equivalent: it carries no descriptor
+/// interface, so effective-shader mode refuses it. A version outside this set is refused rather
+/// than reinterpreted, because a missing field would otherwise read as a default and a default is
+/// not a captured value.
 inline constexpr u32 SchemaResourceOnly = 2;
+inline constexpr u32 SchemaSessionIdentity = 3;
 inline constexpr u32 SchemaEffectiveShader = 4;
 
 /// Reads a package directory. Returns false with a reason when a required field is absent, a

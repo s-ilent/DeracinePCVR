@@ -25,7 +25,11 @@ using u32 = std::uint32_t;
 using u64 = std::uint64_t;
 using s32 = std::int32_t;
 
-inline constexpr u32 kSchemaVersion = 1;
+/// Version 2 adds the capture session identity. A version 1 tape is still readable for diagnostic
+/// replay, but it carries no session provenance and therefore cannot qualify as a verified original
+/// capture.
+inline constexpr u32 kSchemaVersion = 2;
+inline constexpr u32 kLegacySchemaVersion = 1;
 
 enum class OpKind : u8 {
     BeginFrame = 1,
@@ -127,6 +131,8 @@ struct Tape {
     u32 schema_version{};
     std::string scene;
     u64 provenance_id{};
+    /// The capture session the tape was exported in. Zero for a legacy tape.
+    u64 session_id{};
     std::string image_sha256;
     u64 module_base{};
     u64 submission_id{};

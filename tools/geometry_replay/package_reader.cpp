@@ -173,9 +173,11 @@ bool Read(const std::string& directory, Package& out, std::string& error,
         // read from a schema-2 package would be absent, and an absent field read as a default is
         // not a captured value.
         if (out.schema_version != SchemaResourceOnly &&
+            out.schema_version != SchemaSessionIdentity &&
             out.schema_version != SchemaEffectiveShader) {
             error = "schema version " + std::to_string(out.schema_version) +
-                    " is not " + std::to_string(SchemaResourceOnly) + " or " +
+                    " is not " + std::to_string(SchemaResourceOnly) + ", " +
+                    std::to_string(SchemaSessionIdentity) + " or " +
                     std::to_string(SchemaEffectiveShader);
             return false;
         }
@@ -190,6 +192,9 @@ bool Read(const std::string& directory, Package& out, std::string& error,
         // absence means the draw was not indexed rather than that the package is malformed.
         out.is_indexed =
             doc.contains("pipeline") && doc.at("pipeline").value("is_indexed", false);
+        // A version 2 package carries no session identity. It is read as zero, which the join
+        // treats as insufficient evidence rather than defaulting to another artifact's session.
+        out.session_id = doc.value("session_id", 0ull);
 
         for (const auto& entry : doc.at("resources")) {
             Resource resource{};

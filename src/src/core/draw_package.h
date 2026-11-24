@@ -32,10 +32,17 @@ namespace DrawPackage {
 /// Version 3 adds the effective shader binaries and the pipeline state needed to execute the draw
 /// with its original shaders. A version 2 package is refused rather than reinterpreted, because its
 /// readiness flags did not distinguish "the shader binaries exist" from "the draw can run on them".
+/// Version 3 adds the capture session identity, so a package can be shown to come from the same
+/// execution as the semantic tape and the index bridge, and the effective shader binaries and
+/// pipeline state needed to execute the draw with its original shaders.
 /// Version 4 adds the descriptor interface of each effective shader permutation, and replaces the
 /// zero-as-sentinel topology check with an explicit presence flag. A version 3 package is refused
 /// rather than reinterpreted, because its readiness flags could not distinguish "a binding exists"
 /// from "the effective module's required resources are all available".
+///
+/// Schema 4 carries the session identity that version 3 introduced, with the same meaning. The
+/// merge of the two branches is a reconciliation, not a choice between them: RHI-02I-R3's own
+/// handoff requires schema 4 to retain the field.
 inline constexpr u32 SchemaVersion = 4;
 
 /// Opt-in for writing a private draw package. Separate from the capture flags so a package is only
@@ -431,6 +438,8 @@ struct Package {
     u32 schema_version{SchemaVersion};
     std::string scene;
     u64 provenance_id{};
+    /// The capture session this package was exported in. Read from the one CaptureSession identity.
+    u64 session_id{};
     u64 pipeline_hash{};
     u64 vs_hash{};
     u64 ps_hash{};

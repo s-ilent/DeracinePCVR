@@ -249,6 +249,86 @@ JoinResult JoinTapeToPackageWithBridge(const TapeIdentity& tape_identity,
                                        const IndexBridge& bridge) noexcept {
     JoinResult result{};
 
+    // --- Session identity ---------------------------------------------------------------------
+    // Every artifact must claim the same capture session. A matching session proves the artifacts
+    // claim the same execution; it does not by itself prove they describe the same draw, which is
+    // what the bridge below establishes.
+    {
+        IdentityField field{};
+        field.name = "session_id";
+        field.tape_value = Hex(tape_identity.session_id);
+        field.package_value = Hex(package_identity.session_id);
+        field.comparable = tape_identity.session_id != 0 && package_identity.session_id != 0;
+        field.agrees = field.comparable &&
+                       tape_identity.session_id == package_identity.session_id;
+        result.fields.push_back(field);
+        if (!field.comparable) {
+            result.outcome = JoinOutcome::InsufficientEvidence;
+            result.reason =
+                "the tape or the package carries no capture session identity, so the artifacts "
+                "cannot be shown to come from one execution";
+            return result;
+        }
+        if (!field.agrees) {
+            result.outcome = JoinOutcome::Mismatched;
+            result.reason = "the tape and the package were captured in different sessions";
+            return result;
+        }
+    }
+    {
+        IdentityField field{};
+        field.name = "bridge_session_id";
+        field.tape_value = Hex(bridge.session_id);
+        field.package_value = Hex(package_identity.session_id);
+        field.comparable = bridge.session_id != 0 && package_identity.session_id != 0;
+        field.agrees = field.comparable && bridge.session_id == package_identity.session_id;
+        result.fields.push_back(field);
+        if (!field.comparable) {
+            result.outcome = JoinOutcome::InsufficientEvidence;
+            result.reason =
+                "the index bridge carries no capture session identity, so it cannot be shown to "
+                "belong to this execution";
+            return result;
+        }
+        if (!field.agrees) {
+            result.outcome = JoinOutcome::Mismatched;
+            result.reason = "the index bridge was recorded in a different session";
+            return result;
+        }
+    }
+
+    // --- Original object correspondence --------------------------------------------------------
+    // The bridge must describe the exact original FRHIIndexBuffer the semantic tape named. This is
+    // enforced here rather than only by the caller, so a caller that forgets the check cannot
+    // obtain a join from a bridge that resolved a different object.
+    {
+        IdentityField field{};
+        field.name = "original_rhi_object";
+        field.tape_value = Hex(tape_identity.index_guest_base);
+        field.package_value = Hex(bridge.original_rhi_object);
+        // The tape records the object pointer in the Ue4Object domain. A tape that carries a guest
+        // address instead has no original object to compare, so the field is not comparable.
+        field.comparable = bridge.has_original_rhi_object &&
+                           tape_identity.index_domain == IndexDomain::Ue4Object &&
+                           tape_identity.index_guest_base != 0;
+        field.agrees = field.comparable &&
+                       bridge.original_rhi_object == tape_identity.index_guest_base;
+        result.fields.push_back(field);
+        if (!field.comparable) {
+            result.outcome = JoinOutcome::InsufficientEvidence;
+            result.reason =
+                "the tape does not carry an original UE4 index-buffer object to compare against "
+                "the bridge";
+            return result;
+        }
+        if (!field.agrees) {
+            result.outcome = JoinOutcome::Mismatched;
+            result.reason =
+                "the index bridge resolved a different original object than the tape named";
+            return result;
+        }
+    }
+
     // --- Execution identity -------------------------------------------------------------------
     // A bridge from a different execution than the package cannot establish a match. The same
     // address in two processes is not the same resource, and a reused provenance id across runs

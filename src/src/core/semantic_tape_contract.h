@@ -18,7 +18,10 @@ namespace Core::SemanticTape {
 /// than reinterpreting fields whose meaning may have changed.
 ///
 /// Version 1 is the first tape: one UE4-origin indexed draw with the state that precedes it.
-inline constexpr u32 SchemaVersion = 1;
+/// Version 2 adds the capture session identity, so a tape can be shown to come from the same
+/// execution as the resource package and the index bridge. A version 1 tape is refused in
+/// verified-original mode because it carries no session provenance.
+inline constexpr u32 SchemaVersion = 2;
 
 /// Opt-in for writing a semantic command tape. Separate from every other capture flag, so a tape is
 /// only produced when explicitly asked for. Only the exact value "1" enables it.
@@ -448,6 +451,10 @@ struct Tape {
     std::string_view scene;
     /// Provenance record id of the draw this tape describes.
     u64 provenance_id{};
+    /// The capture session this tape was exported in. Read from the one CaptureSession identity, so
+    /// every artifact of one execution carries the same value. Zero means the tape predates session
+    /// provenance and cannot qualify as a verified original capture.
+    u64 session_id{};
     /// The exact executable the tape was captured from.
     std::string_view image_sha256;
     u64 module_base{};
