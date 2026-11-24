@@ -17,10 +17,39 @@
 #include <tuple>
 
 #include "common/logging/log.h"
+#include "common/sha256.h"
 #include "core/draw_package.h"
+#include "core/reference_output.h"
+#include "core/shader_binary_capture.h"
+#include "core/shader_interface_capture.h"
 #include "core/texture_capture.h"
 
 namespace Core::ShaderParamCapture {
+
+namespace {
+
+/// Formats a SHA-256 digest as lowercase hex, which is the form the package stores.
+[[nodiscard]] std::string HexDigest(const std::array<u8, 32>& digest) {
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(64);
+    for (const u8 byte : digest) {
+        out.push_back(kHex[byte >> 4]);
+        out.push_back(kHex[byte & 0x0F]);
+    }
+    return out;
+}
+
+/// Hashes a byte span and formats it as lowercase hex.
+[[nodiscard]] std::string Sha256Hex(const std::vector<u8>& bytes) {
+    sha256::SHA256 hasher;
+    if (!bytes.empty()) {
+        hasher.update(bytes.data(), bytes.size());
+    }
+    return HexDigest(hasher.final());
+}
+
+} // namespace
 
 /// Writes one package for the first draw that has at least one host-verified resource.
 void WriteFirstPackage(const char* directory) noexcept;
@@ -1206,6 +1235,165 @@ void WriteFirstPackage(const char* directory) noexcept {
             }
             package.readiness.sampler_ready = !package.samplers.empty();
             package.readiness.pipeline_state_ready = false;
+
+            // The effective shader stages. The identity is (program hash, permutation index), which
+            // is what the pipeline key carries in stage_hashes. A program hash alone is not unique:
+            // one program compiles to several permutations, so a hash match alone would not
+            // identify the module this draw executed.
+            {
+                const auto add_stage = [&](u64 permutation_hash, u32 logical_stage) {
+                    Core::ShaderBinaryCapture::RetainedBinary binary{};
+                    if (!Core::ShaderBinaryCapture::FindByPermutationHash(permutation_hash,
+                                                                          binary)) {
+                        return false;
+                    }
+                    DrawPackage::ShaderStage stage{};
+                    stage.logical_stage = binary.identity.logical_stage;
+                    stage.hardware_stage = binary.identity.hardware_stage;
+                    stage.program_hash = binary.identity.program_hash;
+                    stage.permutation_index = binary.identity.permutation_index;
+                    stage.permutation_hash = binary.identity.permutation_hash;
+                    stage.patched = binary.patched;
+                    stage.entry_point = std::string{binary.entry_point};
+                    // The effective module is the patch when one was applied, and the generated
+                    // SPIR-V otherwise. Keeping the two hashes distinct is what stops a consumer
+                    // from loading the unpatched module and believing it is what the draw ran.
+                    const auto& effective =
+                        binary.patched && !binary.patch_spirv.empty() ? binary.patch_spirv
+                                                                      : binary.spirv;
+                    const auto& digest = binary.patched && !binary.patch_spirv.empty()
+                                             ? binary.effective_sha256
+                                             : binary.generated_sha256;
+                    stage.effective_sha256 = HexDigest(digest);
+                    stage.generated_sha256 = HexDigest(binary.generated_sha256);
+                    stage.effective_byte_length = effective.size() * sizeof(u32);
+                    stage.gcn_byte_length = binary.gcn_code.size() * sizeof(u32);
+                    stage.effective_bytes.resize(stage.effective_byte_length);
+                    std::memcpy(stage.effective_bytes.data(), effective.data(),
+                                stage.effective_bytes.size());
+                    stage.gcn_bytes.resize(stage.gcn_byte_length);
+                    if (!binary.gcn_code.empty()) {
+                        std::memcpy(stage.gcn_bytes.data(), binary.gcn_code.data(),
+                                    stage.gcn_bytes.size());
+                    }
+                    const char* stage_name = logical_stage == 3 ? "vs" : "ps";
+                    stage.effective_file =
+                        std::string{"shader_"} + stage_name + "_" +
+                        std::to_string(stage.permutation_hash) + ".spv";
+                    stage.gcn_file = std::string{"shader_"} + stage_name + "_" +
+                                     std::to_string(stage.permutation_hash) + ".gcn";
+                    package.shader_stages.push_back(std::move(stage));
+                    return true;
+                };
+                const bool have_vs = add_stage(draw.vs_hash, 3);
+                const bool have_ps = add_stage(draw.ps_hash, 0);
+                package.readiness.shader_binaries_ready = have_vs && have_ps;
+
+                // The descriptor interface of each effective stage, keyed by permutation hash.
+                const auto add_interface = [&](u64 permutation_hash) {
+                    Core::ShaderInterface::Interface captured{};
+                    if (!Core::ShaderInterface::FindByPermutationHash(permutation_hash,
+                                                                      captured)) {
+                        return false;
+                    }
+                    DrawPackage::ShaderInterface out{};
+                    out.program_hash = captured.program_hash;
+                    out.permutation_index = captured.permutation_index;
+                    out.permutation_hash = captured.permutation_hash;
+                    out.hardware_stage = captured.hardware_stage;
+                    out.logical_stage = captured.logical_stage;
+                    out.patched = captured.patched;
+                    out.push_constant_offset = captured.push_constant.offset;
+                    out.push_constant_size = captured.push_constant.size;
+                    out.push_constant_stage_flags = captured.push_constant.stage_flags;
+                    out.unified_binding_count = captured.unified_binding_count;
+                    for (u32 d = 0; d < captured.descriptor_count; ++d) {
+                        const auto& descriptor = captured.descriptors[d];
+                        DrawPackage::ShaderDescriptor entry{};
+                        entry.set = descriptor.set;
+                        entry.binding = descriptor.binding;
+                        entry.descriptor_class = static_cast<u32>(descriptor.cls);
+                        entry.count = descriptor.count;
+                        entry.stage_flags = descriptor.stage_flags;
+                        entry.guest_resource_index = descriptor.guest_resource_index;
+                        entry.written = descriptor.written;
+                        out.descriptors.push_back(entry);
+                    }
+                    package.shader_interfaces.push_back(std::move(out));
+                    return true;
+                };
+                add_interface(draw.vs_hash);
+                add_interface(draw.ps_hash);
+            }
+
+            // The graphics pipeline state the draw used.
+            {
+                const auto& in = draw.pipeline_state;
+                auto& out = package.pipeline_state;
+                out.has_topology = true;
+                out.topology = in.topology;
+                out.cull_mode = in.cull_mode;
+                out.front_face = in.front_face;
+                out.polygon_mode = in.polygon_mode;
+                out.depth_test = in.depth_test;
+                out.depth_write = in.depth_write;
+                out.depth_compare_op = in.depth_compare_op;
+                out.depth_format = in.depth_format;
+                out.samples = in.samples;
+                for (u32 i = 0; i < in.color_format_count && i < 8; ++i) {
+                    out.color_formats.push_back(in.color_formats[i]);
+                    out.blend_enable.push_back(in.blend_enable[i]);
+                    out.write_mask.push_back(in.write_mask[i]);
+                }
+                out.viewport_x = in.viewport_x;
+                out.viewport_y = in.viewport_y;
+                out.viewport_width = in.viewport_width;
+                out.viewport_height = in.viewport_height;
+                out.viewport_min_depth = in.viewport_min_depth;
+                out.viewport_max_depth = in.viewport_max_depth;
+                out.push_constant_offset = in.push_constant_offset;
+                out.push_constant_size = in.push_constant_size;
+                out.push_constant_bytes.resize(in.push_constant_size);
+                if (in.push_constant_size != 0) {
+                    std::memcpy(out.push_constant_bytes.data(), in.push_constant_words,
+                                std::min<size_t>(in.push_constant_size,
+                                                 sizeof(in.push_constant_words)));
+                }
+                package.readiness.pipeline_state_ready_original =
+                    out.topology != 0 && !out.color_formats.empty();
+            }
+
+            // The reference output around the draw, when it was captured.
+            {
+                Core::ReferenceOutput::ReferenceImage pre{};
+                Core::ReferenceOutput::ReferenceImage post{};
+                bool has_pre = false;
+                if (Core::ReferenceOutput::GetReference(draw.provenance_id, pre, post, has_pre)) {
+                    auto& out = package.reference_output;
+                    out.width = post.width;
+                    out.height = post.height;
+                    out.format = post.format;
+                    out.bytes_per_pixel = post.bytes_per_pixel;
+                    out.has_pre = has_pre;
+                    out.pre_sha256 = Sha256Hex(pre.bytes);
+                    out.post_sha256 = Sha256Hex(post.bytes);
+                    out.pre_file = has_pre ? "reference_pre.bin" : "";
+                    out.post_file = "reference_post.bin";
+                    package.reference_pre_bytes = std::move(pre.bytes);
+                    package.reference_post_bytes = std::move(post.bytes);
+                    package.readiness.reference_output_ready =
+                        !out.post_sha256.empty() && out.width != 0 && out.height != 0;
+                }
+            }
+
+            // The shader bindings and parameters are ready when the binaries are and every binding
+            // the draw recorded resolved to host content.
+            package.readiness.shader_bindings_ready =
+                package.readiness.shader_binaries_ready && !package.bindings.empty();
+            package.readiness.shader_parameters_ready =
+                package.readiness.shader_bindings_ready &&
+                package.pipeline_state.push_constant_bytes.size() ==
+                    package.pipeline_state.push_constant_size;
             package.readiness.diagnostic_geometry_replay_ready =
                 package.readiness.geometry_ready;
             // A diagnostic textured replay needs one usable texture, not every bound texture. The

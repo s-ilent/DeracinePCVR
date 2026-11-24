@@ -9,6 +9,8 @@
 #include <string_view>
 #include <vector>
 
+#include "common/hash.h"
+#include "common/sha256.h"
 #include "common/types.h"
 
 namespace Core {
@@ -27,7 +29,14 @@ namespace DrawPackage {
 /// Version 2 adds geometry and replaces the single `replay_ready` flag with explicit readiness
 /// dimensions. A version 1 package is rejected rather than reinterpreted, because its
 /// `replay_ready` meant shader-buffer completeness only.
-inline constexpr u32 SchemaVersion = 2;
+/// Version 3 adds the effective shader binaries and the pipeline state needed to execute the draw
+/// with its original shaders. A version 2 package is refused rather than reinterpreted, because its
+/// readiness flags did not distinguish "the shader binaries exist" from "the draw can run on them".
+/// Version 4 adds the descriptor interface of each effective shader permutation, and replaces the
+/// zero-as-sentinel topology check with an explicit presence flag. A version 3 package is refused
+/// rather than reinterpreted, because its readiness flags could not distinguish "a binding exists"
+/// from "the effective module's required resources are all available".
+inline constexpr u32 SchemaVersion = 4;
 
 /// Opt-in for writing a private draw package. Separate from the capture flags so a package is only
 /// produced when explicitly asked for.
@@ -134,8 +143,160 @@ struct Readiness {
     bool diagnostic_textured_replay_ready{};
     /// Enough to reproduce the draw with its original materials.
     bool original_material_ready{};
+
+    // The original-shader dimensions. These are separate because a package can carry the shader
+    // binaries and still be unable to run them: the bindings may be incomplete, the push constants
+    // may be missing, or the pipeline state may not have been captured. Collapsing them into one
+    // flag is what lets a package claim readiness it does not have.
+    /// Both stages' effective SPIR-V are present and hash-verified.
+    bool shader_binaries_ready{};
+    /// Every descriptor the SPIR-V declares has a captured binding.
+    bool shader_bindings_ready{};
+    /// The push constants and user data the shaders consume were captured.
+    bool shader_parameters_ready{};
+    /// The graphics pipeline state the draw used was captured.
+    bool pipeline_state_ready_original{};
+    /// A pre-draw and post-draw reference of the colour attachment was captured.
+    bool reference_output_ready{};
+    /// Everything above, so the draw can run on its original shaders and be compared.
+    bool original_shader_replay_ready{};
+
     /// Why the highest claimed level is not higher.
     std::string limitation;
+};
+
+/// One effective shader stage of the captured draw.
+///
+/// The identity is (program hash, permutation index), not the program hash alone. One GCN program
+/// compiles to several permutations whose specialization depends on runtime state, resource shapes,
+/// fetch-shader state and binding allocation, so a hash match alone does not identify the module the
+/// draw executed.
+struct ShaderStage {
+    /// The logical stage: 0 fragment, 3 vertex.
+    u32 logical_stage{};
+    /// The hardware stage the program was compiled for.
+    u32 hardware_stage{};
+    /// The original GCN program hash.
+    u64 program_hash{};
+    /// The permutation index within that program.
+    u32 permutation_index{};
+    /// HashCombine(program_hash, permutation_index). This is what the pipeline key carries.
+    u64 permutation_hash{};
+    /// Whether a shader patch was applied. When true, the effective module is the patch, not the
+    /// generated SPIR-V.
+    bool patched{};
+    /// SHA-256 of the effective module's bytes.
+    std::string effective_sha256;
+    /// SHA-256 of the generated SPIR-V, before any patch.
+    std::string generated_sha256;
+    /// Entry point the module exports.
+    std::string entry_point;
+    /// Byte length of the effective module, so a reader can size its buffer before loading.
+    u64 effective_byte_length{};
+    /// Byte length of the GCN instruction words.
+    u64 gcn_byte_length{};
+    /// The sidecar file holding the effective module.
+    std::string effective_file;
+    /// The sidecar file holding the GCN words, when they were retained.
+    std::string gcn_file;
+    /// The effective module's bytes. Written to the sidecar named by effective_file; not serialized
+    /// into the JSON, so a reader loads it from the file and verifies it against effective_sha256.
+    std::vector<u8> effective_bytes;
+    /// The GCN instruction words, when they were retained.
+    std::vector<u8> gcn_bytes;
+};
+
+/// One descriptor the effective module declares, as the production layout allocated it.
+struct ShaderDescriptor {
+    u32 set{};
+    u32 binding{};
+    /// The descriptor class, in the vocabulary the SPIR-V uses.
+    u32 descriptor_class{};
+    u32 count{1};
+    /// The shader stages that can see this binding, as a Vulkan stage-flags mask.
+    u32 stage_flags{};
+    /// The guest shader-resource index this came from, or 0xFFFFFFFF when it did not.
+    u32 guest_resource_index{0xFFFFFFFFu};
+    bool written{};
+};
+
+/// The descriptor interface of one effective shader permutation.
+///
+/// The identity is (program hash, permutation index), matching the binary capture. One program can
+/// produce permutations with different resource interfaces, so a lookup by program hash alone is
+/// insufficient.
+struct ShaderInterface {
+    u64 program_hash{};
+    u32 permutation_index{};
+    u64 permutation_hash{};
+    u32 hardware_stage{};
+    u32 logical_stage{};
+    bool patched{};
+    std::vector<ShaderDescriptor> descriptors;
+    /// The push-constant block this stage declares.
+    u32 push_constant_offset{};
+    u32 push_constant_size{};
+    u32 push_constant_stage_flags{};
+    /// The number of unified bindings the stage consumed.
+    u32 unified_binding_count{};
+};
+
+/// The graphics pipeline state the draw used, as the renderer actually configured it.
+struct PipelineState {
+    /// Whether the topology was captured. Zero is a legitimate Vulkan topology value, so it cannot
+    /// double as a missing-data sentinel.
+    bool has_topology{};
+    /// Vulkan primitive topology.
+    u32 topology{};
+    /// Cull mode and front-face convention.
+    u32 cull_mode{};
+    u32 front_face{};
+    /// Polygon mode.
+    u32 polygon_mode{};
+    /// Depth test and write enables, and the compare operation.
+    bool depth_test{};
+    bool depth_write{};
+    u32 depth_compare_op{};
+    /// Colour attachment formats, in attachment order.
+    std::vector<u32> color_formats;
+    u32 depth_format{};
+    /// Sample count.
+    u32 samples{};
+    /// Blend state per attachment: whether blending is enabled and the write mask.
+    std::vector<u32> blend_enable;
+    std::vector<u32> write_mask;
+    /// The viewport and scissor the draw used.
+    float viewport_x{};
+    float viewport_y{};
+    float viewport_width{};
+    float viewport_height{};
+    float viewport_min_depth{};
+    float viewport_max_depth{};
+    /// The push-constant range the pipeline layout declares.
+    u32 push_constant_offset{};
+    u32 push_constant_size{};
+    /// The push-constant bytes the draw submitted.
+    std::vector<u8> push_constant_bytes;
+};
+
+/// A reference image of the colour attachment around the draw.
+struct ReferenceOutput {
+    /// Width and height of the captured subresource.
+    u32 width{};
+    u32 height{};
+    /// Vulkan format of the attachment.
+    u32 format{};
+    /// Bytes per pixel, so a reader can size its buffer.
+    u32 bytes_per_pixel{};
+    /// SHA-256 of the pre-draw and post-draw contents.
+    std::string pre_sha256;
+    std::string post_sha256;
+    /// Sidecar files holding the contents.
+    std::string pre_file;
+    std::string post_file;
+    /// Whether the pre-draw contents were captured. A draw that does not depend on prior contents
+    /// does not need them, and saying so is more useful than an empty image.
+    bool has_pre{};
 };
 
 /// How the diagnostic replay should interpret the geometry. This is a documented choice, not a
@@ -291,6 +452,19 @@ struct Package {
     /// Texture payload, written to its own sidecar so a reader can stream it separately from the
     /// geometry blob. Subresource offsets index into this vector.
     std::vector<u8> texture_bytes;
+
+    /// The effective shader stages of this draw, one per stage the pipeline used.
+    std::vector<ShaderStage> shader_stages;
+    /// The descriptor interface of each effective stage, keyed by permutation hash.
+    std::vector<ShaderInterface> shader_interfaces;
+    /// The graphics pipeline state the draw used.
+    PipelineState pipeline_state;
+    /// The reference output around the draw.
+    ReferenceOutput reference_output;
+    /// The reference image bytes. Written to the sidecars named by reference_output; not serialized
+    /// into the JSON, so a reader loads them from the files and verifies them against the hashes.
+    std::vector<u8> reference_pre_bytes;
+    std::vector<u8> reference_post_bytes;
 
     Readiness readiness;
 
@@ -577,6 +751,183 @@ struct Package {
                 !package.readiness.texture_contents_ready || !package.readiness.sampler_ready ||
                 !package.readiness.pipeline_state_ready) {
                 error = "original material readiness claimed without every dimension";
+                return false;
+            }
+        }
+
+        // The original-shader dimensions. Each is derived from what the package actually carries,
+        // so a package cannot claim to run on its original shaders without the binaries, the
+        // bindings, the parameters and the pipeline state all being present.
+        if (package.readiness.shader_binaries_ready) {
+            if (package.shader_stages.empty()) {
+                error = "shader binary readiness claimed with no shader stages";
+                return false;
+            }
+            // A draw needs both a vertex and a fragment stage. A package carrying one cannot run.
+            bool has_vertex = false;
+            bool has_fragment = false;
+            for (const auto& stage : package.shader_stages) {
+                if (stage.effective_sha256.empty()) {
+                    error = "shader stage has no effective module hash";
+                    return false;
+                }
+                if (stage.effective_byte_length == 0) {
+                    error = "shader stage has no effective module bytes";
+                    return false;
+                }
+                if (stage.permutation_hash == 0) {
+                    error = "shader stage has no permutation hash";
+                    return false;
+                }
+                // The permutation hash must be the combination of the program hash and the
+                // permutation index, or the identity is internally inconsistent.
+                if (stage.permutation_hash !=
+                    HashCombine(stage.program_hash,
+                                static_cast<u64>(stage.permutation_index))) {
+                    error = "shader stage permutation hash does not match its program hash and "
+                            "permutation index";
+                    return false;
+                }
+                // The retained bytes must be the ones the hash describes. A stage whose bytes and
+                // hash disagree is not the module the draw executed.
+                if (!stage.effective_bytes.empty()) {
+                    if (stage.effective_bytes.size() != stage.effective_byte_length) {
+                        error = "shader stage byte length does not match its retained bytes";
+                        return false;
+                    }
+                    sha256::SHA256 hasher;
+                    hasher.update(stage.effective_bytes.data(), stage.effective_bytes.size());
+                    const auto digest = hasher.final();
+                    static constexpr char kHex[] = "0123456789abcdef";
+                    std::string hex;
+                    hex.reserve(64);
+                    for (const u8 byte : digest) {
+                        hex.push_back(kHex[byte >> 4]);
+                        hex.push_back(kHex[byte & 0x0F]);
+                    }
+                    if (hex != stage.effective_sha256) {
+                        error = "shader stage content hash does not match its bytes";
+                        return false;
+                    }
+                }
+                if (stage.logical_stage == 3) {
+                    has_vertex = true;
+                } else if (stage.logical_stage == 0) {
+                    has_fragment = true;
+                }
+            }
+            if (!has_vertex || !has_fragment) {
+                error = "shader binary readiness claimed without both a vertex and a fragment "
+                        "stage";
+                return false;
+            }
+        }
+
+        if (package.readiness.shader_bindings_ready) {
+            if (!package.readiness.shader_binaries_ready) {
+                error = "shader binding readiness claimed without shader binaries";
+                return false;
+            }
+            // A binding existing is not the same as the effective modules' required resources being
+            // available. Every stage must carry an interface, and every descriptor that interface
+            // declares must resolve to a captured binding.
+            if (package.shader_interfaces.empty()) {
+                error = "shader binding readiness claimed with no descriptor interface";
+                return false;
+            }
+            for (const auto& stage : package.shader_stages) {
+                bool found = false;
+                for (const auto& interface : package.shader_interfaces) {
+                    if (interface.permutation_hash == stage.permutation_hash) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    error = "a shader stage has no descriptor interface for its permutation";
+                    return false;
+                }
+            }
+            for (const auto& interface : package.shader_interfaces) {
+                for (const auto& descriptor : interface.descriptors) {
+                    if (descriptor.count == 0) {
+                        error = "a descriptor interface declares a zero descriptor count";
+                        return false;
+                    }
+                    // A buffer or image descriptor must resolve to a captured binding. A sampler
+                    // may legitimately have no buffer, so it is not required to.
+                    if (descriptor.descriptor_class == 1 || descriptor.descriptor_class == 2 ||
+                        descriptor.descriptor_class == 3 || descriptor.descriptor_class == 4 ||
+                        descriptor.descriptor_class == 6) {
+                        bool resolved = false;
+                        for (const auto& binding : package.bindings) {
+                            if (binding.vk_binding == descriptor.binding) {
+                                resolved = true;
+                                break;
+                            }
+                        }
+                        if (!resolved) {
+                            error = "a descriptor interface declares a binding with no captured "
+                                    "resource";
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (package.readiness.shader_parameters_ready) {
+            if (!package.readiness.shader_bindings_ready) {
+                error = "shader parameter readiness claimed without binding readiness";
+                return false;
+            }
+            // A push-constant claim needs the bytes, not merely a declared range.
+            if (package.pipeline_state.push_constant_size != 0 &&
+                package.pipeline_state.push_constant_bytes.size() !=
+                    package.pipeline_state.push_constant_size) {
+                error = "shader parameter readiness claimed with a push-constant range that does "
+                        "not match its bytes";
+                return false;
+            }
+        }
+
+        if (package.readiness.pipeline_state_ready_original) {
+            // Presence is explicit. Zero is a legitimate Vulkan topology value, so it cannot be
+            // used as a missing-data sentinel.
+            if (!package.pipeline_state.has_topology) {
+                error = "pipeline state readiness claimed with no topology";
+                return false;
+            }
+            if (package.pipeline_state.color_formats.empty()) {
+                error = "pipeline state readiness claimed with no colour attachment format";
+                return false;
+            }
+        }
+
+        if (package.readiness.reference_output_ready) {
+            if (package.reference_output.post_sha256.empty()) {
+                error = "reference output readiness claimed with no post-draw reference";
+                return false;
+            }
+            if (package.reference_output.width == 0 || package.reference_output.height == 0) {
+                error = "reference output readiness claimed with no extent";
+                return false;
+            }
+        }
+
+        // The strongest claim requires every dimension below it. This is the check that stops a
+        // package from asserting it can run the original shaders when one input is missing.
+        if (package.readiness.original_shader_replay_ready) {
+            if (!package.readiness.shader_binaries_ready ||
+                !package.readiness.shader_bindings_ready ||
+                !package.readiness.shader_parameters_ready ||
+                !package.readiness.pipeline_state_ready_original ||
+                !package.readiness.reference_output_ready) {
+                error = "original shader replay readiness claimed without every dimension";
+                return false;
+            }
+            if (!package.readiness.geometry_ready) {
+                error = "original shader replay readiness claimed without geometry";
                 return false;
             }
         }

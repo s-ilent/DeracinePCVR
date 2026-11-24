@@ -71,3 +71,4 @@ build-geometry-replay/
 # Standalone readback test build output
 build-readback-test/
 
+build-geometry-replay-rel/

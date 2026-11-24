@@ -117,6 +117,52 @@ bool WritePackage(const Package& package, const std::string& directory) noexcept
                                static_cast<std::streamsize>(package.texture_bytes.size()));
         }
 
+        // The reference images go in their own sidecars, so a consumer can compare against them
+        // without loading the geometry.
+        if (!package.reference_post_bytes.empty()) {
+            const auto post_path = dir / "reference_post.bin";
+            std::ofstream post_blob{post_path, std::ios::binary | std::ios::trunc};
+            if (!post_blob) {
+                LOG_WARNING(Core_Linker, "Draw package refused: cannot open {}",
+                            post_path.string());
+                return false;
+            }
+            post_blob.write(reinterpret_cast<const char*>(package.reference_post_bytes.data()),
+                            static_cast<std::streamsize>(package.reference_post_bytes.size()));
+        }
+        if (!package.reference_pre_bytes.empty()) {
+            const auto pre_path = dir / "reference_pre.bin";
+            std::ofstream pre_blob{pre_path, std::ios::binary | std::ios::trunc};
+            if (!pre_blob) {
+                LOG_WARNING(Core_Linker, "Draw package refused: cannot open {}",
+                            pre_path.string());
+                return false;
+            }
+            pre_blob.write(reinterpret_cast<const char*>(package.reference_pre_bytes.data()),
+                           static_cast<std::streamsize>(package.reference_pre_bytes.size()));
+        }
+
+        // Shader binaries go in their own sidecars, one per stage, so a consumer that only needs
+        // the geometry never loads them and a consumer that needs them can verify each hash
+        // independently. These are proprietary game-derived code and are never committed.
+        for (const auto& stage : package.shader_stages) {
+            if (stage.effective_file.empty()) {
+                continue;
+            }
+            const auto stage_path = dir / stage.effective_file;
+            std::ofstream stage_blob{stage_path, std::ios::binary | std::ios::trunc};
+            if (!stage_blob) {
+                LOG_WARNING(Core_Linker, "Draw package refused: cannot open {}",
+                            stage_path.string());
+                return false;
+            }
+            // The bytes are supplied by the caller through the package's own stage payload.
+            if (!stage.effective_bytes.empty()) {
+                stage_blob.write(reinterpret_cast<const char*>(stage.effective_bytes.data()),
+                                 static_cast<std::streamsize>(stage.effective_bytes.size()));
+            }
+        }
+
         std::ostringstream json;
         json << "{\n";
         json << "  \"schema_version\": " << package.schema_version << ",\n";
@@ -324,6 +370,135 @@ bool WritePackage(const Package& package, const std::string& directory) noexcept
              << (package.texture_coordinate.looks_like_uv ? "true" : "false") << "\n";
         json << "  },\n";
 
+        // The effective shader stages. The identity is (program hash, permutation index), not the
+        // program hash alone: one program compiles to several permutations, and a hash match alone
+        // does not identify the module the draw executed.
+        json << "  \"shader_stages\": [\n";
+        for (size_t i = 0; i < package.shader_stages.size(); ++i) {
+            const auto& stage = package.shader_stages[i];
+            json << "    {\n";
+            json << "      \"logical_stage\": " << stage.logical_stage << ",\n";
+            json << "      \"hardware_stage\": " << stage.hardware_stage << ",\n";
+            json << "      \"program_hash\": " << stage.program_hash << ",\n";
+            json << "      \"permutation_index\": " << stage.permutation_index << ",\n";
+            json << "      \"permutation_hash\": " << stage.permutation_hash << ",\n";
+            json << "      \"patched\": " << (stage.patched ? "true" : "false") << ",\n";
+            json << "      \"effective_sha256\": \"" << EscapeJson(stage.effective_sha256)
+                 << "\",\n";
+            json << "      \"generated_sha256\": \"" << EscapeJson(stage.generated_sha256)
+                 << "\",\n";
+            json << "      \"entry_point\": \"" << EscapeJson(stage.entry_point) << "\",\n";
+            json << "      \"effective_byte_length\": " << stage.effective_byte_length << ",\n";
+            json << "      \"gcn_byte_length\": " << stage.gcn_byte_length << ",\n";
+            json << "      \"effective_file\": \"" << EscapeJson(stage.effective_file)
+                 << "\",\n";
+            json << "      \"gcn_file\": \"" << EscapeJson(stage.gcn_file) << "\"\n";
+            json << "    }" << (i + 1 < package.shader_stages.size() ? "," : "") << "\n";
+        }
+        json << "  ],\n";
+
+        // The descriptor interface of each effective stage.
+        json << "  \"shader_interfaces\": [\n";
+        for (size_t i = 0; i < package.shader_interfaces.size(); ++i) {
+            const auto& interface = package.shader_interfaces[i];
+            json << "    {\n";
+            json << "      \"program_hash\": " << interface.program_hash << ",\n";
+            json << "      \"permutation_index\": " << interface.permutation_index << ",\n";
+            json << "      \"permutation_hash\": " << interface.permutation_hash << ",\n";
+            json << "      \"hardware_stage\": " << interface.hardware_stage << ",\n";
+            json << "      \"logical_stage\": " << interface.logical_stage << ",\n";
+            json << "      \"patched\": " << (interface.patched ? "true" : "false") << ",\n";
+            json << "      \"push_constant_offset\": " << interface.push_constant_offset
+                 << ",\n";
+            json << "      \"push_constant_size\": " << interface.push_constant_size << ",\n";
+            json << "      \"push_constant_stage_flags\": "
+                 << interface.push_constant_stage_flags << ",\n";
+            json << "      \"unified_binding_count\": " << interface.unified_binding_count
+                 << ",\n";
+            json << "      \"descriptors\": [\n";
+            for (size_t d = 0; d < interface.descriptors.size(); ++d) {
+                const auto& descriptor = interface.descriptors[d];
+                json << "        {\n";
+                json << "          \"set\": " << descriptor.set << ",\n";
+                json << "          \"binding\": " << descriptor.binding << ",\n";
+                json << "          \"descriptor_class\": " << descriptor.descriptor_class
+                     << ",\n";
+                json << "          \"count\": " << descriptor.count << ",\n";
+                json << "          \"stage_flags\": " << descriptor.stage_flags << ",\n";
+                json << "          \"guest_resource_index\": " << descriptor.guest_resource_index
+                     << ",\n";
+                json << "          \"written\": " << (descriptor.written ? "true" : "false")
+                     << "\n";
+                json << "        }" << (d + 1 < interface.descriptors.size() ? "," : "") << "\n";
+            }
+            json << "      ]\n";
+            json << "    }" << (i + 1 < package.shader_interfaces.size() ? "," : "") << "\n";
+        }
+        json << "  ],\n";
+
+        // The graphics pipeline state the draw used.
+        {
+            const auto& state = package.pipeline_state;
+            json << "  \"pipeline_state\": {\n";
+            json << "    \"has_topology\": " << (state.has_topology ? "true" : "false")
+                 << ",\n";
+            json << "    \"topology\": " << state.topology << ",\n";
+            json << "    \"cull_mode\": " << state.cull_mode << ",\n";
+            json << "    \"front_face\": " << state.front_face << ",\n";
+            json << "    \"polygon_mode\": " << state.polygon_mode << ",\n";
+            json << "    \"depth_test\": " << (state.depth_test ? "true" : "false") << ",\n";
+            json << "    \"depth_write\": " << (state.depth_write ? "true" : "false") << ",\n";
+            json << "    \"depth_compare_op\": " << state.depth_compare_op << ",\n";
+            json << "    \"depth_format\": " << state.depth_format << ",\n";
+            json << "    \"samples\": " << state.samples << ",\n";
+            json << "    \"color_formats\": [";
+            for (size_t i = 0; i < state.color_formats.size(); ++i) {
+                json << state.color_formats[i] << (i + 1 < state.color_formats.size() ? ", " : "");
+            }
+            json << "],\n";
+            json << "    \"blend_enable\": [";
+            for (size_t i = 0; i < state.blend_enable.size(); ++i) {
+                json << state.blend_enable[i] << (i + 1 < state.blend_enable.size() ? ", " : "");
+            }
+            json << "],\n";
+            json << "    \"write_mask\": [";
+            for (size_t i = 0; i < state.write_mask.size(); ++i) {
+                json << state.write_mask[i] << (i + 1 < state.write_mask.size() ? ", " : "");
+            }
+            json << "],\n";
+            json << "    \"viewport_x\": " << state.viewport_x << ",\n";
+            json << "    \"viewport_y\": " << state.viewport_y << ",\n";
+            json << "    \"viewport_width\": " << state.viewport_width << ",\n";
+            json << "    \"viewport_height\": " << state.viewport_height << ",\n";
+            json << "    \"viewport_min_depth\": " << state.viewport_min_depth << ",\n";
+            json << "    \"viewport_max_depth\": " << state.viewport_max_depth << ",\n";
+            json << "    \"push_constant_offset\": " << state.push_constant_offset << ",\n";
+            json << "    \"push_constant_size\": " << state.push_constant_size << ",\n";
+            json << "    \"push_constant_bytes\": [";
+            for (size_t i = 0; i < state.push_constant_bytes.size(); ++i) {
+                json << static_cast<u32>(state.push_constant_bytes[i])
+                     << (i + 1 < state.push_constant_bytes.size() ? ", " : "");
+            }
+            json << "]\n";
+            json << "  },\n";
+        }
+
+        // The reference output around the draw.
+        {
+            const auto& reference = package.reference_output;
+            json << "  \"reference_output\": {\n";
+            json << "    \"width\": " << reference.width << ",\n";
+            json << "    \"height\": " << reference.height << ",\n";
+            json << "    \"format\": " << reference.format << ",\n";
+            json << "    \"bytes_per_pixel\": " << reference.bytes_per_pixel << ",\n";
+            json << "    \"has_pre\": " << (reference.has_pre ? "true" : "false") << ",\n";
+            json << "    \"pre_sha256\": \"" << EscapeJson(reference.pre_sha256) << "\",\n";
+            json << "    \"post_sha256\": \"" << EscapeJson(reference.post_sha256) << "\",\n";
+            json << "    \"pre_file\": \"" << EscapeJson(reference.pre_file) << "\",\n";
+            json << "    \"post_file\": \"" << EscapeJson(reference.post_file) << "\"\n";
+            json << "  },\n";
+        }
+
         json << "  \"readiness\": {\n";
         json << "    \"shader_buffers_ready\": "
              << (package.readiness.shader_buffers_ready ? "true" : "false") << ",\n";
@@ -343,6 +518,18 @@ bool WritePackage(const Package& package, const std::string& directory) noexcept
              << (package.readiness.diagnostic_textured_replay_ready ? "true" : "false") << ",\n";
         json << "    \"original_material_ready\": "
              << (package.readiness.original_material_ready ? "true" : "false") << ",\n";
+        json << "    \"shader_binaries_ready\": "
+             << (package.readiness.shader_binaries_ready ? "true" : "false") << ",\n";
+        json << "    \"shader_bindings_ready\": "
+             << (package.readiness.shader_bindings_ready ? "true" : "false") << ",\n";
+        json << "    \"shader_parameters_ready\": "
+             << (package.readiness.shader_parameters_ready ? "true" : "false") << ",\n";
+        json << "    \"pipeline_state_ready_original\": "
+             << (package.readiness.pipeline_state_ready_original ? "true" : "false") << ",\n";
+        json << "    \"reference_output_ready\": "
+             << (package.readiness.reference_output_ready ? "true" : "false") << ",\n";
+        json << "    \"original_shader_replay_ready\": "
+             << (package.readiness.original_shader_replay_ready ? "true" : "false") << ",\n";
         json << "    \"limitation\": \"" << EscapeJson(package.readiness.limitation) << "\"\n";
         json << "  }\n";
         json << "}\n";

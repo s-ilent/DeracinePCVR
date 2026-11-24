@@ -11,6 +11,7 @@
 
 #include "common/recursive_lock.h"
 #include "common/shared_first_mutex.h"
+#include "core/reference_output.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/page_manager.h"
 #include "video_core/renderer_vulkan/vk_gpu_profile.h"
@@ -110,6 +111,19 @@ private:
     void Resolve();
     void DepthStencilCopy(bool is_depth, bool is_stencil);
     void EliminateFastClear();
+
+    /// Records a copy of the bound colour attachment into a dedicated staging buffer and defers the
+    /// CPU readback until the GPU has completed it.
+    ///
+    /// The copy is scoped to the subresource the draw writes and restores its state, so it does not
+    /// change what the game renders. This is the same discipline SC-10S established for texture
+    /// capture, applied to the render target.
+    ///
+    /// Returns Pending when the copy was recorded, or the reason it could not be. The bytes are not
+    /// available on return: they arrive through Core::ReferenceOutput::CompleteCapture once the
+    /// scheduler has passed the tick the copy was recorded at.
+    Core::ReferenceOutput::CaptureStatus CaptureColorTarget(
+        Core::ReferenceOutput::ReferenceImage& out, u64 provenance_id, bool is_pre);
 
     void UpdateDynamicState(const GraphicsPipeline* pipeline, bool is_indexed) const;
     void UpdateViewportScissorState() const;

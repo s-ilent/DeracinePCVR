@@ -216,6 +216,34 @@ struct DrawSnapshot {
     u32 partial_resources{};
     u32 unsupported_resources{};
     u32 invalid_resources{};
+
+    /// The graphics pipeline state the draw used, as the renderer actually configured it. Captured
+    /// here rather than reconstructed, so a consumer gets the state the draw ran with.
+    struct {
+        u32 topology{};
+        u32 cull_mode{};
+        u32 front_face{};
+        u32 polygon_mode{};
+        bool depth_test{};
+        bool depth_write{};
+        u32 depth_compare_op{};
+        u32 depth_format{};
+        u32 samples{};
+        u32 color_format_count{};
+        u32 color_formats[8]{};
+        u32 blend_enable[8]{};
+        u32 write_mask[8]{};
+        float viewport_x{};
+        float viewport_y{};
+        float viewport_width{};
+        float viewport_height{};
+        float viewport_min_depth{};
+        float viewport_max_depth{};
+        u32 push_constant_offset{};
+        u32 push_constant_size{};
+        u32 push_constant_word_count{};
+        u32 push_constant_words[16]{};
+    } pipeline_state;
 };
 
 /// Records one draw's shader parameters and resource metadata. Called from the rasterizer after

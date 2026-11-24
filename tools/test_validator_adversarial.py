@@ -316,7 +316,91 @@ def main(argv):
     case("truncated final block row", truncated_final_block_row)
     case("wrong pixel extent", wrong_pixel_extent)
     case("missing block geometry", missing_block_geometry)
+    def shader_permutation_hash_mismatch(package, blob):
+        for stage in package.get("shader_stages", []):
+            stage["permutation_hash"] = 0xDEADBEEF
+            return
+
+    def shader_missing_effective_hash(package, blob):
+        for stage in package.get("shader_stages", []):
+            stage["effective_sha256"] = ""
+            return
+
+    def shader_missing_bytes(package, blob):
+        for stage in package.get("shader_stages", []):
+            stage["effective_byte_length"] = 0
+            return
+
+    def shader_only_one_stage(package, blob):
+        if package.get("shader_stages"):
+            package["shader_stages"] = package["shader_stages"][:1]
+
+    def original_ready_without_binaries(package, blob):
+        package["readiness"]["shader_binaries_ready"] = False
+
+    def original_ready_without_bindings(package, blob):
+        package["readiness"]["shader_bindings_ready"] = False
+
+    def original_ready_without_parameters(package, blob):
+        package["readiness"]["shader_parameters_ready"] = False
+
+    def original_ready_without_pipeline(package, blob):
+        package["readiness"]["pipeline_state_ready_original"] = False
+
+    def original_ready_without_reference(package, blob):
+        package["readiness"]["reference_output_ready"] = False
+
+    def push_constant_range_mismatch(package, blob):
+        package["pipeline_state"]["push_constant_size"] = 16
+        package["pipeline_state"]["push_constant_bytes"] = []
+
+    def interface_missing(package, blob):
+        package["shader_interfaces"] = []
+
+    def interface_stage_missing(package, blob):
+        if package.get("shader_interfaces"):
+            package["shader_interfaces"] = package["shader_interfaces"][:1]
+
+    def interface_binding_unresolved(package, blob):
+        for interface in package.get("shader_interfaces", []):
+            for descriptor in interface.get("descriptors", []):
+                descriptor["binding"] = 99
+                return
+
+    def interface_zero_count(package, blob):
+        for interface in package.get("shader_interfaces", []):
+            for descriptor in interface.get("descriptors", []):
+                descriptor["count"] = 0
+                return
+
+    def pipeline_state_without_topology(package, blob):
+        # Zero is a legitimate Vulkan topology, so the presence flag is what marks it missing.
+        package["pipeline_state"]["has_topology"] = False
+
+    def reference_without_post(package, blob):
+        package["reference_output"]["post_sha256"] = ""
+
+    def reference_without_extent(package, blob):
+        package["reference_output"]["width"] = 0
+
     case("verified sampler without id", verified_sampler_without_id)
+    case("shader permutation hash mismatch", shader_permutation_hash_mismatch)
+    case("shader missing effective hash", shader_missing_effective_hash)
+    case("shader missing bytes", shader_missing_bytes)
+    case("shader only one stage", shader_only_one_stage)
+    case("original ready without binaries", original_ready_without_binaries)
+    case("original ready without bindings", original_ready_without_bindings)
+    case("original ready without parameters", original_ready_without_parameters)
+    case("original ready without pipeline", original_ready_without_pipeline)
+    case("original ready without reference", original_ready_without_reference)
+    case("push constant range mismatch", push_constant_range_mismatch)
+    case("interface missing", interface_missing)
+    case("interface stage missing", interface_stage_missing)
+    case("interface binding unresolved", interface_binding_unresolved)
+    case("interface zero count", interface_zero_count)
+    case("pipeline state without topology", pipeline_state_without_topology)
+    case("reference without post", reference_without_post)
+    case("reference without extent", reference_without_extent)
     case("stale transfer identity", stale_transfer_identity)
     case("partial mip chain", partial_mip_chain)
     case("missing array layer", missing_array_layer)

@@ -47,6 +47,10 @@
 #include "core/rhi_entry_probe.h"
 #include "core/semantic_tape.h"
 #include "core/index_identity.h"
+
+#include "core/reference_output.h"
+#include "core/shader_binary_capture.h"
+#include "core/shader_interface_capture.h"
 #include "core/shader_param_capture.h"
 #include "core/vertex_input_capture.h"
 #include "core/memory.h"
@@ -109,6 +113,10 @@ void Emulator::Shutdown() {
     Core::IndexIdentity::ExportIdentities();
     // The tape reads the command capture and the draw package, so it must run after both.
     Core::SemanticTape::ExportTape();
+
+    Core::ShaderBinaryCapture::ExportBinaries();
+    Core::ShaderInterface::ExportInterfaces();
+    Core::ReferenceOutput::ExportReferences();
     Common::Log::Flush();
     if (controllers) {
         controllers->ResetLightbarColors();

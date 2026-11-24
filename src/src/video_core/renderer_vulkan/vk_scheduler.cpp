@@ -939,23 +939,32 @@ void Scheduler::BeginRendering(const RenderState& new_state, u64 vs_hash, u64 ps
     render_state = new_state;
     bound_pipeline = nullptr;
 
+    OpenRenderingScope(new_state, vs_hash, ps_hash, kind, /*force_load=*/false);
+}
+
+void Scheduler::OpenRenderingScope(const RenderState& state, u64 vs_hash, u64 ps_hash,
+                                   PassKind kind, bool force_load) {
     std::array<vk::RenderingAttachmentInfo, 8> color_attachments;
-    for (u32 i = 0; i < render_state.num_color_attachments; ++i) {
-        const auto& cb = render_state.color_attachments[i];
+    for (u32 i = 0; i < state.num_color_attachments; ++i) {
+        const auto& cb = state.color_attachments[i];
+        // A resumed scope loads: the clear already happened, and repeating it would discard the
+        // contents the draw is meant to inherit.
+        const bool clear = cb.is_clear != 0 && !force_load;
         color_attachments[i] = vk::RenderingAttachmentInfo{
             .imageView = cb.image_view,
             .imageLayout = cb.image_layout,
-            .loadOp = cb.is_clear ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad,
+            .loadOp = clear ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad,
             .storeOp = vk::AttachmentStoreOp::eStore,
             .clearValue = vk::ClearValue{.color = vk::ClearColorValue{.uint32 = cb.clear_value}},
         };
     }
 
-    const auto& db = render_state.depth_stencil_attachment;
+    const auto& db = state.depth_stencil_attachment;
     const vk::RenderingAttachmentInfo depth_attachment = {
         .imageView = db.image_view,
         .imageLayout = db.image_layout,
-        .loadOp = db.depth_clear ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad,
+        .loadOp = (db.depth_clear && !force_load) ? vk::AttachmentLoadOp::eClear
+                                                  : vk::AttachmentLoadOp::eLoad,
         .storeOp = vk::AttachmentStoreOp::eStore,
         .clearValue =
             vk::ClearValue{.depthStencil = vk::ClearDepthStencilValue{.depth = std::bit_cast<float>(
@@ -964,7 +973,8 @@ void Scheduler::BeginRendering(const RenderState& new_state, u64 vs_hash, u64 ps
     const vk::RenderingAttachmentInfo stencil_attachment = {
         .imageView = db.image_view,
         .imageLayout = db.image_layout,
-        .loadOp = db.stencil_clear ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad,
+        .loadOp = (db.stencil_clear && !force_load) ? vk::AttachmentLoadOp::eClear
+                                                    : vk::AttachmentLoadOp::eLoad,
         .storeOp = vk::AttachmentStoreOp::eStore,
         .clearValue = vk::ClearValue{.depthStencil =
                                          vk::ClearDepthStencilValue{.stencil = db.clear_value[1]}},
@@ -972,19 +982,19 @@ void Scheduler::BeginRendering(const RenderState& new_state, u64 vs_hash, u64 ps
 
     const u32 texel = instance.FoveationTexel();
     const vk::RenderingFragmentShadingRateAttachmentInfoKHR shading_rate = {
-        .imageView = render_state.shading_rate_view,
+        .imageView = state.shading_rate_view,
         .imageLayout = vk::ImageLayout::eFragmentShadingRateAttachmentOptimalKHR,
         .shadingRateAttachmentTexelSize = {texel, texel},
     };
     const vk::RenderingInfo rendering_info = {
-        .pNext = render_state.shading_rate_view ? &shading_rate : nullptr,
+        .pNext = state.shading_rate_view ? &shading_rate : nullptr,
         .renderArea =
             {
                 .offset = {0, 0},
-                .extent = {render_state.width, render_state.height},
+                .extent = {state.width, state.height},
             },
-        .layerCount = render_state.num_layers,
-        .colorAttachmentCount = render_state.num_color_attachments,
+        .layerCount = state.num_layers,
+        .colorAttachmentCount = state.num_color_attachments,
         .pColorAttachments = color_attachments.data(),
         .pDepthAttachment = db.has_depth ? &depth_attachment : nullptr,
         .pStencilAttachment = db.has_stencil ? &stencil_attachment : nullptr,
@@ -998,11 +1008,11 @@ void Scheduler::BeginRendering(const RenderState& new_state, u64 vs_hash, u64 ps
         const bool blit = kind == PassKind::Blit;
         gpu_timing->Mark(current_cmdbuf, blit ? GpuTiming::Op::Copy : GpuTiming::Op::Pass,
                          GpuTiming::OpLabel{
-                             .width = render_state.width,
-                             .height = render_state.height,
+                             .width = state.width,
+                             .height = state.height,
                              .vs = blit ? 0 : vs_hash,
                              .ps = blit ? 0 : ps_hash,
-                             .colors = static_cast<u8>(render_state.num_color_attachments),
+                             .colors = static_cast<u8>(state.num_color_attachments),
                              .depth = db.has_depth || db.has_stencil,
                          });
     }
@@ -1011,7 +1021,27 @@ void Scheduler::BeginRendering(const RenderState& new_state, u64 vs_hash, u64 ps
         current_cmdbuf.beginRendering(rendering_info);
     }
 
-    FrameStats::RenderPass(render_state);
+    FrameStats::RenderPass(state);
+}
+
+bool Scheduler::ResumeRendering() {
+    if (is_rendering) {
+        // Nothing ended the scope, so there is nothing to resume.
+        return true;
+    }
+    if (render_state.num_color_attachments == 0 && !render_state.depth_stencil_attachment.image_view) {
+        // No pass has been opened yet, so there is no scope to restore.
+        return false;
+    }
+    is_rendering = true;
+    // The pipeline binding is invalidated by the scope break, so the caller must rebind. The
+    // tracked render state is deliberately left unchanged: a later draw in the same guest pass
+    // compares against it, and rewriting it to "no clears" would make that draw start a fresh pass
+    // and clear the target again.
+    bound_pipeline = nullptr;
+    last_push_layout = vk::PipelineLayout{};
+    OpenRenderingScope(render_state, 0, 0, PassKind::Title, /*force_load=*/true);
+    return true;
 }
 
 void Scheduler::MarkDispatch(u64 shader_hash) {

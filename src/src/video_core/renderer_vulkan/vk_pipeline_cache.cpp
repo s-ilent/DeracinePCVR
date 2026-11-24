@@ -14,6 +14,8 @@
 #include "common/path_util.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
+#include "core/shader_binary_capture.h"
+#include "core/shader_interface_capture.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/fma_split_diag.h"
 #include "shader_recompiler/info.h"
@@ -712,6 +714,91 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
         module = CompileSPV(*patch, instance.GetDevice());
     } else {
         module = CompileSPV(spv, instance.GetDevice());
+    }
+
+    // Retain the effective module for this permutation, when the capture is enabled.
+    //
+    // This runs here rather than at the draw because this is the only point where the GCN words,
+    // the generated SPIR-V and the patch decision are all in scope together. The identity is
+    // (program hash, permutation index): the program hash alone is not unique, because one program
+    // compiles to several permutations whose specialization depends on runtime state, resource
+    // shapes and binding allocation.
+    if (Core::ShaderBinaryCapture::IsEnabled()) {
+        Core::ShaderBinaryCapture::ShaderIdentity identity{};
+        identity.program_hash = info.pgm_hash;
+        identity.permutation_index = static_cast<u32>(perm_idx);
+        identity.permutation_hash = HashCombine(info.pgm_hash, static_cast<u64>(perm_idx));
+        identity.hardware_stage = static_cast<u32>(info.stage);
+        identity.logical_stage = static_cast<u32>(info.l_stage);
+        Core::ShaderBinaryCapture::NoteCompiledShader(
+            identity, code, spv, is_patched ? std::span<const u32>{*patch} : std::span<const u32>{},
+            is_patched);
+    }
+
+    // Retain the descriptor interface of this permutation, when the capture is enabled.
+    //
+    // The layout is derived exactly as GraphicsPipeline::BuildDescSetLayout derives it: buffers
+    // first, then images, then samplers, with a single unified binding counter advancing across
+    // all three. That is the production allocation, so the captured interface is the one the
+    // renderer actually built rather than a parallel reconstruction.
+    //
+    // The identity is (program hash, permutation index). One program can produce permutations with
+    // different resource interfaces, so a lookup by program hash alone is insufficient.
+    if (Core::ShaderInterface::IsEnabled()) {
+        Core::ShaderInterface::Interface interface{};
+        interface.program_hash = info.pgm_hash;
+        interface.permutation_index = static_cast<u32>(perm_idx);
+        interface.permutation_hash = HashCombine(info.pgm_hash, static_cast<u64>(perm_idx));
+        interface.hardware_stage = static_cast<u32>(info.stage);
+        interface.logical_stage = static_cast<u32>(info.l_stage);
+        interface.patched = is_patched;
+
+        const u32 stage_bit = 1u << static_cast<u32>(info.l_stage);
+        u32 binding = 0;
+        const auto add_descriptor = [&](Core::ShaderInterface::DescriptorClass cls, u32 count,
+                                        u32 guest_index, bool written) {
+            if (interface.descriptor_count >= Core::ShaderInterface::MaxDescriptorsPerStage) {
+                return;
+            }
+            auto& descriptor = interface.descriptors[interface.descriptor_count++];
+            descriptor.set = 0;
+            descriptor.binding = binding;
+            descriptor.cls = cls;
+            descriptor.count = count;
+            descriptor.stage_flags = stage_bit;
+            descriptor.guest_resource_index = guest_index;
+            descriptor.written = written;
+            binding += count;
+        };
+
+        for (u32 i = 0; i < info.buffers.size(); ++i) {
+            const auto& buffer = info.buffers[i];
+            const auto sharp = buffer.GetSharp(info);
+            add_descriptor(buffer.IsStorage(sharp)
+                               ? Core::ShaderInterface::DescriptorClass::StorageBuffer
+                           : Core::ShaderInterface::DescriptorClass::UniformBuffer,
+                           1, i, buffer.is_written);
+        }
+        for (u32 i = 0; i < info.images.size(); ++i) {
+            const auto& image = info.images[i];
+            const u32 num_bindings = image.NumBindings(info);
+            add_descriptor(image.is_written
+                               ? Core::ShaderInterface::DescriptorClass::StorageImage
+                           : Core::ShaderInterface::DescriptorClass::SampledImage,
+                           num_bindings, i, image.is_written);
+        }
+        for (u32 i = 0; i < info.samplers.size(); ++i) {
+            add_descriptor(Core::ShaderInterface::DescriptorClass::Sampler, 1, i, false);
+        }
+        interface.unified_binding_count = binding;
+
+        // The push-constant block this stage declares. The renderer pushes the user-data registers
+        // the shader reads, so the size is the count of those registers.
+        interface.push_constant.offset = 0;
+        interface.push_constant.size = info.ud_mask.NumRegs() * sizeof(u32);
+        interface.push_constant.stage_flags = stage_bit;
+
+        Core::ShaderInterface::NoteInterface(interface);
     }
 
     RegisterShaderBinary(std::move(spv), info.pgm_hash, perm_idx);

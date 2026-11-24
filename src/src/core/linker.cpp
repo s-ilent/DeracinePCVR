@@ -29,6 +29,10 @@
 #include "core/rhi_command_capture.h"
 #include "core/semantic_tape.h"
 #include "core/index_identity.h"
+
+#include "core/reference_output.h"
+#include "core/shader_binary_capture.h"
+#include "core/shader_interface_capture.h"
 #include "core/shader_param_capture.h"
 #include "core/vertex_input_capture.h"
 #include "core/rhi_entry_probe.h"
@@ -550,6 +554,11 @@ void Linker::Execute(const std::vector<std::string>& args) {
     // guest entry point, so the game's rendering path is untouched.
     SemanticTape::TryInstallBeforeGuestThread(
         *module, Common::ElfInfo::Instance().GameSerial(), Common::ElfInfo::Instance().AppVer());
+
+    // The shader binary capture is its own opt-in and only reads the environment.
+    ShaderBinaryCapture::TryInstall();
+    ShaderInterface::TryInstall();
+    ReferenceOutput::TryInstall();
 
     main_thread.Run([this, module, &args](std::stop_token) {
         Common::SetCurrentThreadName("Game:Main");
