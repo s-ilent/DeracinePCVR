@@ -11,6 +11,8 @@ const char* ResourceTypeName(ResourceType t) {
         case ResourceType::kTextureView: return "texture-view";
         case ResourceType::kShader: return "shader";
         case ResourceType::kPipeline: return "pipeline";
+        case ResourceType::kSampler: return "sampler";
+        case ResourceType::kDescriptorSet: return "descriptor-set";
         default: return "unknown";
     }
 }
@@ -209,25 +211,57 @@ bool ResourceRegistry::AddDependency(ResourceId dependent, ResourceId dependency
     if (p->state != ResourceState::kLive) return false;
     if (d->state != ResourceState::kLive) return false;
 
-    auto& list = dependents_[dependency.index];
-    for (const auto& existing : list) {
-        if (existing == dependent) return true;
+    // Reject a self-edge and any edge that would close a cycle. A cycle would
+    // make topological destruction impossible, so it is refused at registration
+    // rather than detected later.
+    if (dependent == dependency) return false;
+    if (DependsOn(dependency.index, dependent.index)) return false;
+
+    for (const auto& existing : d->dependencies) {
+        if (existing == dependency) return true;   // already registered
     }
-    list.push_back(dependent);
-    d->dependency = dependency;
-    d->hasDependency = true;
+    d->dependencies.push_back(dependency);
+    dependents_[dependency.index].push_back(dependent);
     return true;
+}
+
+// True when 'from' transitively depends on 'target'. Used to reject cycles.
+bool ResourceRegistry::DependsOn(uint64_t from, uint64_t target) const {
+    std::vector<uint64_t> stack{from};
+    std::vector<uint64_t> seen;
+    while (!stack.empty()) {
+        const uint64_t cur = stack.back();
+        stack.pop_back();
+        if (cur == target) return true;
+        bool visited = false;
+        for (uint64_t s : seen) {
+            if (s == cur) { visited = true; break; }
+        }
+        if (visited) continue;
+        seen.push_back(cur);
+        auto it = records_.find(cur);
+        if (it == records_.end()) continue;
+        for (const auto& dep : it->second.dependencies) stack.push_back(dep.index);
+    }
+    return false;
 }
 
 void ResourceRegistry::ReleaseDependency(ResourceId dependent, ResourceId dependency) {
     auto it = dependents_.find(dependency.index);
-    if (it == dependents_.end()) return;
-    auto& list = it->second;
-    list.erase(std::remove_if(list.begin(), list.end(),
-                              [&](const ResourceId& r) { return r == dependent; }),
-               list.end());
-    if (list.empty()) dependents_.erase(it);
+    if (it != dependents_.end()) {
+        auto& list = it->second;
+        list.erase(std::remove_if(list.begin(), list.end(),
+                                  [&](const ResourceId& r) { return r == dependent; }),
+                   list.end());
+        if (list.empty()) dependents_.erase(it);
+    }
     MaybeDestroy(dependency.index);
+}
+
+int ResourceRegistry::TotalDependencyEdges() const {
+    int n = 0;
+    for (const auto& kv : records_) n += static_cast<int>(kv.second.dependencies.size());
+    return n;
 }
 
 bool ResourceRegistry::Destroy(ResourceId id) {
@@ -248,47 +282,60 @@ bool ResourceRegistry::Destroy(ResourceId id) {
 }
 
 int ResourceRegistry::DestroyAll() {
-    // A dependent's backend object references its parent, so dependents must be
-    // destroyed first. Iterating the map in arbitrary order would invert that.
-    // Order by dependency depth: a resource with no dependents goes first.
-    std::vector<uint64_t> order;
-    order.reserve(records_.size());
+    // A dependent's backend object references its parents, so dependents must be
+    // destroyed first. This is a genuine topological sort over the dependency
+    // graph, not a repeated scan: selecting a node removes it from the graph, so
+    // its parents become eligible in the same pass.
+    //
+    // Kahn's algorithm on the reversed graph: a node is ready when no live node
+    // still depends on it.
+    std::vector<uint64_t> nodes;
+    nodes.reserve(records_.size());
     for (const auto& kv : records_) {
-        if (kv.second.state != ResourceState::kDestroyed) order.push_back(kv.first);
+        if (kv.second.state != ResourceState::kDestroyed) nodes.push_back(kv.first);
     }
 
-    // Repeatedly take resources that nothing else depends on.
-    std::vector<uint64_t> sorted;
-    sorted.reserve(order.size());
-    std::vector<bool> taken(order.size(), false);
-    for (size_t pass = 0; pass < order.size(); ++pass) {
-        bool progressed = false;
-        for (size_t i = 0; i < order.size(); ++i) {
-            if (taken[i]) continue;
-            const uint64_t idx = order[i];
-            auto depIt = dependents_.find(idx);
-            bool hasLiveDependent = false;
-            if (depIt != dependents_.end()) {
-                for (const auto& dep : depIt->second) {
-                    auto recIt = records_.find(dep.index);
-                    if (recIt != records_.end() &&
-                        recIt->second.state != ResourceState::kDestroyed) {
-                        hasLiveDependent = true;
-                        break;
-                    }
-                }
-            }
-            if (!hasLiveDependent) {
-                sorted.push_back(idx);
-                taken[i] = true;
-                progressed = true;
-            }
+    // Count, per node, how many live dependents it still has.
+    std::unordered_map<uint64_t, int> liveDependents;
+    for (uint64_t n : nodes) liveDependents[n] = 0;
+    for (uint64_t n : nodes) {
+        auto it = records_.find(n);
+        if (it == records_.end()) continue;
+        for (const auto& dep : it->second.dependencies) {
+            auto pit = liveDependents.find(dep.index);
+            if (pit != liveDependents.end()) ++pit->second;
         }
-        if (!progressed) break;   // a cycle; fall through with what we have
     }
-    // Any remaining (cycle or unreachable) resources are appended.
-    for (size_t i = 0; i < order.size(); ++i) {
-        if (!taken[i]) sorted.push_back(order[i]);
+
+    std::vector<uint64_t> ready;
+    for (uint64_t n : nodes) {
+        if (liveDependents[n] == 0) ready.push_back(n);
+    }
+
+    std::vector<uint64_t> sorted;
+    sorted.reserve(nodes.size());
+    std::vector<uint64_t> selected;
+    while (!ready.empty()) {
+        const uint64_t n = ready.back();
+        ready.pop_back();
+        sorted.push_back(n);
+        selected.push_back(n);
+
+        // Selecting n removes it as a dependent of each of its parents.
+        auto it = records_.find(n);
+        if (it == records_.end()) continue;
+        for (const auto& dep : it->second.dependencies) {
+            auto pit = liveDependents.find(dep.index);
+            if (pit == liveDependents.end()) continue;
+            if (--pit->second == 0) ready.push_back(dep.index);
+        }
+    }
+
+    // A cycle cannot be ordered. AddDependency rejects cycles at registration,
+    // so reaching here means the graph was corrupted. Report it rather than
+    // destroying in arbitrary order.
+    if (sorted.size() != nodes.size()) {
+        return -1;
     }
 
     int destroyed = 0;
@@ -370,13 +417,13 @@ bool ResourceRegistry::MaybeDestroy(uint64_t index) {
     auto depIt = dependents_.find(index);
     if (depIt != dependents_.end() && !depIt->second.empty()) return false;
 
-    // Capture the edge before the destructor runs, because the destructor may
+    // Capture the edges before the destructor runs, because the destructor may
     // re-enter the registry.
-    const bool hadDependency = r.hasDependency;
-    const ResourceId parent = r.dependency;
+    const std::vector<ResourceId> parents = r.dependencies;
+    const ResourceId selfId = r.id;
 
     // Destroy the backend object first. Only then is it safe to release the
-    // parent, because the object's descriptor referenced the parent.
+    // parents, because the object's descriptor referenced them.
     if (r.destroyFn && r.backendObject != nullptr) {
         r.destroyFn(r.backendObject);
     }
@@ -384,14 +431,14 @@ bool ResourceRegistry::MaybeDestroy(uint64_t index) {
     r.state = ResourceState::kDestroyed;
     r.id.generation++;   // a reused slot must not resolve the old id
 
-    if (hadDependency) {
+    if (!parents.empty()) {
         auto self = records_.find(index);
-        if (self != records_.end()) {
-            self->second.hasDependency = false;
-            self->second.dependency = ResourceId{};
+        if (self != records_.end()) self->second.dependencies.clear();
+        // Releasing an edge may make a parent destroyable. Iterate over a copy
+        // so a re-entrant destruction cannot invalidate the loop.
+        for (const auto& parent : parents) {
+            ReleaseDependency(selfId, parent);
         }
-        // Releasing the edge may make the parent destroyable.
-        ReleaseDependency(ResourceId{index, r.id.generation - 1}, parent);
     }
     return true;
 }

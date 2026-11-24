@@ -65,6 +65,21 @@ struct PipelinePayload {
     nri::Pipeline* pipeline = nullptr;
     nri::PipelineLayout* layout = nullptr;
     uint32_t viewMask = 0;
+    bool hasDescriptorSet = false;
+};
+
+struct SamplerPayload {
+    nri::Descriptor* sampler = nullptr;
+};
+
+// A persistent, immutable descriptor set. It is created once with its bound
+// resources and never updated, so a set referenced by pending GPU work can never
+// be mutated underneath it.
+struct DescriptorSetPayload {
+    nri::DescriptorSet* set = nullptr;
+    nri::DescriptorPool* pool = nullptr;   // owned by this set
+    ResourceId sampledView;
+    ResourceId sampler;
 };
 
 }  // namespace detail
@@ -93,6 +108,10 @@ public:
     ResourceId CreateTexture(const semantic::TextureDesc& desc, std::string& error) override;
     ResourceId CreateTextureView(const semantic::TextureViewDesc& desc,
                                  std::string& error) override;
+    ResourceId CreateSampler(const semantic::SamplerDesc& desc, std::string& error) override;
+    ResourceId CreateDescriptorSet(const semantic::DescriptorSetDesc& desc,
+                                   std::string& error) override;
+    bool UploadTexture(const semantic::TextureUploadDesc& desc, std::string& error) override;
     ResourceId CreateShader(const semantic::ShaderDesc& desc, std::string& error) override;
     ResourceId CreateGraphicsPipeline(const semantic::GraphicsPipelineDesc& desc,
                                       std::string& error) override;
@@ -109,6 +128,7 @@ public:
     void SetViewport(const semantic::Viewport& vp) override;
     void SetScissor(const semantic::Scissor& sc) override;
     void BindPipeline(ResourceId pipeline) override;
+    void BindDescriptorSet(ResourceId descriptorSet) override;
     void SetVertexBuffer(uint32_t slot, ResourceId buffer, uint64_t offset,
                          uint32_t stride) override;
     void SetIndexBuffer(ResourceId buffer, uint64_t offset, semantic::IndexFormat format) override;
@@ -158,6 +178,11 @@ private:
     bool Acquire(ResourceId id, ResourceType type, const char* what);
     void Reject(const std::string& reason);
 
+    // The canonical pipeline layout used by textured pipelines and by the
+    // descriptor sets allocated against them. Created once, destroyed at
+    // shutdown.
+    nri::PipelineLayout* GetOrCreateTexturedLayout(std::string& error);
+
     // Returns a context whose command buffer is known to be complete, or null
     // when the pool is exhausted.
     CommandContext* AcquireContext();
@@ -171,8 +196,10 @@ private:
 
     nri::Queue* queue_ = nullptr;
     nri::Fence* fence_ = nullptr;
+    nri::PipelineLayout* texturedLayout_ = nullptr;
     nri::PipelineLayout* activeLayout_ = nullptr;
     nri::Pipeline* activePipeline_ = nullptr;
+    bool activePipelineHasDescriptors_ = false;
 
     ResourceRegistry registry_;
 

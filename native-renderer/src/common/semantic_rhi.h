@@ -92,6 +92,12 @@ enum class LoadOp { kLoad, kClear, kDontCare };
 enum class StoreOp { kStore, kDontCare };
 enum class IndexFormat { kUint16, kUint32 };
 
+// A view used as a shader resource, as opposed to a render target.
+enum class ViewKind { kColorAttachment, kDepthStencilAttachment, kSampled };
+
+enum class Filter { kPoint, kLinear };
+enum class AddressMode { kClamp, kRepeat };
+
 // ---------------------------------------------------------------------------
 // Descriptions
 // ---------------------------------------------------------------------------
@@ -128,6 +134,34 @@ struct TextureViewDesc {
     ImageAspect aspect = ImageAspect::kColor;
     uint32_t baseLayer = 0;
     uint32_t layerNum = 1;
+    // A sampled view is a shader resource; an attachment view is a render
+    // target. The backend must not force one to be the other.
+    ViewKind kind = ViewKind::kColorAttachment;
+};
+
+struct SamplerDesc {
+    Filter minFilter = Filter::kPoint;
+    Filter magFilter = Filter::kPoint;
+    AddressMode addressU = AddressMode::kClamp;
+    AddressMode addressV = AddressMode::kClamp;
+};
+
+// A persistent binding group. The initial implementation supports exactly one
+// sampled texture and one sampler, which is what a representative textured draw
+// needs. This is deliberately not a general descriptor API.
+struct DescriptorSetDesc {
+    ResourceId sampledView;   // must be a kSampled texture view
+    ResourceId sampler;
+};
+
+// A region of a texture to upload into.
+struct TextureUploadDesc {
+    ResourceId texture;
+    const void* data = nullptr;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t rowPitch = 0;    // bytes per row; 0 means tightly packed
+    uint32_t layer = 0;
 };
 
 struct ShaderDesc {
@@ -217,6 +251,12 @@ public:
     virtual ResourceId CreateBuffer(const BufferDesc& desc, std::string& error) = 0;
     virtual ResourceId CreateTexture(const TextureDesc& desc, std::string& error) = 0;
     virtual ResourceId CreateTextureView(const TextureViewDesc& desc, std::string& error) = 0;
+    virtual ResourceId CreateSampler(const SamplerDesc& desc, std::string& error) = 0;
+    virtual ResourceId CreateDescriptorSet(const DescriptorSetDesc& desc,
+                                           std::string& error) = 0;
+    // Uploads pixels into a texture through the backend. The texture must have
+    // been created with kSampled usage.
+    virtual bool UploadTexture(const TextureUploadDesc& desc, std::string& error) = 0;
     virtual ResourceId CreateShader(const ShaderDesc& desc, std::string& error) = 0;
     virtual ResourceId CreateGraphicsPipeline(const GraphicsPipelineDesc& desc,
                                               std::string& error) = 0;
@@ -239,6 +279,9 @@ public:
     virtual void SetViewport(const Viewport& vp) = 0;
     virtual void SetScissor(const Scissor& sc) = 0;
     virtual void BindPipeline(ResourceId pipeline) = 0;
+    // Binds a descriptor set to the graphics pipeline. Acquires recording
+    // ownership of the set and everything it depends on.
+    virtual void BindDescriptorSet(ResourceId descriptorSet) = 0;
     virtual void SetVertexBuffer(uint32_t slot, ResourceId buffer, uint64_t offset,
                                  uint32_t stride) = 0;
     virtual void SetIndexBuffer(ResourceId buffer, uint64_t offset, IndexFormat format) = 0;

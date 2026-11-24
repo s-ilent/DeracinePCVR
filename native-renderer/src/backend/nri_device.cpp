@@ -54,6 +54,9 @@ nri::TextureUsageBits ToNriTextureUsage(semantic::TextureUsage u) {
     if (raw & static_cast<uint32_t>(semantic::TextureUsage::kColorAttachment)) bits |= static_cast<uint32_t>(nri::TextureUsageBits::COLOR_ATTACHMENT);
     if (raw & static_cast<uint32_t>(semantic::TextureUsage::kDepthStencilAttachment)) bits |= static_cast<uint32_t>(nri::TextureUsageBits::DEPTH_STENCIL_ATTACHMENT);
     if (raw & static_cast<uint32_t>(semantic::TextureUsage::kSampled)) bits |= static_cast<uint32_t>(nri::TextureUsageBits::SHADER_RESOURCE);
+    // NRI has no separate transfer-source/destination usage bit. Host uploads
+    // use HOST_TRANSFER, which is what a CPU-populated texture needs.
+    if (raw & static_cast<uint32_t>(semantic::TextureUsage::kTransferDst)) bits |= static_cast<uint32_t>(nri::TextureUsageBits::HOST_TRANSFER);
     return static_cast<nri::TextureUsageBits>(bits);
 }
 
@@ -202,6 +205,8 @@ void NriDevice::Shutdown() {
             c.allocator = nullptr;
         }
         contexts_.clear();
+        if (texturedLayout_) nri_->core().DestroyPipelineLayout(texturedLayout_);
+        texturedLayout_ = nullptr;
         if (fence_) nri_->core().DestroyFence(fence_);
         fence_ = nullptr;
         nri_->Shutdown();
@@ -244,6 +249,51 @@ bool NriDevice::Acquire(ResourceId id, ResourceType type, const char* what) {
         return false;
     }
     return true;
+}
+
+nri::PipelineLayout* NriDevice::GetOrCreateTexturedLayout(std::string& error) {
+    if (texturedLayout_ != nullptr) return texturedLayout_;
+
+    nri::RootConstantDesc rc{};
+    rc.registerIndex = 0;
+    rc.size = 64;
+    rc.shaderStages = static_cast<nri::StageBits>(
+        static_cast<uint32_t>(nri::StageBits::VERTEX_SHADER) |
+        static_cast<uint32_t>(nri::StageBits::FRAGMENT_SHADER));
+
+    // Binding 0 is the sampled texture, binding 1 the sampler. Both are visible
+    // to the fragment shader only.
+    nri::DescriptorRangeDesc ranges[2]{};
+    ranges[0].baseRegisterIndex = 0;
+    ranges[0].descriptorNum = 1;
+    ranges[0].descriptorType = nri::DescriptorType::TEXTURE;
+    ranges[0].shaderStages = nri::StageBits::FRAGMENT_SHADER;
+    ranges[1].baseRegisterIndex = 1;
+    ranges[1].descriptorNum = 1;
+    ranges[1].descriptorType = nri::DescriptorType::SAMPLER;
+    ranges[1].shaderStages = nri::StageBits::FRAGMENT_SHADER;
+
+    nri::DescriptorSetDesc setDesc{};
+    setDesc.registerSpace = 0;
+    setDesc.ranges = ranges;
+    setDesc.rangeNum = 2;
+
+    nri::PipelineLayoutDesc pld{};
+    pld.rootRegisterSpace = 0;
+    pld.rootConstants = &rc;
+    pld.rootConstantNum = 1;
+    pld.descriptorSets = &setDesc;
+    pld.descriptorSetNum = 1;
+    pld.shaderStages = rc.shaderStages;
+
+    if (nri_->core().CreatePipelineLayout(*nri_->device(), pld, texturedLayout_) !=
+            nri::Result::SUCCESS ||
+        texturedLayout_ == nullptr) {
+        error = "CreatePipelineLayout (textured) failed";
+        texturedLayout_ = nullptr;
+        return nullptr;
+    }
+    return texturedLayout_;
 }
 
 // ---------------------------------------------------------------------------
@@ -326,7 +376,14 @@ ResourceId NriDevice::CreateBuffer(const semantic::BufferDesc& desc, std::string
 ResourceId NriDevice::CreateTexture(const semantic::TextureDesc& desc, std::string& error) {
     nri::TextureDesc td{};
     td.type = nri::TextureType::TEXTURE_2D;
-    td.usage = ToNriTextureUsage(desc.usage);
+    // A sampled texture is uploaded into, so it needs transfer-destination
+    // usage in addition to whatever the caller asked for.
+    semantic::TextureUsage effective = desc.usage;
+    if ((static_cast<uint32_t>(desc.usage) &
+         static_cast<uint32_t>(semantic::TextureUsage::kSampled)) != 0) {
+        effective = effective | semantic::TextureUsage::kTransferDst;   // HOST_TRANSFER
+    }
+    td.usage = ToNriTextureUsage(effective);
     td.format = ToNriFormat(desc.format);
     td.width = static_cast<nri::Dim_t>(desc.width);
     td.height = static_cast<nri::Dim_t>(desc.height);
@@ -416,10 +473,20 @@ ResourceId NriDevice::CreateTextureView(const semantic::TextureViewDesc& desc,
 
     nri::TextureViewDesc vd{};
     vd.texture = tp->texture;
-    // A view used as a render target must be declared as an attachment view.
-    vd.type = (desc.aspect == semantic::ImageAspect::kColor)
-                  ? nri::TextureView::COLOR_ATTACHMENT
-                  : nri::TextureView::DEPTH_STENCIL_ATTACHMENT;
+    // A sampled view is a shader resource; an attachment view is a render
+    // target. NRI validates the view type against the texture usage, so these
+    // must match what the caller intends.
+    switch (desc.kind) {
+        case semantic::ViewKind::kSampled:
+            vd.type = nri::TextureView::TEXTURE;
+            break;
+        case semantic::ViewKind::kDepthStencilAttachment:
+            vd.type = nri::TextureView::DEPTH_STENCIL_ATTACHMENT;
+            break;
+        default:
+            vd.type = nri::TextureView::COLOR_ATTACHMENT;
+            break;
+    }
     vd.format = (desc.format == semantic::Format::kUnknown) ? nri::Format::UNKNOWN
                                                             : ToNriFormat(desc.format);
     vd.mipOffset = 0;
@@ -484,25 +551,10 @@ ResourceId NriDevice::CreateGraphicsPipeline(const semantic::GraphicsPipelineDes
         return {};
     }
 
-    nri::RootConstantDesc rc{};
-    rc.registerIndex = 0;
-    rc.size = 64;
-    rc.shaderStages = static_cast<nri::StageBits>(
-        static_cast<uint32_t>(nri::StageBits::VERTEX_SHADER) |
-        static_cast<uint32_t>(nri::StageBits::FRAGMENT_SHADER));
-
-    nri::PipelineLayoutDesc pld{};
-    pld.rootRegisterSpace = 0;
-    pld.rootConstants = &rc;
-    pld.rootConstantNum = 1;
-    pld.shaderStages = rc.shaderStages;
-
-    nri::PipelineLayout* layout = nullptr;
-    if (nri_->core().CreatePipelineLayout(*nri_->device(), pld, layout) != nri::Result::SUCCESS ||
-        layout == nullptr) {
-        error = "CreatePipelineLayout failed";
-        return {};
-    }
+    // Every pipeline shares the canonical textured layout, so a descriptor set
+    // allocated against it is valid for any pipeline the backend creates.
+    nri::PipelineLayout* layout = GetOrCreateTexturedLayout(error);
+    if (layout == nullptr) return {};
 
     nri::ShaderDesc shaders[2]{};
     shaders[0].stage = nri::StageBits::VERTEX_SHADER;
@@ -591,13 +643,14 @@ ResourceId NriDevice::CreateGraphicsPipeline(const semantic::GraphicsPipelineDes
     payload->pipeline = pipeline;
     payload->layout = layout;
     payload->viewMask = desc.viewMask;
+    payload->hasDescriptorSet = true;
 
     // NRI copies the shader bytecode during pipeline creation, so the pipeline
     // does not depend on the shader objects afterwards. No dependency edge.
     return registry_.Create(ResourceType::kPipeline, payload, [this](void* p) {
         auto* pp = static_cast<detail::PipelinePayload*>(p);
         if (pp->pipeline) nri_->core().DestroyPipeline(pp->pipeline);
-        if (pp->layout) nri_->core().DestroyPipelineLayout(pp->layout);
+        // The layout is shared and owned by the device, not by the pipeline.
         delete pp;
     });
 }
@@ -630,6 +683,332 @@ void NriDevice::Destroy(ResourceId id) {
     // not here. Releasing it at Destroy would let a parent retire while a
     // GPU-retained view still referenced it.
     registry_.Destroy(id);
+}
+
+
+ResourceId NriDevice::CreateSampler(const semantic::SamplerDesc& desc, std::string& error) {
+    nri::SamplerDesc sd{};
+    const nri::Filter minF = (desc.minFilter == semantic::Filter::kLinear)
+                                 ? nri::Filter::LINEAR : nri::Filter::NEAREST;
+    const nri::Filter magF = (desc.magFilter == semantic::Filter::kLinear)
+                                 ? nri::Filter::LINEAR : nri::Filter::NEAREST;
+    sd.filters.min = minF;
+    sd.filters.mag = magF;
+    sd.filters.mip = minF;   // mip filtering follows the minification filter
+    sd.filters.op = nri::FilterOp::AVERAGE;
+    sd.anisotropy = 1;
+    sd.mipBias = 0.0f;
+    sd.mipMin = 0.0f;
+    sd.mipMax = 0.0f;
+    const nri::AddressMode u = (desc.addressU == semantic::AddressMode::kRepeat)
+                                   ? nri::AddressMode::REPEAT
+                                   : nri::AddressMode::CLAMP_TO_EDGE;
+    const nri::AddressMode v = (desc.addressV == semantic::AddressMode::kRepeat)
+                                   ? nri::AddressMode::REPEAT
+                                   : nri::AddressMode::CLAMP_TO_EDGE;
+    sd.addressModes.u = u;
+    sd.addressModes.v = v;
+    sd.addressModes.w = u;   // w follows u
+    sd.compareOp = nri::CompareOp::NONE;
+    sd.isInteger = false;
+    sd.unnormalizedCoordinates = false;
+
+    nri::Descriptor* sampler = nullptr;
+    if (nri_->core().CreateSampler(*nri_->device(), sd, sampler) != nri::Result::SUCCESS ||
+        sampler == nullptr) {
+        error = "CreateSampler failed";
+        return {};
+    }
+
+    auto* payload = new detail::SamplerPayload();
+    payload->sampler = sampler;
+    return registry_.Create(ResourceType::kSampler, payload, [this](void* p) {
+        auto* sp = static_cast<detail::SamplerPayload*>(p);
+        if (sp->sampler) nri_->core().DestroyDescriptor(sp->sampler);
+        delete sp;
+    });
+}
+
+ResourceId NriDevice::CreateDescriptorSet(const semantic::DescriptorSetDesc& desc,
+                                          std::string& error) {
+    // Both resources must be live and of the right type before anything is
+    // created, so a rejected call never reaches NRI.
+    LookupError viewErr = LookupError::kOk, sampErr = LookupError::kOk;
+    ResourceRecord* viewRec =
+        registry_.Resolve(desc.sampledView, ResourceType::kTextureView, &viewErr);
+    if (viewRec == nullptr) {
+        error = std::string("CreateDescriptorSet: sampled view ") + LookupErrorName(viewErr);
+        return {};
+    }
+    if (viewRec->state != ResourceState::kLive) {
+        error = std::string("CreateDescriptorSet: sampled view ") +
+                LookupErrorName(LookupError::kPendingDestroy);
+        return {};
+    }
+    ResourceRecord* sampRec = registry_.Resolve(desc.sampler, ResourceType::kSampler, &sampErr);
+    if (sampRec == nullptr) {
+        error = std::string("CreateDescriptorSet: sampler ") + LookupErrorName(sampErr);
+        return {};
+    }
+    if (sampRec->state != ResourceState::kLive) {
+        error = std::string("CreateDescriptorSet: sampler ") +
+                LookupErrorName(LookupError::kPendingDestroy);
+        return {};
+    }
+
+    auto* viewPayload = static_cast<detail::ViewPayload*>(viewRec->backendObject);
+    auto* sampPayload = static_cast<detail::SamplerPayload*>(sampRec->backendObject);
+
+    // The set owns its own pool. A pool is never reset while its set is
+    // referenced, because the set is destroyed only after GPU completion.
+    nri::DescriptorPoolDesc pd{};
+    pd.descriptorSetMaxNum = 1;
+    pd.textureMaxNum = 1;
+    pd.samplerMaxNum = 1;
+
+    nri::DescriptorPool* pool = nullptr;
+    if (nri_->core().CreateDescriptorPool(*nri_->device(), pd, pool) != nri::Result::SUCCESS ||
+        pool == nullptr) {
+        error = "CreateDescriptorPool failed";
+        return {};
+    }
+
+    // The set must be allocated against the same layout the pipeline uses. The
+    // backend keeps one canonical layout for textured pipelines.
+    nri::PipelineLayout* layout = GetOrCreateTexturedLayout(error);
+    if (layout == nullptr) {
+        nri_->core().DestroyDescriptorPool(pool);
+        return {};
+    }
+
+    nri::DescriptorSet* set = nullptr;
+    if (nri_->core().AllocateDescriptorSets(*pool, *layout, 0, &set, 1, 0) !=
+            nri::Result::SUCCESS ||
+        set == nullptr) {
+        nri_->core().DestroyDescriptorPool(pool);
+        error = "AllocateDescriptorSets failed";
+        return {};
+    }
+
+    nri::Descriptor* descriptors[2] = {viewPayload->descriptor, sampPayload->sampler};
+    nri::UpdateDescriptorRangeDesc updates[2]{};
+    updates[0].descriptorSet = set;
+    updates[0].rangeIndex = 0;
+    updates[0].baseDescriptor = 0;
+    updates[0].descriptors = &descriptors[0];
+    updates[0].descriptorNum = 1;
+    updates[1].descriptorSet = set;
+    updates[1].rangeIndex = 1;
+    updates[1].baseDescriptor = 0;
+    updates[1].descriptors = &descriptors[1];
+    updates[1].descriptorNum = 1;
+    nri_->core().UpdateDescriptorRanges(updates, 2);
+
+    auto* payload = new detail::DescriptorSetPayload();
+    payload->set = set;
+    payload->pool = pool;
+    payload->sampledView = desc.sampledView;
+    payload->sampler = desc.sampler;
+
+    const ResourceId id = registry_.Create(ResourceType::kDescriptorSet, payload,
+                                           [this](void* p) {
+        auto* dp = static_cast<detail::DescriptorSetPayload*>(p);
+        // Destroying the pool frees the set allocated from it.
+        if (dp->pool) nri_->core().DestroyDescriptorPool(dp->pool);
+        delete dp;
+    });
+
+    // The set's descriptors reference the view and the sampler, so both must
+    // outlive it.
+    if (!registry_.AddDependency(id, desc.sampledView) ||
+        !registry_.AddDependency(id, desc.sampler)) {
+        error = "CreateDescriptorSet: dependency registration failed";
+        registry_.Destroy(id);
+        return {};
+    }
+    return id;
+}
+
+bool NriDevice::UploadTexture(const semantic::TextureUploadDesc& desc, std::string& error) {
+    LookupError err = LookupError::kOk;
+    detail::TexturePayload* tp =
+        registry_.Payload<detail::TexturePayload>(desc.texture, ResourceType::kTexture, &err);
+    if (tp == nullptr) {
+        error = std::string("UploadTexture: ") + LookupErrorName(err);
+        return false;
+    }
+    if (desc.data == nullptr || desc.width == 0 || desc.height == 0) {
+        error = "UploadTexture: empty upload";
+        return false;
+    }
+
+    // NRI uploads host memory directly into a texture. The texture must be in
+    // GENERAL layout with HOST_WRITE access, so transition it first.
+    nri::TextureBarrierDesc toGeneral{};
+    toGeneral.texture = tp->texture;
+    toGeneral.before.access = static_cast<nri::AccessBits>(
+        static_cast<uint32_t>(nri::AccessBits::NONE));
+    toGeneral.before.layout = nri::Layout::UNDEFINED;
+    toGeneral.before.stages = static_cast<nri::StageBits>(
+        static_cast<uint32_t>(nri::StageBits::ALL));
+    toGeneral.after.access = static_cast<nri::AccessBits>(
+        static_cast<uint32_t>(nri::AccessBits::HOST_WRITE));
+    toGeneral.after.layout = nri::Layout::GENERAL;
+    toGeneral.after.stages = static_cast<nri::StageBits>(
+        static_cast<uint32_t>(nri::StageBits::HOST));
+    toGeneral.mipOffset = 0;
+    toGeneral.mipNum = 1;
+    toGeneral.layerOffset = static_cast<nri::Dim_t>(desc.layer);
+    toGeneral.layerNum = 1;
+    toGeneral.planes = nri::PlaneBits::COLOR;
+
+    nri::BarrierDesc bd{};
+    bd.textures = &toGeneral;
+    bd.textureNum = 1;
+
+    CommandContext* ctx = AcquireContext();
+    if (ctx == nullptr) {
+        if (!WaitForContext(error)) return false;
+        ctx = AcquireContext();
+        if (ctx == nullptr) {
+            error = "UploadTexture: no command context available";
+            return false;
+        }
+    }
+    nri_->core().ResetCommandAllocator(*ctx->allocator);
+    if (nri_->core().BeginCommandBuffer(*ctx->buffer, nullptr) != nri::Result::SUCCESS) {
+        error = "UploadTexture: BeginCommandBuffer failed";
+        return false;
+    }
+    nri_->core().CmdBarrier(*ctx->buffer, bd);
+    if (nri_->core().EndCommandBuffer(*ctx->buffer) != nri::Result::SUCCESS) {
+        error = "UploadTexture: EndCommandBuffer failed";
+        return false;
+    }
+
+    const uint64_t value = nextSubmitValue_++;
+    nri::FenceSubmitDesc signal{};
+    signal.fence = fence_;
+    signal.value = value;
+    signal.stages = nri::StageBits::ALL;
+    const nri::CommandBuffer* cmds[1] = {ctx->buffer};
+    nri::QueueSubmitDesc qsd{};
+    qsd.commandBuffers = cmds;
+    qsd.commandBufferNum = 1;
+    qsd.signalFences = &signal;
+    qsd.signalFenceNum = 1;
+    if (nri_->core().QueueSubmit(*queue_, qsd) != nri::Result::SUCCESS) {
+        error = "UploadTexture: QueueSubmit (transition) failed";
+        return false;
+    }
+    ctx->submitValue = value;
+    ctx->state = CommandContext::State::kSubmitted;
+
+    // The host upload must observe the transition, so wait for it.
+    nri_->core().Wait(*fence_, value);
+    ReapCompletedContexts();
+
+    const uint32_t rowPitch = desc.rowPitch != 0 ? desc.rowPitch : desc.width * 4;
+    nri::UploadHostMemoryToTextureDesc up{};
+    up.srcData = desc.data;
+    up.dstTexture = tp->texture;
+    up.dstRegion.x = 0;
+    up.dstRegion.y = 0;
+    up.dstRegion.z = 0;
+    up.dstRegion.width = static_cast<nri::Dim_t>(desc.width);
+    up.dstRegion.height = static_cast<nri::Dim_t>(desc.height);
+    up.dstRegion.depth = 1;
+    up.dstRegion.mipOffset = 0;
+    up.dstRegion.layerOffset = static_cast<nri::Dim_t>(desc.layer);
+    up.dstRegion.planes = nri::PlaneBits::COLOR;
+    up.srcRowPitch = rowPitch;
+    up.srcSlicePitch = rowPitch * desc.height;
+
+    if (nri_->core().UploadHostMemoryToTexture(*queue_, &up, 1) != nri::Result::SUCCESS) {
+        error = "UploadHostMemoryToTexture failed";
+        return false;
+    }
+
+    // Leave the texture in a shader-readable layout for the draw.
+    nri::TextureBarrierDesc toShader{};
+    toShader.texture = tp->texture;
+    toShader.before.access = static_cast<nri::AccessBits>(
+        static_cast<uint32_t>(nri::AccessBits::HOST_WRITE));
+    toShader.before.layout = nri::Layout::GENERAL;
+    toShader.before.stages = static_cast<nri::StageBits>(
+        static_cast<uint32_t>(nri::StageBits::HOST));
+    toShader.after.access = static_cast<nri::AccessBits>(
+        static_cast<uint32_t>(nri::AccessBits::SHADER_RESOURCE));
+    toShader.after.layout = nri::Layout::SHADER_RESOURCE;
+    toShader.after.stages = static_cast<nri::StageBits>(
+        static_cast<uint32_t>(nri::StageBits::FRAGMENT_SHADER));
+    toShader.mipOffset = 0;
+    toShader.mipNum = 1;
+    toShader.layerOffset = static_cast<nri::Dim_t>(desc.layer);
+    toShader.layerNum = 1;
+    toShader.planes = nri::PlaneBits::COLOR;
+
+    nri::BarrierDesc bd2{};
+    bd2.textures = &toShader;
+    bd2.textureNum = 1;
+
+    CommandContext* ctx2 = AcquireContext();
+    if (ctx2 == nullptr) {
+        if (!WaitForContext(error)) return false;
+        ctx2 = AcquireContext();
+        if (ctx2 == nullptr) {
+            error = "UploadTexture: no command context for final transition";
+            return false;
+        }
+    }
+    nri_->core().ResetCommandAllocator(*ctx2->allocator);
+    if (nri_->core().BeginCommandBuffer(*ctx2->buffer, nullptr) != nri::Result::SUCCESS) {
+        error = "UploadTexture: BeginCommandBuffer (final) failed";
+        return false;
+    }
+    nri_->core().CmdBarrier(*ctx2->buffer, bd2);
+    if (nri_->core().EndCommandBuffer(*ctx2->buffer) != nri::Result::SUCCESS) {
+        error = "UploadTexture: EndCommandBuffer (final) failed";
+        return false;
+    }
+
+    const uint64_t value2 = nextSubmitValue_++;
+    nri::FenceSubmitDesc signal2{};
+    signal2.fence = fence_;
+    signal2.value = value2;
+    signal2.stages = nri::StageBits::ALL;
+    const nri::CommandBuffer* cmds2[1] = {ctx2->buffer};
+    nri::QueueSubmitDesc qsd2{};
+    qsd2.commandBuffers = cmds2;
+    qsd2.commandBufferNum = 1;
+    qsd2.signalFences = &signal2;
+    qsd2.signalFenceNum = 1;
+    if (nri_->core().QueueSubmit(*queue_, qsd2) != nri::Result::SUCCESS) {
+        error = "UploadTexture: QueueSubmit (final) failed";
+        return false;
+    }
+    ctx2->submitValue = value2;
+    ctx2->state = CommandContext::State::kSubmitted;
+    nri_->core().Wait(*fence_, value2);
+    ReapCompletedContexts();
+    return true;
+}
+
+void NriDevice::BindDescriptorSet(ResourceId descriptorSet) {
+    LookupError err = LookupError::kOk;
+    detail::DescriptorSetPayload* dp = registry_.Payload<detail::DescriptorSetPayload>(
+        descriptorSet, ResourceType::kDescriptorSet, &err);
+    if (dp == nullptr) {
+        Reject(std::string("BindDescriptorSet: ") + LookupErrorName(err));
+        return;
+    }
+    if (!Acquire(descriptorSet, ResourceType::kDescriptorSet, "BindDescriptorSet")) return;
+
+    nri::SetDescriptorSetDesc sd{};
+    sd.setIndex = 0;
+    sd.descriptorSet = dp->set;
+    sd.bindPoint = nri::BindPoint::GRAPHICS;
+    nri_->core().CmdSetDescriptorSet(*active_->buffer, sd);
 }
 
 // ---------------------------------------------------------------------------

@@ -47,6 +47,8 @@ enum class ResourceType {
     kTextureView,
     kShader,
     kPipeline,
+    kSampler,
+    kDescriptorSet,
 };
 
 const char* ResourceTypeName(ResourceType t);
@@ -92,10 +94,10 @@ struct ResourceRecord {
     };
     std::vector<Ref> refs;
 
-    // The resource this one depends on, if any. Destroy() releases the edge so
-    // the parent can retire once its last dependent is gone.
-    ResourceId dependency;
-    bool hasDependency = false;
+    // Resources this one requires to stay alive. A descriptor set depends on
+    // both a texture view and a sampler, so this is a list rather than a single
+    // edge. Edges are released only at physical destruction.
+    std::vector<ResourceId> dependencies;
 
     // Backend payload. Opaque to the registry.
     void* backendObject = nullptr;
@@ -147,10 +149,13 @@ public:
 
     // --- Dependencies ---
     // 'dependent' needs 'dependency' to stay alive. The dependency cannot be
-    // physically destroyed while the dependent exists.
+    // physically destroyed while the dependent exists. Both must be live.
+    // Rejects an edge that would create a cycle.
     bool AddDependency(ResourceId dependent, ResourceId dependency);
-    // Releases the dependency edge. Called when the dependent is destroyed.
+    // Releases one dependency edge. Called at dependent physical destruction.
     void ReleaseDependency(ResourceId dependent, ResourceId dependency);
+    // Number of dependency edges currently registered.
+    int TotalDependencyEdges() const;
 
     // --- Destruction ---
     // Revokes application ownership. Physical destruction is deferred while any
@@ -169,6 +174,8 @@ public:
 private:
     bool MaybeDestroy(uint64_t index);
     void ReleaseAllRefsOf(uint64_t index);
+    // True when 'from' transitively depends on 'target'. Used to reject cycles.
+    bool DependsOn(uint64_t from, uint64_t target) const;
 
     std::unordered_map<uint64_t, ResourceRecord> records_;
     // dependency index -> the dependents that hold it

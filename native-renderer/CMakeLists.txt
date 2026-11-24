@@ -75,6 +75,7 @@ set(HARNESS_TESTS
   t11_multi_submission
   t12_expected_diagnostic_scope
   t13_p0_lifetime_corrections
+  t14_textured_nri_draw
 )
 
 foreach(t ${HARNESS_TESTS})
