@@ -9,11 +9,46 @@ suitable.
 Launching Déraciné or shadPS4 requires explicit user permission. Nothing in this runbook is
 authorised to run on its own.
 
+## 1a. What remains unverified
+
+The reference oracle's behaviour inside a real Déraciné rendering pass is **unverified**. The
+rendering-scope lifecycle is proven by an independent GPU fixture that reproduces the scheduler's
+sequence, not by observing the game. Until an authorised runtime capture runs, these remain open:
+
+- whether the game's passes reach the capture path with the state the fixture models;
+- whether any real pass clears its colour attachment, which the capture reports as unsupported;
+- whether the resumed scope's load operation preserves the game's own attachment contents;
+- whether the deferred readback completes before package export in a real run.
+
+The fixture establishes that the mechanism is correct. It does not establish that the game exercises
+it as modelled.
+
 ## 2. Prerequisites
 
-- A game dump at `D:\Temp\Deracine\CUSA11919-qual` (or the lab's configured shadow).
+### The executable identity is a requirement, not a convenience
+
+The approved Déraciné 1.00 executable is identified by hash:
+
+```
+SHA-256: 8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0
+```
+
+Verify it before running:
+
+```powershell
+(Get-FileHash '<path to the approved eboot.bin>' -Algorithm SHA256).Hash
+```
+
+**Do not use the `CUSA11919-qual` dump as an interchangeable substitute.** It hashes to
+`8da8e46ac5fdc48e4e9b59e459920a266039993dc13a2d92740f8803e46fdf75`, which is a different build.
+A-028R's runner used it, and A-038 recorded the discrepancy. Static addresses and runtime
+observations from different builds must not be joined, so a capture taken from the qualification
+build cannot be combined with the recovered offsets.
+
+Other prerequisites:
+
 - A private lab directory, so the run does not touch shared settings.
-- The SC-11R build: `shadps4.exe` from `wt-sc11r`.
+- The SC-11R build: `shadps4.exe` from this branch.
 
 ## 3. Capture flags
 

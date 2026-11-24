@@ -564,6 +564,23 @@ public:
     /// Ends current rendering scope.
     void EndRendering(std::source_location where = std::source_location::current());
 
+    /// Re-opens the current rendering scope after something ended it.
+    ///
+    /// A capture that reads an attachment has to end the scope to record its copy, because a
+    /// buffer-to-image or image-to-buffer copy cannot be issued inside a rendering scope. The draw
+    /// that follows must still execute inside one, and the scope must not repeat the pass's clear:
+    /// the clear already happened, and repeating it would discard the very contents the draw is
+    /// meant to inherit.
+    ///
+    /// So the resumed scope loads every attachment instead of clearing it, and the tracked render
+    /// state is left exactly as it was. Leaving it unchanged matters: a later draw in the same
+    /// guest pass compares against it, and rewriting the state to "no clears" would make that draw
+    /// start a fresh pass and clear the target again.
+    ///
+    /// Returns false when there is no scope to resume, which is the case before the first pass of
+    /// a frame.
+    bool ResumeRendering();
+
     /// Returns the current render state.
     const RenderState& GetRenderState() const {
         return render_state;
@@ -703,6 +720,11 @@ private:
     std::condition_variable_any priority_pending_ops_cv;
     std::jthread priority_pending_ops_thread;
     RenderState render_state;
+    /// Records the rendering scope for `state`. `force_load` opens every attachment with a load
+    /// operation instead of the clear the state asks for, which is what a resumed scope needs.
+    void OpenRenderingScope(const RenderState& state, u64 vs_hash, u64 ps_hash, PassKind kind,
+                            bool force_load);
+
     bool is_rendering = false;
     u32 draws_since_flush{};
     bool flush_due{};

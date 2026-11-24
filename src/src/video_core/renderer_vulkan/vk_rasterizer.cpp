@@ -638,6 +638,15 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
                     Core::ReferenceOutput::NoteCaptureFailure(provenance_id, /*is_pre=*/true,
                                                               status);
                 }
+                // The capture ended the rendering scope to record its copy, because a copy cannot
+                // be issued inside one. The draw below must still execute inside a scope, so the
+                // scope is re-opened with load operations: the pass's clear already happened, and
+                // repeating it would discard the contents this draw is meant to inherit.
+                //
+                // This is unconditional on the capture's status. A capture that failed after
+                // ending the scope would otherwise leave the draw outside one, which is the defect
+                // this exists to prevent.
+                scheduler.ResumeRendering();
             }
         }
     }
@@ -823,6 +832,11 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
             if (status != Core::ReferenceOutput::CaptureStatus::Pending) {
                 Core::ReferenceOutput::NoteCaptureFailure(provenance_id, /*is_pre=*/false, status);
             }
+            // The post-draw capture ends the scope for the same reason the pre-draw one does. A
+            // later draw in the same guest pass must still execute inside a scope, so it is
+            // re-opened with load operations and the tracked state is left unchanged, which keeps
+            // the next draw from starting a fresh pass and clearing the target again.
+            scheduler.ResumeRendering();
         }
 
         // The graphics pipeline state the draw used. These are the values the renderer configured,

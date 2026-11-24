@@ -29,10 +29,11 @@ add_executable(deracine_original_shader_pipeline
 )
 # The reference-output synchronization fixture: proves the deferred readback contract on a real GPU.
 add_executable(deracine_reference_sync_test reference_sync_test.cpp)
+add_executable(deracine_renderpass_capture_test renderpass_capture_test.cpp)
 
 set(REPLAY_TARGETS deracine_scene_replay deracine_textured_replay
                    deracine_original_shader_replay deracine_original_shader_pipeline
-                   deracine_reference_sync_test)
+                   deracine_reference_sync_test deracine_renderpass_capture_test)
 
 # Prefer the vendored headers when the tree has them, so the build does not depend on a system SDK.
 set(VULKAN_HEADERS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../src/externals/vulkan-headers/include")
