@@ -23,6 +23,7 @@ struct State {
     u64 draws_seen{};
     u32 snapshots_taken{};
     u64 snapshot_provenance{};
+    bool capacity_exhausted{};
 };
 
 State g_state{};
@@ -75,6 +76,16 @@ bool ShouldSnapshot() noexcept {
     return g_state.snapshots_taken < MaxSnapshotDraws;
 }
 
+void NoteSnapshotTaken() noexcept {
+    std::scoped_lock lock{g_state.mutex};
+    ++g_state.snapshots_taken;
+}
+
+bool CapacityExhausted() noexcept {
+    std::scoped_lock lock{g_state.mutex};
+    return g_state.capacity_exhausted;
+}
+
 bool HasContentFor(u64 provenance_id) noexcept {
     std::scoped_lock lock{g_state.mutex};
     for (const auto& image : g_state.images) {
@@ -113,15 +124,45 @@ void NoteImageBinding(const ImageRecord& record) noexcept {
 void CommitPendingImages(u64 provenance_id) noexcept {
     try {
         std::scoped_lock lock{g_state.mutex};
-        if (g_state.snapshot_provenance == provenance_id)
+        // A draw's bindings can be committed more than once: BindTextures runs per stage, and a
+        // stage can be visited again. Committing is therefore incremental rather than a one-shot
+        // latch. The draw is counted once, and a record already stored for this draw is not
+        // stored again, so a repeated stage does not duplicate its bindings.
+        if (g_state.snapshot_provenance != provenance_id) {
+            g_state.snapshot_provenance = provenance_id;
+        }
+        // Only the draw that is actually snapshotted contributes records. A binding record for a
+        // draw whose contents were never captured cannot be replayed, and keeping every draw's
+        // bindings fills the budget before the selected draw is reached.
+        const bool snapshot_draw = g_state.snapshot_provenance == provenance_id &&
+                                   g_state.snapshots_taken != 0;
+        if (!snapshot_draw) {
+            g_pending_images.clear();
             return;
-        g_state.snapshot_provenance = provenance_id;
-        ++g_state.snapshots_taken;
+        }
         for (const auto& record : g_pending_images) {
             if (record.provenance_id != provenance_id)
                 continue;
-            if (g_state.images.size() >= MaxImageRecords)
+            if (g_state.images.size() >= MaxImageRecords) {
+                // Capacity exhaustion is reported rather than silently dropping the rest: a
+                // package built from a truncated set must not claim complete capture.
+                g_state.capacity_exhausted = true;
                 break;
+            }
+            // The same descriptor observed twice is one binding. The identity is the stage, the
+            // unified binding and the image generation, which is what distinguishes a repeated
+            // visit from a genuinely separate binding of the same image.
+            const bool duplicate = std::ranges::any_of(
+                g_state.images, [&record](const ImageRecord& existing) {
+                    return existing.provenance_id == record.provenance_id &&
+                           existing.stage_hash == record.stage_hash &&
+                           existing.vk_binding == record.vk_binding &&
+                           existing.image_uid == record.image_uid &&
+                           existing.mip_first == record.mip_first &&
+                           existing.layer_first == record.layer_first;
+                });
+            if (duplicate)
+                continue;
             g_state.images.push_back(record);
         }
         g_pending_images.clear();
@@ -195,6 +236,7 @@ void ResetForTesting() noexcept {
     g_state.draws_seen = 0;
     g_state.snapshots_taken = 0;
     g_state.snapshot_provenance = 0;
+    g_state.capacity_exhausted = false;
     g_pending_images.clear();
 }
 

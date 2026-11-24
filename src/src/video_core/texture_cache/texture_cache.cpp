@@ -272,33 +272,17 @@ bool TextureCache::SnapshotImageForCapture(ImageId image_id, u32 mip_first, u32 
         .imageExtent = {texel_width, texel_height, 1},
     };
 
-    // Record the state the subresources are in before the copy, so it can be restored afterwards.
-    // The snapshot runs inside BindTextures, before the draw executes, so leaving the image in
-    // transfer-source would make the draw sample an image in the wrong layout.
+    // The snapshot runs inside BindTextures, before the draw executes, so the copy must touch only
+    // the subresources it reads and must leave each of them in the state it found. A whole-image
+    // transition would leave every other mip and layer in transfer-source, and restoring the whole
+    // image to one aggregate state would be wrong for an image whose subresources were already in
+    // different states.
     const SubresourceRange range{
         .base = {.level = mip, .layer = layer_first},
         .extent = {.levels = 1, .layers = layers},
     };
-    const vk::ImageLayout original_layout = image.backing->state.layout;
-    const vk::AccessFlags2 original_access = image.backing->state.access_mask;
-    const vk::PipelineStageFlags2 original_stage = image.backing->state.pl_stage;
-
-    // The same synchronized download the renderer uses: it ends the current rendering, barriers
-    // the image to transfer-source, copies, and barriers the buffer back.
-    image.Download(std::span{&copy, 1}, download_buffer.Handle(), offset, download_size);
-
-    // Restore a sampling-compatible state through the image's own tracking, so shadPS4's recorded
-    // state matches the barriers that were actually emitted. Restoring to the exact prior layout
-    // is not always possible: the prior layout may have been a render-target or general layout
-    // that a sampled read cannot use. A shader-read layout is the correct state for an image the
-    // draw is about to sample, and it is what the binding path would have transitioned to anyway.
-    const vk::ImageLayout restore_layout =
-        original_layout == vk::ImageLayout::eShaderReadOnlyOptimal ||
-                original_layout == vk::ImageLayout::eGeneral ||
-                original_layout == vk::ImageLayout::eDepthStencilReadOnlyOptimal
-            ? original_layout
-            : vk::ImageLayout::eShaderReadOnlyOptimal;
-    image.Transit(restore_layout, vk::AccessFlagBits2::eShaderRead, range);
+    image.DownloadScoped(std::span{&copy, 1}, download_buffer.Handle(), offset, download_size,
+                         range);
 
     Core::TextureCapture::ImageRecord record{};
     record.provenance_id = provenance_id;

@@ -344,6 +344,20 @@ def main(argv: list[str]) -> int:
         for texture in textures:
             if not texture.get("subresources"):
                 return fail(f"texture {texture.get('id')} claims content but has no subresources")
+            # The required set is the view's mip and layer range. Every pair in it must be present,
+            # or the capture is partial and cannot be described as complete.
+            required_mips = texture.get("mip_count", 0) or 1
+            required_layers = texture.get("layer_count", 0) or 1
+            mip_first = texture.get("mip_first", 0)
+            layer_first = texture.get("layer_first", 0)
+            present = {(sub.get("mip"), sub.get("layer"))
+                       for sub in texture.get("subresources", [])}
+            for m in range(required_mips):
+                for l in range(required_layers):
+                    if (mip_first + m, layer_first + l) not in present:
+                        return fail(
+                            f"texture {texture.get('id')} claims content readiness but mip "
+                            f"{mip_first + m} layer {layer_first + l} is missing")
     if readiness.get("sampler_ready") and not samplers:
         return fail("sampler readiness claimed with no samplers")
 

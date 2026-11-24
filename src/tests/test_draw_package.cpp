@@ -314,6 +314,111 @@ TEST(DrawPackageValidator, RejectsTextureContentReadinessWithShortPayload) {
     EXPECT_FALSE(ValidatePackage(package, error));
 }
 
+TEST(DrawPackageValidator, RejectsPartialMipChainClaimingContentReadiness) {
+    // A view that asks for four mip levels and got one is not complete. Claiming content readiness
+    // for it would describe a partial capture as a complete original resource.
+    auto package = MakeValidPackage();
+    AddGeometry(package);
+    Texture texture{};
+    texture.id = 1;
+    texture.width = 64;
+    texture.height = 64;
+    texture.mip_first = 0;
+    texture.mip_count = 4;
+    texture.layer_first = 0;
+    texture.layer_count = 1;
+    texture.block_columns = 16;
+    texture.block_rows = 16;
+    texture.block_texels_x = 4;
+    texture.block_texels_y = 4;
+    texture.bytes_per_block = 16;
+    texture.transfer_id = 1;
+    TextureSubresource sub{};
+    sub.mip = 0;
+    sub.layer = 0;
+    sub.width = 64;
+    sub.height = 64;
+    sub.row_pitch = 256;
+    sub.byte_length = 4096;
+    sub.content_hash = 1;
+    texture.subresources.push_back(sub);
+    package.textures.push_back(texture);
+    package.readiness.texture_binding_ready = true;
+    package.readiness.texture_contents_ready = true;
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+}
+
+TEST(DrawPackageValidator, AcceptsCompleteMipChainClaimingContentReadiness) {
+    auto package = MakeValidPackage();
+    AddGeometry(package);
+    Texture texture{};
+    texture.id = 1;
+    texture.width = 64;
+    texture.height = 64;
+    texture.mip_first = 0;
+    texture.mip_count = 2;
+    texture.layer_first = 0;
+    texture.layer_count = 1;
+    texture.block_columns = 16;
+    texture.block_rows = 16;
+    texture.block_texels_x = 4;
+    texture.block_texels_y = 4;
+    texture.bytes_per_block = 16;
+    texture.transfer_id = 1;
+    for (u32 mip = 0; mip < 2; ++mip) {
+        const u32 w = std::max(1u, 64u >> mip);
+        const u32 h = std::max(1u, 64u >> mip);
+        TextureSubresource sub{};
+        sub.mip = mip;
+        sub.layer = 0;
+        sub.width = w;
+        sub.height = h;
+        sub.row_pitch = ((w + 3) / 4) * 16;
+        sub.byte_length = sub.row_pitch * ((h + 3) / 4);
+        sub.content_hash = 1;
+        texture.subresources.push_back(sub);
+    }
+    package.textures.push_back(texture);
+    package.readiness.texture_binding_ready = true;
+    package.readiness.texture_contents_ready = true;
+    std::string error;
+    EXPECT_TRUE(ValidatePackage(package, error)) << error;
+}
+
+TEST(DrawPackageValidator, RejectsMissingArrayLayerClaimingContentReadiness) {
+    auto package = MakeValidPackage();
+    AddGeometry(package);
+    Texture texture{};
+    texture.id = 1;
+    texture.width = 64;
+    texture.height = 64;
+    texture.mip_first = 0;
+    texture.mip_count = 1;
+    texture.layer_first = 0;
+    texture.layer_count = 2;
+    texture.block_columns = 16;
+    texture.block_rows = 16;
+    texture.block_texels_x = 4;
+    texture.block_texels_y = 4;
+    texture.bytes_per_block = 16;
+    texture.transfer_id = 1;
+    TextureSubresource sub{};
+    sub.mip = 0;
+    sub.layer = 0;
+    sub.width = 64;
+    sub.height = 64;
+    sub.row_pitch = 256;
+    sub.byte_length = 4096;
+    sub.content_hash = 1;
+    texture.subresources.push_back(sub);
+    package.textures.push_back(texture);
+    package.readiness.texture_binding_ready = true;
+    package.readiness.texture_contents_ready = true;
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+}
+
 TEST(DrawPackageValidator, RejectsSchemaVersionOne) {
     // A version 1 package's replay_ready meant shader-buffer completeness only, so it must not be
     // reinterpreted under the version 2 contract.

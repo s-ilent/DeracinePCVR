@@ -1145,6 +1145,13 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
         uses_dma |= stage->uses_dma;
     }
 
+    // Every stage has now bound its resources, so this is the draw's binding boundary. Committing
+    // here rather than inside BindTextures keeps the records from every stage: BindTextures runs
+    // once per stage, and committing on the first one would discard the rest.
+    if (Core::TextureCapture::Enabled()) {
+        Core::TextureCapture::CommitPendingImages(Core::RhiEntryProbe::CurrentDrawProvenanceId());
+    }
+
     if (uses_dma) {
         // We only use fault buffer for DMA right now.
         Common::RecursiveSharedLock lock{mapped_ranges_mutex};
@@ -1997,7 +2004,6 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
                 desc.info.props.is_depth ? 2u : 1u, provenance, unified, stage.pgm_hash,
                 binding_index - 1);
         }
-        Core::TextureCapture::CommitPendingImages(provenance);
     }
 }
 

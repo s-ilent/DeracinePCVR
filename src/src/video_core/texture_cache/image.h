@@ -173,6 +173,17 @@ struct Image {
     void Download(std::span<const vk::BufferImageCopy> download_copies, vk::Buffer buffer,
                   u64 offset, u64 download_size);
 
+    /// Copies only the subresources in `range`, transitioning only those and restoring each to the
+    /// state it was in before the copy.
+    ///
+    /// `Download` transitions the whole image to transfer-source and leaves it there, which is
+    /// correct for a download that is about to write the image back to guest memory but wrong for
+    /// an observation: the subresources the caller did not copy would be left in a layout the draw
+    /// cannot sample, and restoring the whole image to one aggregate state would be equally wrong
+    /// for an image whose subresources were already in different states.
+    void DownloadScoped(std::span<const vk::BufferImageCopy> download_copies, vk::Buffer buffer,
+                        u64 offset, u64 download_size, const SubresourceRange& range);
+
     // `where` defaults to the caller, so the copy's execution site is recorded without every call
     // site having to pass it. Used by the SHADPS4_DBG_COPY_LOG line only.
     void CopyImage(Image& src_image, std::source_location where = std::source_location::current());

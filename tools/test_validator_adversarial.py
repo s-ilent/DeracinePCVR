@@ -251,6 +251,31 @@ def main(argv):
             texture["transfer_id"] = 0
             return
 
+    def partial_mip_chain(package, blob):
+        # Ask for four mip levels but supply one. The payload is valid for the level it has, so
+        # only the range comparison catches the overclaim.
+        for texture in package.get("textures", []):
+            if texture.get("subresources"):
+                texture["mip_count"] = 4
+                return
+
+    def missing_array_layer(package, blob):
+        for texture in package.get("textures", []):
+            if texture.get("subresources"):
+                texture["layer_count"] = 2
+                return
+
+    def duplicate_subresource_masking_missing(package, blob):
+        # Two copies of the same subresource, with a second mip requested. The duplicate must not
+        # stand in for the missing level.
+        for texture in package.get("textures", []):
+            subs = texture.get("subresources", [])
+            if subs:
+                texture["mip_count"] = 2
+                clone = json.loads(json.dumps(subs[0]))
+                subs.append(clone)
+                return
+
     case("corrupted blob byte", corrupt_blob)
     case("wrong schema version", wrong_schema)
     case("missing provenance", missing_provenance)
@@ -293,6 +318,9 @@ def main(argv):
     case("missing block geometry", missing_block_geometry)
     case("verified sampler without id", verified_sampler_without_id)
     case("stale transfer identity", stale_transfer_identity)
+    case("partial mip chain", partial_mip_chain)
+    case("missing array layer", missing_array_layer)
+    case("duplicate subresource masking missing", duplicate_subresource_masking_missing)
 
     failures = 0
     for name, mutate in cases:

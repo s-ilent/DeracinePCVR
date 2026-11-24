@@ -1167,15 +1167,42 @@ void WriteFirstPackage(const char* directory) noexcept {
             }
 
             package.readiness.texture_binding_ready = !package.textures.empty();
-            // Content readiness means every texture the draw binds has captured bytes, not merely
-            // that one of them does. A draw with one captured and one uncaptured texture cannot be
-            // replayed textured, so claiming readiness for it would be wrong.
+            // Content readiness means every required subresource of every bound texture was
+            // captured, not merely that each texture has some bytes. A view that asks for four mip
+            // levels and got one is not complete, and claiming otherwise would describe a partial
+            // capture as a complete original resource.
             package.readiness.texture_contents_ready = !package.textures.empty();
             for (const auto& texture : package.textures) {
                 if (texture.subresources.empty()) {
                     package.readiness.texture_contents_ready = false;
                     break;
                 }
+                // The required set is the view's mip and layer range. Every (mip, layer) pair in
+                // it must appear exactly once in the captured set.
+                const u32 required_mips = texture.mip_count != 0 ? texture.mip_count : 1;
+                const u32 required_layers = texture.layer_count != 0 ? texture.layer_count : 1;
+                u32 matched = 0;
+                for (u32 m = 0; m < required_mips; ++m) {
+                    for (u32 l = 0; l < required_layers; ++l) {
+                        const u32 want_mip = texture.mip_first + m;
+                        const u32 want_layer = texture.layer_first + l;
+                        const bool present = std::ranges::any_of(
+                            texture.subresources, [&](const DrawPackage::TextureSubresource& sub) {
+                                return sub.mip == want_mip && sub.layer == want_layer;
+                            });
+                        if (present) {
+                            ++matched;
+                        }
+                    }
+                }
+                if (matched != required_mips * required_layers) {
+                    package.readiness.texture_contents_ready = false;
+                    break;
+                }
+            }
+            // A capture that hit the record budget is truncated, so it cannot claim completeness.
+            if (TextureCapture::CapacityExhausted()) {
+                package.readiness.texture_contents_ready = false;
             }
             package.readiness.sampler_ready = !package.samplers.empty();
             package.readiness.pipeline_state_ready = false;

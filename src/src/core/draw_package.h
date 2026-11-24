@@ -473,6 +473,28 @@ struct Package {
                     error = "texture content readiness claimed with no subresources";
                     return false;
                 }
+                // The required set is the view's mip and layer range. Every pair in it must be
+                // present, or the capture is partial and cannot be described as complete.
+                const u32 required_mips = texture.mip_count != 0 ? texture.mip_count : 1;
+                const u32 required_layers = texture.layer_count != 0 ? texture.layer_count : 1;
+                u32 matched = 0;
+                for (u32 m = 0; m < required_mips; ++m) {
+                    for (u32 l = 0; l < required_layers; ++l) {
+                        const u32 want_mip = texture.mip_first + m;
+                        const u32 want_layer = texture.layer_first + l;
+                        for (const auto& sub : texture.subresources) {
+                            if (sub.mip == want_mip && sub.layer == want_layer) {
+                                ++matched;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (matched != required_mips * required_layers) {
+                    error = "texture content readiness claimed with an incomplete mip or layer "
+                            "range";
+                    return false;
+                }
                 for (const auto& subresource : texture.subresources) {
                     if (subresource.byte_length == 0) {
                         error = "texture subresource has no bytes";

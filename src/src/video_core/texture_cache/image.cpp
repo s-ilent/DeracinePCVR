@@ -739,6 +739,191 @@ void Image::Download(std::span<const vk::BufferImageCopy> download_copies, vk::B
     });
 }
 
+void Image::DownloadScoped(std::span<const vk::BufferImageCopy> download_copies, vk::Buffer buffer,
+                           u64 offset, u64 download_size, const SubresourceRange& range) {
+    SetBackingSamples(info.num_samples);
+    scheduler->EndRendering();
+
+    const vk::BufferMemoryBarrier2 pre_barrier = {
+        .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+        .srcAccessMask = vk::AccessFlagBits2::eMemoryRead,
+        .dstStageMask = vk::PipelineStageFlagBits2::eCopy,
+        .dstAccessMask = vk::AccessFlagBits2::eTransferWrite,
+        .buffer = buffer,
+        .offset = offset,
+        .size = download_size,
+    };
+    const vk::BufferMemoryBarrier2 post_barrier = {
+        .srcStageMask = vk::PipelineStageFlagBits2::eCopy,
+        .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+        .dstAccessMask = vk::AccessFlagBits2::eMemoryRead,
+        .buffer = buffer,
+        .offset = offset,
+        .size = download_size,
+    };
+
+    // Record the state of exactly the subresources being copied, before anything changes. The
+    // per-subresource table is the only place that can hold this: the backing image's aggregate
+    // state describes the whole image, and an image whose subresources were already in different
+    // states has no single aggregate that describes them.
+    const u32 levels = info.resources.levels;
+    const u32 layers = info.resources.layers;
+    const u32 first_level = std::min(range.base.level, levels);
+    const u32 level_count = std::min(range.extent.levels, levels - first_level);
+    const u32 first_layer = std::min(range.base.layer, layers);
+    const u32 layer_count = std::min(range.extent.layers, layers - first_layer);
+
+    struct SavedState {
+        u32 level;
+        u32 layer;
+        vk::ImageLayout layout;
+        vk::AccessFlags2 access;
+        vk::PipelineStageFlags2 stage;
+    };
+    boost::container::small_vector<SavedState, 32> saved;
+
+    // The per-subresource table is only populated once an image has been partially transitioned.
+    // When it is empty every subresource is in the backing image's aggregate state, which is what
+    // the table would be filled with anyway.
+    const bool has_table = !backing->subresource_states.empty();
+    for (u32 level = first_level; level < first_level + level_count; ++level) {
+        for (u32 layer = first_layer; layer < first_layer + layer_count; ++layer) {
+            SavedState state{};
+            state.level = level;
+            state.layer = layer;
+            if (has_table) {
+                const auto index = level * layers + layer;
+                if (index < backing->subresource_states.size()) {
+                    const auto& tracked = backing->subresource_states[index];
+                    state.layout = tracked.layout;
+                    state.access = tracked.access_mask;
+                    state.stage = tracked.pl_stage;
+                } else {
+                    state.layout = backing->state.layout;
+                    state.access = backing->state.access_mask;
+                    state.stage = backing->state.pl_stage;
+                }
+            } else {
+                state.layout = backing->state.layout;
+                state.access = backing->state.access_mask;
+                state.stage = backing->state.pl_stage;
+            }
+            saved.push_back(state);
+        }
+    }
+
+    // Transition only the copied subresources to transfer-source. `GetBarriers` with a range does
+    // exactly that and updates the per-subresource table, so the tracked state stays consistent
+    // with the barriers emitted.
+    const auto to_source = GetBarriers(vk::ImageLayout::eTransferSrcOptimal,
+                                       vk::AccessFlagBits2::eTransferRead,
+                                       vk::PipelineStageFlagBits2::eCopy, range);
+    auto cmdbuf = scheduler->CommandBuffer();
+    cmdbuf.pipelineBarrier2(vk::DependencyInfo{
+        .dependencyFlags = vk::DependencyFlagBits::eByRegion,
+        .bufferMemoryBarrierCount = 1,
+        .pBufferMemoryBarriers = &pre_barrier,
+        .imageMemoryBarrierCount = static_cast<u32>(to_source.size()),
+        .pImageMemoryBarriers = to_source.data(),
+    });
+    cmdbuf.copyImageToBuffer(GetImage(), vk::ImageLayout::eTransferSrcOptimal, buffer,
+                             download_copies);
+
+    // Restore each copied subresource to the state it was in before the copy, one barrier per
+    // subresource. Restoring the whole image to one aggregate state would be wrong for an image
+    // whose subresources were already in different states, and would also touch subresources the
+    // caller never asked about.
+    Barriers restore;
+    for (const auto& state : saved) {
+        // A subresource that was in an undefined or preinitialised layout has no contents to
+        // preserve, so it is restored to a sampling layout rather than back to undefined: leaving
+        // it undefined would make the next sample of it invalid.
+        const bool usable = state.layout != vk::ImageLayout::eUndefined &&
+                            state.layout != vk::ImageLayout::ePreinitialized;
+        const vk::ImageLayout layout =
+            usable ? state.layout : vk::ImageLayout::eShaderReadOnlyOptimal;
+        const vk::AccessFlags2 access =
+            usable ? state.access : vk::AccessFlagBits2::eShaderRead;
+        const vk::PipelineStageFlags2 stage =
+            usable ? state.stage
+                   : vk::PipelineStageFlagBits2::eAllGraphics |
+                         vk::PipelineStageFlagBits2::eComputeShader;
+
+        restore.emplace_back(vk::ImageMemoryBarrier2{
+            .srcStageMask = vk::PipelineStageFlagBits2::eCopy,
+            .srcAccessMask = vk::AccessFlagBits2::eTransferRead,
+            .dstStageMask = stage,
+            .dstAccessMask = access,
+            .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
+            .newLayout = layout,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = GetImage(),
+            .subresourceRange{
+                .aspectMask = aspect_mask,
+                .baseMipLevel = state.level,
+                .levelCount = 1,
+                .baseArrayLayer = state.layer,
+                .layerCount = 1,
+            },
+        });
+
+        // Keep the tracked table consistent with the barrier just emitted.
+        if (!backing->subresource_states.empty()) {
+            const auto index = state.level * layers + state.layer;
+            if (index < backing->subresource_states.size()) {
+                auto& tracked = backing->subresource_states[index];
+                tracked.layout = layout;
+                tracked.access_mask = access;
+                tracked.pl_stage = stage;
+            }
+        }
+    }
+
+    cmdbuf.pipelineBarrier2(vk::DependencyInfo{
+        .dependencyFlags = vk::DependencyFlagBits::eByRegion,
+        .bufferMemoryBarrierCount = 1,
+        .pBufferMemoryBarriers = &post_barrier,
+        .imageMemoryBarrierCount = static_cast<u32>(restore.size()),
+        .pImageMemoryBarriers = restore.data(),
+    });
+
+    // The aggregate state now describes the restored subresources only if every subresource was
+    // copied and they all ended in the same state. Otherwise the image is genuinely partially
+    // transitioned, so the aggregate is left alone and the per-subresource table is authoritative.
+    const bool whole_image = first_level == 0 && level_count == levels && first_layer == 0 &&
+                             layer_count == layers;
+    if (whole_image && !saved.empty()) {
+        backing->state.layout = restore.front().newLayout;
+        backing->state.access_mask = restore.front().dstAccessMask;
+        backing->state.pl_stage = restore.front().dstStageMask;
+        backing->subresource_states.clear();
+    } else if (backing->subresource_states.empty()) {
+        // The table was empty before this copy, so it has to be filled for the subresources that
+        // are now in a different state from the aggregate.
+        backing->subresource_states.resize(static_cast<size_t>(levels) * layers,
+                                           backing->state);
+        for (const auto& state : saved) {
+            const auto index = state.level * layers + state.layer;
+            auto& tracked = backing->subresource_states[index];
+            tracked.layout = vk::ImageLayout::eTransferSrcOptimal;
+            tracked.access_mask = vk::AccessFlagBits2::eTransferRead;
+            tracked.pl_stage = vk::PipelineStageFlagBits2::eCopy;
+        }
+        for (const auto& barrier : restore) {
+            const auto level = barrier.subresourceRange.baseMipLevel;
+            const auto layer = barrier.subresourceRange.baseArrayLayer;
+            const auto index = level * layers + layer;
+            auto& tracked = backing->subresource_states[index];
+            tracked.layout = barrier.newLayout;
+            tracked.access_mask = barrier.dstAccessMask;
+            tracked.pl_stage = barrier.dstStageMask;
+        }
+    }
+    ++backing->state_version;
+}
+
 static std::pair<u32, u32> SanitizeCopyLayers(const ImageInfo& src_info, const ImageInfo& dst_info,
                                               const u32 depth) {
     const auto vk_src_type = ConvertImageType(src_info.type);

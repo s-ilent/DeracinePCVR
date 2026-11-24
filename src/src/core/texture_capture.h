@@ -29,9 +29,10 @@ inline constexpr size_t MaxBytesPerImage = 8 * 1024 * 1024;
 inline constexpr size_t MaxSamplerRecords = 128;
 
 /// Bounded number of draws whose images are snapshotted per run. The first draws with a sampled
-/// image are not necessarily the ones the package selects, so several are taken. The cost is one
-/// synchronized copy per draw, which is why the bound is small rather than unlimited.
-inline constexpr u32 MaxSnapshotDraws = 24;
+/// image are not necessarily the ones the package selects: the title screen's early draws are
+/// depth and shadow passes, and the scene meshes come later. The cost is one synchronized copy per
+/// draw, which is why the bound is finite rather than unlimited.
+inline constexpr u32 MaxSnapshotDraws = 96;
 
 /// How a texture binding's content was established.
 enum class ContentStatus : u8 {
@@ -184,10 +185,18 @@ struct ImageRecord {
 /// this to prefer a draw whose texture was actually captured.
 [[nodiscard]] bool HasContentFor(u64 provenance_id) noexcept;
 
+/// Whether the record budget was reached, so some bindings were not stored. A package built from a
+/// truncated set must not claim complete capture, so this is reported rather than hidden.
+[[nodiscard]] bool CapacityExhausted() noexcept;
+
 /// Commits the pending image records for the selected draw and marks the snapshot as taken. Only
 /// that draw's records are kept, so the record budget holds the selected draw rather than the
 /// first few draws the title screen binds.
 void CommitPendingImages(u64 provenance_id) noexcept;
+
+/// Records that one snapshot was actually taken. The budget counts snapshots that produced a copy,
+/// not commits: a draw rejected by the format or size guards must not consume it.
+void NoteSnapshotTaken() noexcept;
 
 /// Drops the pending records for a draw that was not selected.
 void DiscardPendingImages() noexcept;
