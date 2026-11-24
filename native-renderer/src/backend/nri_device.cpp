@@ -399,12 +399,20 @@ ResourceId NriDevice::ImportExternalImage(const semantic::ExternalImageDesc& des
 ResourceId NriDevice::CreateTextureView(const semantic::TextureViewDesc& desc,
                                         std::string& error) {
     LookupError err = LookupError::kOk;
-    detail::TexturePayload* tp =
-        registry_.Payload<detail::TexturePayload>(desc.texture, ResourceType::kTexture, &err);
-    if (tp == nullptr) {
+    ResourceRecord* parentRec = registry_.Resolve(desc.texture, ResourceType::kTexture, &err);
+    if (parentRec == nullptr) {
         error = std::string("CreateTextureView: parent texture ") + LookupErrorName(err);
         return {};
     }
+    // A texture whose application ownership has been revoked must not acquire
+    // new dependents. Its backend object may still be alive for in-flight work,
+    // but new views would extend its life indefinitely.
+    if (parentRec->state != ResourceState::kLive) {
+        error = std::string("CreateTextureView: parent texture ") +
+                LookupErrorName(LookupError::kPendingDestroy);
+        return {};
+    }
+    auto* tp = static_cast<detail::TexturePayload*>(parentRec->backendObject);
 
     nri::TextureViewDesc vd{};
     vd.texture = tp->texture;
@@ -618,15 +626,9 @@ bool NriDevice::UploadBuffer(ResourceId buffer, const void* data, uint64_t sizeB
 }
 
 void NriDevice::Destroy(ResourceId id) {
-    // Release any dependency edge this resource held before revoking ownership,
-    // so a parent texture can retire once its last view is gone.
-    LookupError err = LookupError::kOk;
-    if (ResourceRecord* r = registry_.Resolve(id, ResourceType::kUnknown, &err)) {
-        if (r->type == ResourceType::kTextureView) {
-            auto* vp = static_cast<detail::ViewPayload*>(r->backendObject);
-            if (vp != nullptr) registry_.ReleaseDependency(id, vp->texture);
-        }
-    }
+    // The registry owns dependency release: it happens at physical destruction,
+    // not here. Releasing it at Destroy would let a parent retire while a
+    // GPU-retained view still referenced it.
     registry_.Destroy(id);
 }
 
@@ -637,6 +639,14 @@ void NriDevice::Destroy(ResourceId id) {
 bool NriDevice::BeginCommands(std::string& error) {
     if (recording_) {
         error = "BeginCommands: already recording";
+        return false;
+    }
+    // An executable context is still owned by the caller: it has been ended but
+    // neither submitted nor abandoned. Overwriting active_ here would strand its
+    // recording references and lose the command buffer.
+    if (active_ != nullptr && active_->state == CommandContext::State::kExecutable) {
+        error = "BeginCommands: an executable command buffer is awaiting Submit or "
+                "AbandonRecording";
         return false;
     }
     CommandContext* ctx = AcquireContext();
@@ -659,7 +669,7 @@ bool NriDevice::BeginCommands(std::string& error) {
     }
 
     ctx->state = CommandContext::State::kRecording;
-    ctx->recordingToken = nextSubmitValue_;   // unique per recording
+    ctx->recordingToken = nextRecordingToken_++;   // independent of submit values
     active_ = ctx;
     recording_ = true;
     poisoned_ = false;
@@ -885,10 +895,12 @@ void NriDevice::AbandonRecording() {
         recording_ = false;
         return;
     }
-    // NRI requires EndCommandBuffer before the buffer can be begun again, even
-    // when the recorded work is being discarded. Skipping this leaves the
-    // command buffer in the recording state and the next Begin fails.
-    nri_->core().EndCommandBuffer(*active_->buffer);
+    // NRI requires EndCommandBuffer before the buffer can be begun again, but
+    // only while it is actually recording. An executable context has already
+    // been ended, and ending it twice is an error.
+    if (active_->state == CommandContext::State::kRecording) {
+        nri_->core().EndCommandBuffer(*active_->buffer);
+    }
     // Release every reference the recording acquired.
     registry_.ReleaseRecording(active_->recordingToken);
     active_->state = CommandContext::State::kAvailable;
@@ -962,6 +974,14 @@ int NriDevice::OutstandingSubmissionCount() const {
         if (c.state == CommandContext::State::kSubmitted) ++n;
     }
     return n;
+}
+
+uint64_t NriDevice::CurrentRecordingToken() const {
+    return active_ == nullptr ? 0 : active_->recordingToken;
+}
+
+bool NriDevice::HasExecutableContext() const {
+    return active_ != nullptr && active_->state == CommandContext::State::kExecutable;
 }
 
 int NriDevice::AvailableContextCount() const {

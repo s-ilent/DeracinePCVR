@@ -139,6 +139,10 @@ public:
     int OutstandingSubmissionCount() const;
     // Number of command contexts currently available for recording.
     int AvailableContextCount() const;
+    // The token of the active recording, or 0 when none is active.
+    uint64_t CurrentRecordingToken() const;
+    // True when an executable context is awaiting submission.
+    bool HasExecutableContext() const;
     // The last rejection reason, for tests and diagnostics.
     const std::string& LastRejection() const { return lastRejection_; }
 
@@ -176,6 +180,10 @@ private:
     CommandContext* active_ = nullptr;
 
     uint64_t nextSubmitValue_ = 1;
+    // Recording tokens are independent of submission values. Deriving them from
+    // nextSubmitValue_ let two executable recordings share a token, because the
+    // counter only advanced at submission.
+    uint64_t nextRecordingToken_ = 1;
     uint64_t completedValue_ = 0;
     bool lastSubmitUsedNri_ = false;
 

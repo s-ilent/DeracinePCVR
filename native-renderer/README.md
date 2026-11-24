@@ -26,6 +26,7 @@ the Khronos validation layer active and zero validation errors.
 | `t10_recording_lifetime` | A recording owns its resources; views retain their parent textures; external images survive wrapper destruction |
 | `t11_multi_submission` | Multiple submissions outstanding at once, with a reusable command-context pool and backpressure |
 | `t12_expected_diagnostic_scope` | A closed expectation cannot be satisfied by a later unrelated validation error |
+| `t13_p0_lifetime_corrections` | Dependency edges survive until physical destruction; executable contexts cannot be overwritten; pending-destroy textures reject new views |
 
 ## Dependencies
 
@@ -107,6 +108,11 @@ The registry is the single authority for resource identity. Every lookup
 validates index, generation, type and lifecycle state, so a stale id can never
 reach a freed backend object. Backend payloads live behind the registry and are
 deleted by its destruction callback.
+
+A dependency edge (a view's parent texture) is released only when the dependent
+is physically destroyed, after its backend object is gone. Revoking application
+ownership does not release it, because the dependent may still be in use by
+submitted GPU work.
 
 ## Command contexts
 

@@ -203,6 +203,12 @@ bool ResourceRegistry::AddDependency(ResourceId dependent, ResourceId dependency
     ResourceRecord* p = Resolve(dependency, ResourceType::kUnknown);
     if (d == nullptr || p == nullptr) return false;
 
+    // A parent whose application ownership has been revoked must not acquire
+    // new dependents. Enforced here, at the ownership boundary, so a caller
+    // cannot bypass it.
+    if (p->state != ResourceState::kLive) return false;
+    if (d->state != ResourceState::kLive) return false;
+
     auto& list = dependents_[dependency.index];
     for (const auto& existing : list) {
         if (existing == dependent) return true;
@@ -228,19 +234,12 @@ bool ResourceRegistry::Destroy(ResourceId id) {
     ResourceRecord* r = Resolve(id, ResourceType::kUnknown);
     if (r == nullptr) return false;
 
-    // Release any dependency edge this resource holds, so a parent can retire
-    // once its last dependent is gone. Doing it here means callers cannot
-    // forget, and the backend does not need a special case.
-    if (r->hasDependency) {
-        const ResourceId parent = r->dependency;
-        r->hasDependency = false;
-        r->dependency = ResourceId{};
-        ReleaseDependency(id, parent);
-        // ReleaseDependency may have destroyed this record; re-resolve.
-        r = Resolve(id, ResourceType::kUnknown);
-        if (r == nullptr) return true;
-    }
-
+    // The dependency edge is deliberately NOT released here. Revoking
+    // application ownership does not make the dependent object disappear: it
+    // may still be referenced by a recording or by submitted GPU work, and its
+    // backend object still needs the parent to be alive. The edge is released
+    // in MaybeDestroy, immediately before the dependent is physically
+    // destroyed.
     r->appOwned = false;
     if (r->state == ResourceState::kLive) r->state = ResourceState::kPendingDestroy;
 
@@ -249,9 +248,54 @@ bool ResourceRegistry::Destroy(ResourceId id) {
 }
 
 int ResourceRegistry::DestroyAll() {
+    // A dependent's backend object references its parent, so dependents must be
+    // destroyed first. Iterating the map in arbitrary order would invert that.
+    // Order by dependency depth: a resource with no dependents goes first.
+    std::vector<uint64_t> order;
+    order.reserve(records_.size());
+    for (const auto& kv : records_) {
+        if (kv.second.state != ResourceState::kDestroyed) order.push_back(kv.first);
+    }
+
+    // Repeatedly take resources that nothing else depends on.
+    std::vector<uint64_t> sorted;
+    sorted.reserve(order.size());
+    std::vector<bool> taken(order.size(), false);
+    for (size_t pass = 0; pass < order.size(); ++pass) {
+        bool progressed = false;
+        for (size_t i = 0; i < order.size(); ++i) {
+            if (taken[i]) continue;
+            const uint64_t idx = order[i];
+            auto depIt = dependents_.find(idx);
+            bool hasLiveDependent = false;
+            if (depIt != dependents_.end()) {
+                for (const auto& dep : depIt->second) {
+                    auto recIt = records_.find(dep.index);
+                    if (recIt != records_.end() &&
+                        recIt->second.state != ResourceState::kDestroyed) {
+                        hasLiveDependent = true;
+                        break;
+                    }
+                }
+            }
+            if (!hasLiveDependent) {
+                sorted.push_back(idx);
+                taken[i] = true;
+                progressed = true;
+            }
+        }
+        if (!progressed) break;   // a cycle; fall through with what we have
+    }
+    // Any remaining (cycle or unreachable) resources are appended.
+    for (size_t i = 0; i < order.size(); ++i) {
+        if (!taken[i]) sorted.push_back(order[i]);
+    }
+
     int destroyed = 0;
-    for (auto& kv : records_) {
-        ResourceRecord& r = kv.second;
+    for (uint64_t idx : sorted) {
+        auto it = records_.find(idx);
+        if (it == records_.end()) continue;
+        ResourceRecord& r = it->second;
         if (r.state == ResourceState::kDestroyed) continue;
         r.appOwned = false;
         r.refs.clear();
@@ -326,12 +370,29 @@ bool ResourceRegistry::MaybeDestroy(uint64_t index) {
     auto depIt = dependents_.find(index);
     if (depIt != dependents_.end() && !depIt->second.empty()) return false;
 
+    // Capture the edge before the destructor runs, because the destructor may
+    // re-enter the registry.
+    const bool hadDependency = r.hasDependency;
+    const ResourceId parent = r.dependency;
+
+    // Destroy the backend object first. Only then is it safe to release the
+    // parent, because the object's descriptor referenced the parent.
     if (r.destroyFn && r.backendObject != nullptr) {
         r.destroyFn(r.backendObject);
     }
     r.backendObject = nullptr;
     r.state = ResourceState::kDestroyed;
     r.id.generation++;   // a reused slot must not resolve the old id
+
+    if (hadDependency) {
+        auto self = records_.find(index);
+        if (self != records_.end()) {
+            self->second.hasDependency = false;
+            self->second.dependency = ResourceId{};
+        }
+        // Releasing the edge may make the parent destroyable.
+        ReleaseDependency(ResourceId{index, r.id.generation - 1}, parent);
+    }
     return true;
 }
 

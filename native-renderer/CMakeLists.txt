@@ -74,6 +74,7 @@ set(HARNESS_TESTS
   t10_recording_lifetime
   t11_multi_submission
   t12_expected_diagnostic_scope
+  t13_p0_lifetime_corrections
 )
 
 foreach(t ${HARNESS_TESTS})
