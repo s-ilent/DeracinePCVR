@@ -62,6 +62,8 @@ add_library(harness_core STATIC
   src/common/resource_registry.cpp
   src/backend/nri_device.cpp
   src/replay/package.cpp
+  src/replay/tape.cpp
+  src/replay/nri_tape_sink.cpp
 )
 target_include_directories(harness_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -128,6 +130,18 @@ if(TARGET NRI_VK)
   add_dependencies(deracine_nri_replay NRI_VK)
 endif()
 target_link_libraries(deracine_nri_replay PRIVATE
+  "${NRI_LIB_DIR}/NRI.lib"
+  "${NRI_BUILD_DIR}/NRI_Shared.lib"
+  "${NRI_BUILD_DIR}/NRI_VK.lib"
+  "${NRI_BUILD_DIR}/NRI_Validation.lib"
+)
+
+add_executable(deracine_nri_tape src/replay/deracine_nri_tape.cpp)
+target_link_libraries(deracine_nri_tape PRIVATE harness_core)
+if(TARGET NRI_VK)
+  add_dependencies(deracine_nri_tape NRI_VK)
+endif()
+target_link_libraries(deracine_nri_tape PRIVATE
   "${NRI_LIB_DIR}/NRI.lib"
   "${NRI_BUILD_DIR}/NRI_Shared.lib"
   "${NRI_BUILD_DIR}/NRI_VK.lib"
