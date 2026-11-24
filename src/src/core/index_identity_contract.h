@@ -73,6 +73,19 @@ struct ObjectLayout {
     static constexpr u32 ElementWidthOffset = 0x88;
 };
 
+/// The two globals the slot predicate reads, as RVAs in the approved executable.
+///
+/// Both are verified from the disassembly at 0xCBBCCE-0xCBBCF1:
+///   0x44AC748  the global thread record pointer
+///   0x44AC740  the global flag
+inline constexpr u32 ThreadRecordGlobalRva = 0x44AC748;
+inline constexpr u32 ThreadFlagGlobalRva = 0x44AC740;
+
+/// The offset within the thread record the predicate compares against.
+///
+/// Verified at 0xCBBCCEE: `cmpl 0x44(%rcx), %eax`.
+inline constexpr u32 ThreadRecordIdOffset = 0x44;
+
 /// Which address slot the implementation selected for this draw.
 enum class AddressSlot : u8 {
     Unknown = 0,
@@ -93,6 +106,72 @@ enum class AddressSlot : u8 {
     }
 }
 
+/// The thread-identity predicate the indexed-draw implementation uses to choose an address slot.
+///
+/// Recovered from 0xCBBCCE-0xCBBCF1:
+///
+///   cbbcce:  cmpq  $0x0, 0x44ac748        ; a global thread record
+///   cbbcd6:  je    0xcbbcf3               ; null -> slot A
+///   cbbcd8:  movl  0x44ac740, %eax        ; a global flag
+///   cbbcde:  testl %eax, %eax
+///   cbbce0:  jne   0xcbbcf3               ; flag set -> slot A
+///   cbbce2:  callq 0x33c6770              ; scePthreadGetthreadid
+///   cbbce7:  movq  0x44ac748, %rcx        ; the global thread record
+///   cbbcee:  cmpl  0x44(%rcx), %eax       ; compare against its recorded id
+///   cbbcf1:  jne   0xcbbcf9               ; differ -> slot B
+///   cbbcf3:  addq  $0x20, %rbx            ; slot A
+///   cbbcf9:  addq  $0x40, %rbx            ; slot B
+///
+/// So slot A is selected when the global record is null, when the global flag is non-zero, or when
+/// the current guest thread id equals the id recorded at record+0x44. Slot B is selected only when
+/// the record is non-null, the flag is zero, and the ids differ.
+///
+/// `scePthreadGetthreadid` returns `g_curthread->tid`, which is exactly what CurrentGuestThreadId()
+/// reads, so the comparison is reproducible without a host thread identity.
+struct SlotPredicate {
+    /// The guest thread id the comparison observed.
+    u32 current_thread_id{};
+    bool has_current_thread_id{};
+    /// The id recorded in the global record at +0x44.
+    u32 recorded_thread_id{};
+    bool has_recorded_thread_id{};
+    /// Whether the global record pointer was non-null.
+    bool record_present{};
+    /// The global flag at 0x44ac740.
+    u32 flag{};
+    bool has_flag{};
+    /// Whether every input needed to evaluate the predicate was readable.
+    bool determinable{};
+};
+
+/// Evaluates the recovered predicate.
+///
+/// Returns Unknown when an input is missing, so a caller cannot fall back to a guess. The predicate
+/// is the game's own selection rule; substituting "first nonzero slot" would record an address the
+/// draw may not have consumed.
+[[nodiscard]] inline AddressSlot EvaluateSlotPredicate(const SlotPredicate& predicate) noexcept {
+    if (!predicate.determinable) {
+        return AddressSlot::Unknown;
+    }
+    // A null record selects slot A.
+    if (!predicate.record_present) {
+        return AddressSlot::Primary;
+    }
+    // A non-zero flag selects slot A.
+    if (!predicate.has_flag) {
+        return AddressSlot::Unknown;
+    }
+    if (predicate.flag != 0) {
+        return AddressSlot::Primary;
+    }
+    // Otherwise the thread ids decide.
+    if (!predicate.has_current_thread_id || !predicate.has_recorded_thread_id) {
+        return AddressSlot::Unknown;
+    }
+    return predicate.current_thread_id == predicate.recorded_thread_id ? AddressSlot::Primary
+                                                                      : AddressSlot::Secondary;
+}
+
 /// One recovered identity for an indexed draw.
 ///
 /// Presence flags are explicit because a zero address is a legitimate value and cannot double as
@@ -100,6 +179,10 @@ enum class AddressSlot : u8 {
 /// reused, so the generation field is what distinguishes two resources that occupied the same
 /// address at different times.
 struct OriginalIndexResourceIdentity {
+    /// The capture session this record belongs to. Generated once per emulator execution and
+    /// shared by every exporter, so artifacts can be proven to claim the same execution.
+    u64 session_id{};
+    bool has_session_id{};
     /// The execution this record belongs to. Two records from different executions are never the
     /// same draw, however well their fields agree.
     u64 execution_id{};
@@ -135,6 +218,15 @@ struct OriginalIndexResourceIdentity {
     /// generations are different resources.
     u64 resource_generation{};
     bool has_resource_generation{};
+
+    /// Both address candidates, recorded separately so they are never conflated.
+    u64 address_candidate_a{};
+    bool has_address_candidate_a{};
+    u64 address_candidate_b{};
+    bool has_address_candidate_b{};
+
+    /// The predicate inputs and its verdict.
+    SlotPredicate predicate{};
 
     /// How strongly the address field is supported.
     EvidenceClass address_evidence{EvidenceClass::None};

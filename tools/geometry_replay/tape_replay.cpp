@@ -35,6 +35,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "index_bridge_reader.h"
 #include "tape.h"
 
 namespace {
@@ -640,6 +641,27 @@ int main(int argc, char** argv) {
         std::cerr << "tape read failed: " << error << "\n";
         return 1;
     }
+
+    // --- Read the original index-resource bridge -----------------------------------------------
+    //
+    // The bridge is the independent observation that resolves the original UE4 index-buffer object
+    // into a guest allocation. It cannot be reconstructed from the package: the package carries a
+    // guest address, and deriving the bridge from it would compare the package with itself.
+    //
+    // A missing or unreadable sidecar is not fatal here, because a synthetic fixture has none. It
+    // is fatal for a verified-original claim, which the join enforces: without a comparable bridge
+    // the join reports insufficient evidence and the replay refuses original-mode execution.
+    std::vector<bridge::Record> bridge_records;
+    {
+        bridge::Problem bridge_problem{};
+        std::string bridge_error;
+        if (!bridge::Read(directory, bridge_records, bridge_problem, bridge_error)) {
+            std::cout << "bridge: " << bridge::ProblemName(bridge_problem) << " (" << bridge_error
+                      << ")\n";
+        } else {
+            std::cout << "bridge: records=" << bridge_records.size() << "\n";
+        }
+    }
     // A tape missing state can still be executed when the caller explicitly supplies that state.
     // The substitution is opt-in and is reported, so a partial execution is never presented as a
     // complete one.
@@ -780,7 +802,47 @@ int main(int argc, char** argv) {
         package_identity.first_instance = pkg.index.first_instance;
         package_identity.has_index_binding = pkg.has_index;
 
-        const tape::JoinResult join = tape::JoinTapeToPackage(tape_identity, package_identity);
+        // The bridge-aware join. The bridge is read from the sidecar the identity observer wrote;
+        // it cannot be reconstructed from the package, because the package carries a guest address
+        // and the bridge is the independent observation that resolves the original UE4 object into
+        // one.
+        bridge::Record bridge_record{};
+        bool bridge_ambiguous = false;
+        const bool have_bridge =
+            bridge::FindByProvenance(bridge_records, tape_identity.provenance_id, bridge_record,
+                                     bridge_ambiguous);
+
+        tape::IndexBridge index_bridge{};
+        if (have_bridge) {
+            index_bridge.execution_id = bridge_record.execution_id;
+            index_bridge.original_rhi_object = bridge_record.original_rhi_object;
+            index_bridge.has_original_rhi_object = bridge_record.has_original_rhi_object;
+            index_bridge.guest_allocation_base = bridge_record.selected_guest_address;
+            index_bridge.has_guest_allocation_base =
+                bridge_record.has_selected_guest_address;
+            index_bridge.guest_allocation_size = bridge_record.allocation_size;
+            index_bridge.has_guest_allocation_size = bridge_record.has_allocation_size;
+            index_bridge.allocation_offset = bridge_record.allocation_offset;
+            index_bridge.has_allocation_offset = bridge_record.has_allocation_offset;
+            index_bridge.index_element_width = bridge_record.index_element_width;
+            index_bridge.has_index_element_width = bridge_record.has_index_element_width;
+            index_bridge.resource_generation = bridge_record.resource_generation;
+            index_bridge.has_resource_generation = bridge_record.has_resource_generation;
+            index_bridge.evidence = bridge_record.address_evidence;
+        }
+
+        // The bridge must name the same original object the tape recorded. A bridge that resolved
+        // a different object is not this draw's bridge, however well the addresses agree.
+        if (have_bridge && index_bridge.has_original_rhi_object &&
+            tape_identity.index_guest_base != 0 &&
+            index_bridge.original_rhi_object != tape_identity.index_guest_base) {
+            std::cout << "identity: bridge_object_mismatch bridge="
+                      << index_bridge.original_rhi_object
+                      << " tape=" << tape_identity.index_guest_base << "\n";
+        }
+
+        const tape::JoinResult join =
+            tape::JoinTapeToPackageWithBridge(tape_identity, package_identity, index_bridge);
         std::cout << "identity: " << tape::JoinOutcomeName(join.outcome) << "\n";
         for (const auto& field : join.fields) {
             std::cout << "identity:   " << field.name << " tape=" << field.tape_value

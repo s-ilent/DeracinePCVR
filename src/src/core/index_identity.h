@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <string>
 #include <string_view>
 
 #include "core/index_identity_contract.h"
@@ -41,6 +42,9 @@ void NoteIdentity(const OriginalIndexResourceIdentity& identity) noexcept;
 
 /// Writes the retained records and a summary. Called after the guest has stopped.
 void ExportIdentities() noexcept;
+
+/// Writes the machine-readable sidecar the replay consumes, into the capture directory.
+void ExportSidecar(const std::string& directory) noexcept;
 
 } // namespace IndexIdentity
 } // namespace Core

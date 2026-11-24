@@ -19,6 +19,11 @@ namespace RhiEntryProbe {
 void TryInstallBeforeGuestThread(Module& module, std::string_view title_id,
                                  std::string_view app_version);
 
+/// Whether the probe installed. Installation requires the exact approved executable hash, so this
+/// is the authoritative "the approved image was verified" signal for observers that depend on the
+/// recovered layout.
+[[nodiscard]] bool IsInstalled() noexcept;
+
 /// Captures the next indexed GNM draw on the same host thread after a probe event, when installed.
 void CaptureGnmDrawIndex(std::uintptr_t cmdbuf, std::uint32_t size, std::uint32_t index_count,
                          std::uintptr_t index_addr, std::uint32_t flags,

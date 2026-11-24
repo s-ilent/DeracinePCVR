@@ -1910,6 +1910,8 @@ gtest_discover_tests(shadps4_capture_session_test
 
 # ===========================================================================
 # SC-11R independent SPIR-V descriptor-interface verifier
+# ====================================================================
+
 # ===========================================================================
 add_executable(shadps4_spirv_interface_test
     test_spirv_interface.cpp
@@ -1935,6 +1937,61 @@ target_link_libraries(shadps4_spirv_interface_test PRIVATE
 list(APPEND TEST_TARGETS shadps4_spirv_interface_test)
 
 gtest_discover_tests(shadps4_spirv_interface_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)
+# Recovered thread-dependent address-slot predicate
+# ===========================================================================
+add_executable(shadps4_slot_predicate_test
+    core/test_slot_predicate.cpp
+)
+
+target_include_directories(shadps4_slot_predicate_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+)
+
+target_compile_features(shadps4_slot_predicate_test PRIVATE cxx_std_23)
+
+target_link_libraries(shadps4_slot_predicate_test PRIVATE
+    GTest::gtest_main
+)
+
+list(APPEND TEST_TARGETS shadps4_slot_predicate_test)
+
+gtest_discover_tests(shadps4_slot_predicate_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)
+
+
+# ===========================================================================
+# Production bridge artifact flow
+# ===========================================================================
+add_executable(shadps4_bridge_production_test
+    core/test_bridge_production.cpp
+    ${CMAKE_SOURCE_DIR}/../tools/geometry_replay/draw_identity.cpp
+    ${CMAKE_SOURCE_DIR}/../tools/geometry_replay/index_bridge_reader.cpp
+)
+
+target_include_directories(shadps4_bridge_production_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/../tools/geometry_replay
+    ${CMAKE_SOURCE_DIR}/externals/json/single_include
+)
+
+target_compile_features(shadps4_bridge_production_test PRIVATE cxx_std_23)
+
+target_compile_definitions(shadps4_bridge_production_test PRIVATE NOMINMAX)
+
+target_link_libraries(shadps4_bridge_production_test PRIVATE
+    GTest::gtest_main
+)
+
+list(APPEND TEST_TARGETS shadps4_bridge_production_test)
+
+gtest_discover_tests(shadps4_bridge_production_test
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     DISCOVERY_TIMEOUT 60
 )

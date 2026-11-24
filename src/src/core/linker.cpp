@@ -28,6 +28,7 @@
 #include "core/linker.h"
 #include "core/rhi_command_capture.h"
 #include "core/semantic_tape.h"
+#include "core/capture_session.h"
 #include "core/index_identity.h"
 
 #include "core/reference_output.h"
@@ -547,6 +548,9 @@ void Linker::Execute(const std::vector<std::string>& args) {
     // The vertex-input snapshot is its own opt-in and only reads the environment.
     VertexInputCapture::TryInstall();
     ShaderParamCapture::TryInstall();
+    // The capture session identity is generated once, before any observer captures data, so every
+    // exporter records the same value.
+    CaptureSession::TryInstall();
     // The original index-resource observer is its own opt-in and only reads the environment.
     IndexIdentity::TryInstallBeforeGuestThread(
         *module, Common::ElfInfo::Instance().GameSerial(), Common::ElfInfo::Instance().AppVer());
