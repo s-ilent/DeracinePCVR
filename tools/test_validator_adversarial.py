@@ -160,9 +160,14 @@ def main(argv):
                 return
 
     def duplicate_texture_id(package, blob):
+        # A package with one texture still has to be testable, so a second entry is cloned rather
+        # than the case being skipped.
         textures = package.get("textures", [])
-        if len(textures) >= 2:
-            textures[1]["id"] = textures[0]["id"]
+        if not textures:
+            return
+        clone = json.loads(json.dumps(textures[0]))
+        clone["id"] = textures[0]["id"]
+        textures.append(clone)
 
     def missing_sampler_reference(package, blob):
         for texture in package.get("textures", []):
@@ -198,6 +203,54 @@ def main(argv):
         package["readiness"]["diagnostic_textured_replay_ready"] = True
         package["geometry"]["is_three_dimensional"] = False
 
+    def wrong_block_texels(package, blob):
+        for texture in package.get("textures", []):
+            if texture.get("subresources"):
+                texture["block_texels_x"] = 8
+                return
+
+    def wrong_block_columns(package, blob):
+        for texture in package.get("textures", []):
+            if texture.get("subresources"):
+                texture["block_columns"] = texture.get("block_columns", 1) + 1
+                return
+
+    def wrong_row_pitch(package, blob):
+        for texture in package.get("textures", []):
+            for sub in texture.get("subresources", []):
+                sub["row_pitch"] = sub["row_pitch"] + 16
+                return
+
+    def truncated_final_block_row(package, blob):
+        # Shrink the payload by one block row and re-hash, so the hash matches but the length does
+        # not. This is the case a hash-only check cannot catch.
+        for texture in package.get("textures", []):
+            for sub in texture.get("subresources", []):
+                sub["byte_length"] = sub["byte_length"] - sub["row_pitch"]
+                return
+
+    def wrong_pixel_extent(package, blob):
+        for texture in package.get("textures", []):
+            for sub in texture.get("subresources", []):
+                sub["width"] = sub["width"] * 2
+                return
+
+    def missing_block_geometry(package, blob):
+        for texture in package.get("textures", []):
+            texture["bytes_per_block"] = 0
+            return
+
+    def verified_sampler_without_id(package, blob):
+        for texture in package.get("textures", []):
+            texture["sampler_verified"] = True
+            texture["sampler_id"] = 0
+            return
+
+    def stale_transfer_identity(package, blob):
+        for texture in package.get("textures", []):
+            texture["transfer_id"] = 0
+            return
+
     case("corrupted blob byte", corrupt_blob)
     case("wrong schema version", wrong_schema)
     case("missing provenance", missing_provenance)
@@ -232,6 +285,14 @@ def main(argv):
     case("textured readiness without texture", textured_ready_without_texture)
     case("textured readiness without uv", textured_ready_without_uv)
     case("textured readiness without 3d", textured_ready_without_3d)
+    case("wrong block texel size", wrong_block_texels)
+    case("wrong block column count", wrong_block_columns)
+    case("wrong row pitch", wrong_row_pitch)
+    case("truncated final block row", truncated_final_block_row)
+    case("wrong pixel extent", wrong_pixel_extent)
+    case("missing block geometry", missing_block_geometry)
+    case("verified sampler without id", verified_sampler_without_id)
+    case("stale transfer identity", stale_transfer_identity)
 
     failures = 0
     for name, mutate in cases:

@@ -1671,6 +1671,9 @@ void Rasterizer::RetireIsolatedReadConstSnapshots() {
 
 void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindings& binding) {
     image_bindings.clear();
+    // The unified binding number the first image descriptor will use. The snapshot needs it to
+    // record the same number the descriptor write records, so content and binding join on it.
+    const u32 first_image_binding = binding.unified;
     const u32 first_image_idx = image_infos.size();
     // For loading/storing to explicit mip levels, when no native instruction support, bind an array
     // of descriptors consecutively, 1 for each mip level. The shader can index this with LOD
@@ -1860,6 +1863,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
             record.stage = static_cast<u32>(stage.stage);
             record.vk_binding = binding.unified;
             record.guest_slot = image_binding_idx;
+            record.shader_image_index = image_binding_idx;
             record.guest_address = image.info.guest_address;
             record.image_id = image_id.index;
             record.image_uid = image.image_uid;
@@ -1934,6 +1938,10 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
             record.border_color = static_cast<u32>(
                 LiverpoolToVK::BorderColor(ssharp.border_color_type));
             record.unnormalized_coordinates = false;
+            // The shader's own pairing of this sampler with an image is the only evidence that
+            // joins the two: shadPS4 binds them as separate descriptors.
+            record.associated_image = sampler.associated_image;
+            record.stage_hash = stage.pgm_hash;
             Core::TextureCapture::NoteSampler(record);
         }
 
@@ -1971,7 +1979,14 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
         if (!has_sampled_image) {
             return;
         }
+        // The snapshot is taken per descriptor binding, not per image, so the content record
+        // carries the same unified binding number the descriptor write used. Two bindings of the
+        // same image at the same subresource range share one download; a different range or a
+        // different image gets its own.
+        u32 binding_index = 0;
         for (const auto& [image_id, desc] : image_bindings) {
+            const u32 unified = first_image_binding + binding_index;
+            ++binding_index;
             if (!image_id)
                 continue;
             if (desc.type != VideoCore::TextureCache::BindingType::Texture)
@@ -1979,7 +1994,8 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
             texture_cache.SnapshotImageForCapture(
                 image_id, desc.view_info.range.base.level, desc.view_info.range.extent.levels,
                 desc.view_info.range.base.layer, desc.view_info.range.extent.layers,
-                desc.info.props.is_depth ? 2u : 1u, provenance, 0);
+                desc.info.props.is_depth ? 2u : 1u, provenance, unified, stage.pgm_hash,
+                binding_index - 1);
         }
         Core::TextureCapture::CommitPendingImages(provenance);
     }

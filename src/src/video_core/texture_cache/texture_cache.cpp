@@ -18,6 +18,7 @@
 #include "core/emulator_settings.h"
 #include "core/memory.h"
 #include "core/texture_capture.h"
+#include "video_core/texture_cache/format_block_info.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/page_manager.h"
 #include "video_core/renderer_vulkan/vk_gpu_profile.h"
@@ -192,7 +193,8 @@ ImageId TextureCache::GetNullImage(const vk::Format format) {
 
 bool TextureCache::SnapshotImageForCapture(ImageId image_id, u32 mip_first, u32 mip_count,
                                            u32 layer_first, u32 layer_count, u32 aspect,
-                                           u64 provenance_id, u32 vk_binding) {
+                                           u64 provenance_id, u32 vk_binding, u64 stage_hash,
+                                           u32 shader_image_index) {
     if (!Core::TextureCapture::Enabled()) {
         return false;
     }
@@ -203,41 +205,46 @@ bool TextureCache::SnapshotImageForCapture(ImageId image_id, u32 mip_first, u32 
     if (!(image.flags & ImageFlagBits::Registered)) {
         return false;
     }
-    // A depth or multisampled image needs a different copy shape than a sampled colour image, and
-    // a compressed one needs its block extent. Report those as unsupported rather than copying
-    // them as if they were plain RGBA8.
+    // A depth or multisampled image needs a different copy shape than a sampled colour image.
+    // Report those as unsupported rather than copying them as if they were plain colour.
     if (image.info.props.is_depth || image.info.num_samples > 1) {
         return false;
     }
-    // A block-compressed image is a legal copy target: the copy works in blocks, so the row pitch
-    // is the block-row pitch and the extent is in blocks. It is not rejected, because a title
-    // screen's textures are frequently compressed and refusing them would capture nothing.
     if (mip_count == 0 || layer_count == 0) {
         return false;
     }
 
-    // The copy covers the base of the requested range only when that range is a single mip; a
-    // multi-mip copy would need one copy per level, which this diagnostic does not do.
+    // The copy covers one mip level. A multi-mip copy would need one copy per level, which this
+    // diagnostic does not do, so a request for more is reported as partial rather than silently
+    // covering only the first.
     const u32 mip = mip_first;
     if (mip >= image.info.resources.levels) {
         return false;
     }
-    const u32 mip_width = std::max(1u, image.info.size.width >> mip);
-    const u32 mip_height = std::max(1u, image.info.size.height >> mip);
-    // A compressed image's copy extent is in blocks, and its row pitch is the block-row pitch.
-    const u32 block_shift = image.info.props.is_block ? 2u : 0u;
-    const u32 copy_width = std::max(1u, mip_width >> block_shift);
-    const u32 copy_height = std::max(1u, mip_height >> block_shift);
-    const u32 bytes_per_pixel = image.info.num_bits / 8;
-    if (bytes_per_pixel == 0) {
+
+    // The image's own format decides the block geometry. The view's format may differ, but the
+    // bytes in the image are laid out in the image's format, so that is what the copy uses.
+    const FormatBlockInfo block = GetFormatBlockInfo(image.info.pixel_format);
+    if (!block.valid()) {
         return false;
     }
-    const u32 row_pitch = copy_width * bytes_per_pixel;
+
+    // Texel extents of the mip level. These are what a Vulkan copy region takes.
+    const u32 texel_width = std::max(1u, image.info.size.width >> mip);
+    const u32 texel_height = std::max(1u, image.info.size.height >> mip);
+
+    // Storage geometry, in blocks. A dimension that is not a multiple of the block size still
+    // occupies a whole block, so the block count rounds up rather than dividing.
+    const u32 block_columns = block.BlocksFor(texel_width);
+    const u32 block_rows = block.BlockRowsFor(texel_height);
+    const u64 row_pitch = static_cast<u64>(block_columns) * block.bytes_per_block;
+    const u64 layer_bytes = row_pitch * block_rows;
+
     const u32 layers = std::min(layer_count, image.info.resources.layers - layer_first);
     if (layers == 0) {
         return false;
     }
-    const u64 download_size = static_cast<u64>(row_pitch) * copy_height * layers;
+    const u64 download_size = layer_bytes * layers;
     if (download_size == 0 || download_size > Core::TextureCapture::MaxBytesPerImage) {
         return false;
     }
@@ -246,10 +253,14 @@ bool TextureCache::SnapshotImageForCapture(ImageId image_id, u32 mip_first, u32 
     const auto [download, offset] = download_buffer.Map(download_size);
     download_buffer.Commit();
 
+    // The copy region is in texels, not blocks. `bufferRowLength` and `bufferImageHeight` are left
+    // zero so the transfer is tightly packed, which is what the byte size above describes: a
+    // non-zero row length is in texels too, and passing the block count there would make Vulkan
+    // read a row of the wrong length.
     const vk::BufferImageCopy copy = {
         .bufferOffset = offset,
-        .bufferRowLength = copy_width,
-        .bufferImageHeight = copy_height,
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
         .imageSubresource =
             {
                 .aspectMask = static_cast<vk::ImageAspectFlagBits>(aspect),
@@ -258,17 +269,42 @@ bool TextureCache::SnapshotImageForCapture(ImageId image_id, u32 mip_first, u32 
                 .layerCount = layers,
             },
         .imageOffset = {0, 0, 0},
-        .imageExtent = {copy_width, copy_height, 1},
+        .imageExtent = {texel_width, texel_height, 1},
     };
 
+    // Record the state the subresources are in before the copy, so it can be restored afterwards.
+    // The snapshot runs inside BindTextures, before the draw executes, so leaving the image in
+    // transfer-source would make the draw sample an image in the wrong layout.
+    const SubresourceRange range{
+        .base = {.level = mip, .layer = layer_first},
+        .extent = {.levels = 1, .layers = layers},
+    };
+    const vk::ImageLayout original_layout = image.backing->state.layout;
+    const vk::AccessFlags2 original_access = image.backing->state.access_mask;
+    const vk::PipelineStageFlags2 original_stage = image.backing->state.pl_stage;
+
     // The same synchronized download the renderer uses: it ends the current rendering, barriers
-    // the image to transfer-source, copies, and barriers the buffer back. The bytes are read only
-    // after the copy's completion is established, in the deferred operation below.
+    // the image to transfer-source, copies, and barriers the buffer back.
     image.Download(std::span{&copy, 1}, download_buffer.Handle(), offset, download_size);
+
+    // Restore a sampling-compatible state through the image's own tracking, so shadPS4's recorded
+    // state matches the barriers that were actually emitted. Restoring to the exact prior layout
+    // is not always possible: the prior layout may have been a render-target or general layout
+    // that a sampled read cannot use. A shader-read layout is the correct state for an image the
+    // draw is about to sample, and it is what the binding path would have transitioned to anyway.
+    const vk::ImageLayout restore_layout =
+        original_layout == vk::ImageLayout::eShaderReadOnlyOptimal ||
+                original_layout == vk::ImageLayout::eGeneral ||
+                original_layout == vk::ImageLayout::eDepthStencilReadOnlyOptimal
+            ? original_layout
+            : vk::ImageLayout::eShaderReadOnlyOptimal;
+    image.Transit(restore_layout, vk::AccessFlagBits2::eShaderRead, range);
 
     Core::TextureCapture::ImageRecord record{};
     record.provenance_id = provenance_id;
     record.vk_binding = vk_binding;
+    record.stage_hash = stage_hash;
+    record.shader_image_index = shader_image_index;
     record.image_id = image_id.index;
     record.image_uid = image.image_uid;
     record.vk_image = reinterpret_cast<u64>(static_cast<VkImage>(image.GetImage()));
@@ -278,17 +314,28 @@ bool TextureCache::SnapshotImageForCapture(ImageId image_id, u32 mip_first, u32 
     record.layer_first = layer_first;
     record.layer_count = layers;
     record.aspect = aspect;
-    record.width = copy_width;
-    record.height = copy_height;
+    // Pixel extents and block geometry are recorded separately, so a reader never has to infer one
+    // from the other. A dimension that is not block aligned makes the two genuinely different.
+    record.width = texel_width;
+    record.height = texel_height;
+    record.block_width = block_columns;
+    record.block_height = block_rows;
+    record.block_texels_x = block.block_width;
+    record.block_texels_y = block.block_height;
+    record.bytes_per_block = block.bytes_per_block;
     record.depth = 1;
     record.samples = image.info.num_samples;
-    record.row_pitch = row_pitch;
+    record.row_pitch = static_cast<u32>(row_pitch);
     record.subresources_requested = mip_count * layer_count;
     record.subresources_captured = layers;
     record.status = static_cast<u8>(Core::TextureCapture::ContentStatus::CopyPending);
+    // The transfer identity ties the deferred readback to this specific copy, so a record cannot be
+    // matched to a later image generation that reused the same slot.
+    record.transfer_id = Core::TextureCapture::NextTransferId();
 
     // The readback is deferred until the copy has completed, which is what makes the bytes the
-    // image's contents rather than whatever the buffer held before.
+    // image's contents rather than whatever the buffer held before. The download buffer is the
+    // cache's own utility buffer, which is not reused until the scheduler has passed this tick.
     scheduler.DeferPriorityOperation([download, download_size, record]() mutable {
         std::vector<u8> bytes(download_size);
         std::memcpy(bytes.data(), download, static_cast<size_t>(download_size));

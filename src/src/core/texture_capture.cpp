@@ -63,6 +63,11 @@ bool Enabled() noexcept {
     return enabled;
 }
 
+u64 NextTransferId() noexcept {
+    static std::atomic<u64> next{1};
+    return next.fetch_add(1, std::memory_order_relaxed);
+}
+
 bool ShouldSnapshot() noexcept {
     if (!Enabled())
         return false;
@@ -146,9 +151,12 @@ void NoteSampler(const SamplerRecord& record) noexcept {
             return;
         std::scoped_lock lock{g_state.mutex};
         // Samplers are cached by the guest descriptor hash, so the same state recurs across draws.
-        // Record each distinct state once and let the image records reference it.
+        // Record each distinct (state, stage) pair once: the same guest state bound in two stages
+        // is two records, because a sampler's image association is per shader program and joining
+        // on the state alone would pair a sampler with an image from a different stage.
         for (const auto& existing : g_state.samplers) {
-            if (existing.guest_hash == record.guest_hash) {
+            if (existing.guest_hash == record.guest_hash &&
+                existing.stage_hash == record.stage_hash) {
                 return;
             }
         }

@@ -51,6 +51,10 @@ enum class ContentStatus : u8 {
 
 [[nodiscard]] const char* StatusName(u8 status) noexcept;
 
+/// Allocates the next transfer identity. Monotonic, so a late readback can be matched to the copy
+/// that produced it rather than to whatever image now occupies the same slot.
+[[nodiscard]] u64 NextTransferId() noexcept;
+
 /// Content hash of a captured byte range. The same function the shader-buffer capture uses, so a
 /// reader has one hash to trust.
 [[nodiscard]] inline u64 HashBytes(const u8* data, size_t size) noexcept {
@@ -88,6 +92,11 @@ struct SamplerRecord {
     bool unnormalized_coordinates{};
     /// The guest's own requested anisotropy, before any host cap.
     float guest_max_aniso{};
+    /// The shader-level image index this sampler is paired with, or ~0u when the shader does not
+    /// declare one. This is the evidence that joins a sampler to an image binding.
+    u32 associated_image{~0u};
+    /// The shader program the sampler was bound for, so a join cannot cross stages.
+    u64 stage_hash{};
 };
 
 /// One effective image binding, recorded where the production renderer binds it.
@@ -100,6 +109,9 @@ struct ImageRecord {
     /// The guest T# descriptor's logical slot and address, for correlation only.
     u32 guest_slot{};
     u64 guest_address{};
+    /// The shader-level image index this binding was declared as. A sampler's `associated_image`
+    /// names this index, which is what joins the two: the descriptor binding number does not.
+    u32 shader_image_index{};
 
     /// The texture-cache image this resolved to, and its generation.
     u32 image_id{};
@@ -125,18 +137,40 @@ struct ImageRecord {
     u32 depth{};
     u32 samples{};
 
-    /// The sampler this binding pairs with, or zero.
+    /// The sampler this binding pairs with, or zero when the association is not established.
+    ///
+    /// shadPS4 binds images and samplers as separate descriptors, so a sampled-image descriptor
+    /// does not intrinsically identify its sampler. The shader's own `associated_image` field is
+    /// the evidence that pairs them, and it is only recorded when the shader declares it.
     u64 sampler_id{};
+    /// Whether the sampler association came from the shader rather than a substitution.
+    bool sampler_verified{};
 
     u8 status{};
-    /// Retained content, in the view's format, tightly packed per subresource.
+    /// Retained content, in the image's format, tightly packed per subresource.
     std::vector<u8> bytes;
     u64 content_hash{};
-    /// Bytes per row of the base mip, for a reader that needs the layout.
+    /// Bytes per row of blocks, for a reader that needs the layout.
     u32 row_pitch{};
     /// How many subresources the copy covered.
     u32 subresources_captured{};
     u32 subresources_requested{};
+
+    /// Storage geometry, kept separate from the pixel extent above. A dimension that is not block
+    /// aligned makes the two genuinely different, so neither is inferred from the other.
+    ///
+    /// `block_width` and `block_height` are block *counts*; `block_texels_x` and `block_texels_y`
+    /// are the texels one block covers.
+    u32 block_width{};
+    u32 block_height{};
+    u32 block_texels_x{1};
+    u32 block_texels_y{1};
+    u32 bytes_per_block{};
+
+    /// The transfer this record's bytes came from. A hash proves the retained bytes have not
+    /// changed; it does not prove they came from the intended image generation, so the transfer
+    /// identity is what ties a late readback to the copy that produced it.
+    u64 transfer_id{};
 };
 
 /// Whether the observation is opted in.

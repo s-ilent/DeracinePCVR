@@ -83,7 +83,14 @@ struct Texture {
     u32 view_format{};
     u32 width{};
     u32 height{};
+    u32 block_columns{};
+    u32 block_rows{};
+    u32 block_texels_x{1};
+    u32 block_texels_y{1};
+    u32 bytes_per_block{};
+    u64 transfer_id{};
     u64 sampler_id{};
+    bool sampler_verified{};
     std::vector<TextureSubresource> subresources;
 };
 
@@ -236,7 +243,14 @@ bool ReadPackage(const std::string& directory, Package& out, std::string& error)
             texture.view_format = entry.value("view_format", 0u);
             texture.width = entry.value("width", 0u);
             texture.height = entry.value("height", 0u);
+            texture.block_columns = entry.value("block_columns", 0u);
+            texture.block_rows = entry.value("block_rows", 0u);
+            texture.block_texels_x = entry.value("block_texels_x", 1u);
+            texture.block_texels_y = entry.value("block_texels_y", 1u);
+            texture.bytes_per_block = entry.value("bytes_per_block", 0u);
+            texture.transfer_id = entry.value("transfer_id", 0ull);
             texture.sampler_id = entry.value("sampler_id", 0ull);
+            texture.sampler_verified = entry.value("sampler_verified", false);
             for (const auto& sub : entry.value("subresources", nlohmann::json::array())) {
                 TextureSubresource record{};
                 record.mip = sub.value("mip", 0u);
@@ -646,6 +660,12 @@ int main(int argc, char** argv) {
     // render and from a UV visualization, rather than merely asserted to.
     const bool untextured = argc > 3 && std::string{argv[3]} == "untextured";
     const bool show_uv = argc > 3 && std::string{argv[3]} == "uv";
+    bool substitute_sampler = false;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string{argv[i]} == "--substitute-sampler") {
+            substitute_sampler = true;
+        }
+    }
 
     Package package{};
     std::string error;
@@ -683,7 +703,8 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // The sampler the texture pairs with, or the first one if the binding did not name it.
+    // The sampler the texture pairs with. A substitution is only made when the caller asks for it
+    // explicitly, because a first-sampler fallback is not evidence of the original state.
     const Sampler* sampler = nullptr;
     for (const auto& candidate : package.samplers) {
         if (candidate.id == texture->sampler_id) {
@@ -691,11 +712,14 @@ int main(int argc, char** argv) {
             break;
         }
     }
-    if (sampler == nullptr && !package.samplers.empty()) {
+    bool substituted = false;
+    if (sampler == nullptr && substitute_sampler && !package.samplers.empty()) {
         sampler = &package.samplers.front();
+        substituted = true;
     }
     if (sampler == nullptr) {
-        std::cerr << "no sampler in the package\n";
+        std::cerr << "no verified sampler for this texture; pass --substitute-sampler to use the "
+                     "first one as a labelled diagnostic substitution\n";
         return 1;
     }
 
@@ -703,9 +727,15 @@ int main(int argc, char** argv) {
               << " textures=" << package.textures.size()
               << " samplers=" << package.samplers.size() << "\n";
     std::cout << "texture: id=" << texture->id << " binding=" << texture->vk_binding << " "
-              << sub.width << "x" << sub.height << " format=" << texture->image_format
-              << " bytes=" << sub.byte_length << "\n";
-    std::cout << "sampler: mag=" << sampler->mag_filter << " min=" << sampler->min_filter
+              << sub.width << "x" << sub.height << " texels, " << texture->block_columns << "x"
+              << texture->block_rows << " blocks of " << texture->block_texels_x << "x"
+              << texture->block_texels_y << " texels, " << texture->bytes_per_block
+              << " bytes/block, format=" << texture->image_format
+              << " bytes=" << sub.byte_length << " transfer=" << texture->transfer_id << "\n";
+    std::cout << "texture: payload hash=" << sub.content_hash << "\n";
+    std::cout << "sampler: id=" << sampler->id
+              << (substituted ? " (SUBSTITUTED, not the original)" : " (verified association)")
+              << " mag=" << sampler->mag_filter << " min=" << sampler->min_filter
               << " mip=" << sampler->mip_filter << " aniso=" << sampler->max_anisotropy
               << " lod=[" << sampler->min_lod << "," << sampler->max_lod << "]\n";
     std::cout << "uv: binding=" << package.uv.binding << " components=" << package.uv.component_u
@@ -916,11 +946,11 @@ int main(int argc, char** argv) {
     image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     image_info.imageType = VK_IMAGE_TYPE_2D;
     image_info.format = image_format;
-    // A compressed subresource records its extent in blocks, so the image is created at the pixel
-    // extent the block count implies.
-    const u32 block_shift = IsBlockCompressed(image_format) ? 2u : 0u;
-    const u32 pixel_width = sub.width << block_shift;
-    const u32 pixel_height = sub.height << block_shift;
+    // The subresource records its extent in texels, which is what a Vulkan image and a copy region
+    // both take. The block geometry is recorded separately and is not used to derive the extent:
+    // a dimension that is not block aligned makes the two genuinely different.
+    const u32 pixel_width = sub.width;
+    const u32 pixel_height = sub.height;
     image_info.extent = {pixel_width, pixel_height, 1};
     image_info.mipLevels = 1;
     image_info.arrayLayers = 1;

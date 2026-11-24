@@ -200,9 +200,25 @@ struct Texture {
     u32 height{};
     u32 depth{};
     u32 samples{};
+    /// Storage geometry, kept separate from the pixel extent. A dimension that is not block
+    /// aligned makes the two genuinely different.
+    ///
+    /// `block_columns` and `block_rows` are how many blocks the subresource spans. `block_texels_x`
+    /// and `block_texels_y` are how many texels one block covers. The names are deliberately
+    /// distinct: an earlier version called the block count `block_width`, which read as the block
+    /// size and made the byte length impossible to check.
+    u32 block_columns{};
+    u32 block_rows{};
+    u32 block_texels_x{1};
+    u32 block_texels_y{1};
+    u32 bytes_per_block{};
+    /// The transfer the content came from, so a late readback is tied to its copy.
+    u64 transfer_id{};
 
-    /// The sampler this binding pairs with, or zero.
+    /// The sampler this binding pairs with, or zero when the association is not established.
     u64 sampler_id{};
+    /// Whether the association came from the shader rather than a substitution.
+    bool sampler_verified{};
 
     /// How the content was established.
     u8 status{};
@@ -466,8 +482,15 @@ struct Package {
                         error = "texture subresource row pitch is narrower than its width";
                         return false;
                     }
+                    // `row_pitch` is bytes per row of blocks and `height` is in texels, so the
+                    // row count is the block-row count, not the texel height. Comparing against
+                    // the texel height would reject every compressed subresource.
+                    const u32 block_texels_y =
+                        texture.block_texels_y != 0 ? texture.block_texels_y : 1;
+                    const u64 block_rows =
+                        (subresource.height + block_texels_y - 1) / block_texels_y;
                     if (subresource.byte_length <
-                        static_cast<u64>(subresource.row_pitch) * subresource.height) {
+                        static_cast<u64>(subresource.row_pitch) * block_rows) {
                         error = "texture subresource is shorter than its rows";
                         return false;
                     }

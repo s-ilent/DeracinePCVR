@@ -256,6 +256,14 @@ bool WritePackage(const Package& package, const std::string& directory) noexcept
             json << "      \"depth\": " << texture.depth << ",\n";
             json << "      \"samples\": " << texture.samples << ",\n";
             json << "      \"sampler_id\": " << texture.sampler_id << ",\n";
+            json << "      \"sampler_verified\": "
+                 << (texture.sampler_verified ? "true" : "false") << ",\n";
+            json << "      \"block_columns\": " << texture.block_columns << ",\n";
+            json << "      \"block_rows\": " << texture.block_rows << ",\n";
+            json << "      \"block_texels_x\": " << texture.block_texels_x << ",\n";
+            json << "      \"block_texels_y\": " << texture.block_texels_y << ",\n";
+            json << "      \"bytes_per_block\": " << texture.bytes_per_block << ",\n";
+            json << "      \"transfer_id\": " << texture.transfer_id << ",\n";
             json << "      \"status\": \"" << StatusName(texture.status) << "\",\n";
             json << "      \"limitation\": \"" << EscapeJson(texture.limitation) << "\",\n";
             json << "      \"subresources\": [\n";

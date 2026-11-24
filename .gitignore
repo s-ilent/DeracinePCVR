@@ -67,3 +67,7 @@ __pycache__/
 # Standalone geometry replay build output
 build-geometry-replay/
 
+
+# Standalone readback test build output
+build-readback-test/
+

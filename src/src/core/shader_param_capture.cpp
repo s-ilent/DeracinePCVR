@@ -1056,10 +1056,49 @@ void WriteFirstPackage(const char* directory) noexcept {
                     package.samplers.push_back(out);
                 }
 
+                // The binding path records each descriptor once, and the snapshot records the
+                // same descriptor again with its contents. Those are one texture, not two: the
+                // late record is joined onto the binding record by the identity the two share,
+                // rather than appended as a separate entry.
                 u32 next_texture_id = 1;
+                std::map<std::tuple<u64, u64, u32, u32, u32>, u32> by_binding;
                 for (const auto& image : images) {
                     if (image.provenance_id != draw.provenance_id)
                         continue;
+
+                    const auto join_key = std::make_tuple(image.stage_hash, image.image_uid,
+                                                          image.vk_binding, image.mip_first,
+                                                          image.layer_first);
+                    if (const auto it = by_binding.find(join_key); it != by_binding.end()) {
+                        // An existing entry for this binding: attach the contents to it.
+                        auto& existing = package.textures[it->second - 1];
+                        if (!image.bytes.empty() && image.row_pitch != 0) {
+                            DrawPackage::TextureSubresource sub{};
+                            sub.mip = image.mip_first;
+                            sub.layer = image.layer_first;
+                            sub.width = image.width;
+                            sub.height = image.height;
+                            sub.row_pitch = image.row_pitch;
+                            sub.blob_offset = blob_offset;
+                            sub.byte_length = image.bytes.size();
+                            sub.content_hash = image.content_hash;
+                            blob_offset += image.bytes.size();
+                            retained += image.bytes.size();
+                            package.texture_bytes.insert(package.texture_bytes.end(),
+                                                         image.bytes.begin(), image.bytes.end());
+                            existing.subresources.push_back(sub);
+                            existing.status = image.status;
+                            existing.transfer_id = image.transfer_id;
+                            existing.block_columns = image.block_width;
+                            existing.block_rows = image.block_height;
+                            existing.block_texels_x = image.block_texels_x;
+                            existing.block_texels_y = image.block_texels_y;
+                            existing.bytes_per_block = image.bytes_per_block;
+                            existing.limitation.clear();
+                        }
+                        continue;
+                    }
+
                     DrawPackage::Texture out{};
                     out.id = next_texture_id++;
                     out.vk_binding = image.vk_binding;
@@ -1080,6 +1119,26 @@ void WriteFirstPackage(const char* directory) noexcept {
                     out.depth = image.depth;
                     out.samples = image.samples;
                     out.status = image.status;
+                    out.transfer_id = image.transfer_id;
+                    out.block_columns = image.block_width;
+                    out.block_rows = image.block_height;
+                    out.block_texels_x = image.block_texels_x;
+                    out.block_texels_y = image.block_texels_y;
+                    out.bytes_per_block = image.bytes_per_block;
+
+                    // Join the sampler through the shader's own pairing. The image record carries
+                    // the shader-level image index it was bound as, and a sampler whose
+                    // `associated_image` names that index is the one the shader samples with.
+                    // Without that evidence the association stays unresolved rather than being
+                    // guessed from binding order.
+                    for (const auto& sampler : samplers) {
+                        if (sampler.associated_image == image.shader_image_index &&
+                            sampler.stage_hash == image.stage_hash) {
+                            out.sampler_id = sampler.id;
+                            out.sampler_verified = true;
+                            break;
+                        }
+                    }
 
                     if (!image.bytes.empty() && image.row_pitch != 0) {
                         DrawPackage::TextureSubresource sub{};
@@ -1102,6 +1161,7 @@ void WriteFirstPackage(const char* directory) noexcept {
                     } else {
                         out.limitation = "content was not captured";
                     }
+                    by_binding[join_key] = out.id;
                     package.textures.push_back(std::move(out));
                 }
             }

@@ -12,6 +12,8 @@ namespace {
 
 using Core::DrawPackage::Binding;
 using Core::DrawPackage::IndexBinding;
+using Core::DrawPackage::Texture;
+using Core::DrawPackage::TextureSubresource;
 using Core::DrawPackage::VertexBinding;
 using Core::DrawPackage::Package;
 using Core::DrawPackage::Resource;
@@ -250,10 +252,64 @@ TEST(DrawPackageValidator, RejectsDiagnosticReadinessWithoutGeometry) {
     EXPECT_FALSE(ValidatePackage(package, error));
 }
 
-TEST(DrawPackageValidator, RejectsFullDrawReadinessWithoutTextures) {
+TEST(DrawPackageValidator, RejectsOriginalMaterialReadinessWithoutTextures) {
     auto package = MakeValidPackage();
     AddGeometry(package);
-    package.readiness.full_draw_replay_ready = true;
+    package.readiness.original_material_ready = true;
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+}
+
+TEST(DrawPackageValidator, RejectsTextureContentReadinessWithoutBlockGeometry) {
+    // A compressed subresource's byte length is derived from its block geometry, so a package that
+    // claims captured content without it cannot be checked and must be refused.
+    auto package = MakeValidPackage();
+    AddGeometry(package);
+    Texture texture{};
+    texture.id = 1;
+    texture.width = 64;
+    texture.height = 64;
+    texture.block_columns = 16;
+    texture.block_rows = 16;
+    texture.bytes_per_block = 0;
+    TextureSubresource sub{};
+    sub.width = 64;
+    sub.height = 64;
+    sub.row_pitch = 256;
+    sub.byte_length = 4096;
+    sub.content_hash = 1;
+    texture.subresources.push_back(sub);
+    package.textures.push_back(texture);
+    package.readiness.texture_binding_ready = true;
+    package.readiness.texture_contents_ready = true;
+    std::string error;
+    EXPECT_FALSE(ValidatePackage(package, error));
+}
+
+TEST(DrawPackageValidator, RejectsTextureContentReadinessWithShortPayload) {
+    // The payload must be exactly the block geometry implies. A shorter one is a partial copy, and
+    // a hash of the bytes it did copy still matches itself, so only the length check catches it.
+    auto package = MakeValidPackage();
+    AddGeometry(package);
+    Texture texture{};
+    texture.id = 1;
+    texture.width = 64;
+    texture.height = 64;
+    texture.block_columns = 16;
+    texture.block_rows = 16;
+    texture.block_texels_x = 4;
+    texture.block_texels_y = 4;
+    texture.bytes_per_block = 16;
+    TextureSubresource sub{};
+    sub.width = 64;
+    sub.height = 64;
+    sub.row_pitch = 256;
+    sub.byte_length = 1024;
+    sub.content_hash = 1;
+    texture.subresources.push_back(sub);
+    package.textures.push_back(texture);
+    package.readiness.texture_binding_ready = true;
+    package.readiness.texture_contents_ready = true;
     std::string error;
     EXPECT_FALSE(ValidatePackage(package, error));
 }

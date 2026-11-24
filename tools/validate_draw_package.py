@@ -273,12 +273,25 @@ def main(argv: list[str]) -> int:
         sampler_ref = texture.get("sampler_id", 0)
         if sampler_ref and sampler_ref not in sampler_ids:
             return fail(f"texture {tid} references missing sampler {sampler_ref}")
+        if texture.get("sampler_verified") and not sampler_ref:
+            return fail(f"texture {tid} claims a verified sampler but names none")
 
         # The view's mip and layer range must fit the image.
         if texture.get("mip_first", 0) + texture.get("mip_count", 0) > 32:
             return fail(f"texture {tid} has an implausible mip range")
         if texture.get("layer_count", 0) == 0:
             return fail(f"texture {tid} has no layers")
+
+        # The block geometry must be present and consistent for a compressed format, because the
+        # byte length is derived from it. A missing block size means the payload length cannot be
+        # checked, which is exactly the defect that let a quarter-copy pass as complete.
+        block_texels_x = texture.get("block_texels_x", 0)
+        block_texels_y = texture.get("block_texels_y", 0)
+        bytes_per_block = texture.get("bytes_per_block", 0)
+        if bytes_per_block == 0:
+            return fail(f"texture {tid} has no block geometry")
+        if block_texels_x == 0 or block_texels_y == 0:
+            return fail(f"texture {tid} has a zero block texel dimension")
 
         for sub in texture.get("subresources", []):
             length = sub.get("byte_length", 0)
@@ -288,10 +301,39 @@ def main(argv: list[str]) -> int:
             if offset + length > len(texture_blob):
                 return fail(f"texture {tid} subresource exceeds textures.bin")
             data = texture_blob[offset:offset + length]
-            if sub.get("row_pitch", 0) * sub.get("height", 0) > length:
-                return fail(f"texture {tid} subresource is shorter than its rows")
             if fnv1a(data) != sub.get("content_hash"):
                 return fail(f"texture {tid} subresource hash does not match its bytes")
+
+            # The payload length must be exactly the block geometry implies. A shorter payload is a
+            # partial copy; a longer one means the extent and the bytes disagree.
+            texel_w = sub.get("width", 0)
+            texel_h = sub.get("height", 0)
+            if texel_w == 0 or texel_h == 0:
+                return fail(f"texture {tid} subresource has a zero texel extent")
+            blocks_x = (texel_w + block_texels_x - 1) // block_texels_x
+            blocks_y = (texel_h + block_texels_y - 1) // block_texels_y
+            expected_pitch = blocks_x * bytes_per_block
+            expected_length = expected_pitch * blocks_y
+            if sub.get("row_pitch", 0) != expected_pitch:
+                return fail(
+                    f"texture {tid} row pitch {sub.get('row_pitch')} is not the block-row pitch "
+                    f"{expected_pitch}")
+            if length != expected_length:
+                return fail(
+                    f"texture {tid} subresource is {length} bytes but its block geometry gives "
+                    f"{expected_length}")
+            if texture.get("block_columns", 0) != blocks_x:
+                return fail(
+                    f"texture {tid} records {texture.get('block_columns')} block columns but the "
+                    f"texel extent gives {blocks_x}")
+            if texture.get("block_rows", 0) != blocks_y:
+                return fail(
+                    f"texture {tid} records {texture.get('block_rows')} block rows but the texel "
+                    f"extent gives {blocks_y}")
+            # A captured subresource must name the transfer that produced it. Without that, a
+            # record cannot be distinguished from a later image generation that reused the slot.
+            if not texture.get("transfer_id"):
+                return fail(f"texture {tid} has captured content but no transfer identity")
 
     # A texture content claim needs bytes; a binding claim needs a texture.
     if readiness.get("texture_binding_ready") and not textures:
