@@ -37,6 +37,8 @@ std::string_view ProblemName(Problem problem) {
 bool Read(const std::string& directory, std::vector<Record>& out, Problem& problem,
           std::string& error) {
     out.clear();
+    // A failure must not leave a partial record set behind: a caller that ignores the return value
+    // would otherwise consume records from a sidecar the reader rejected.
     problem = Problem::None;
     error.clear();
 
@@ -92,6 +94,7 @@ bool Read(const std::string& directory, std::vector<Record>& out, Problem& probl
                 problem = Problem::DuplicateRecord;
                 error = "the sidecar carries more than one record for provenance " +
                         std::to_string(record.provenance_id);
+                out.clear();
                 return false;
             }
 
@@ -126,6 +129,7 @@ bool Read(const std::string& directory, std::vector<Record>& out, Problem& probl
     } catch (const std::exception& e) {
         problem = Problem::TruncatedRecord;
         error = std::string{"a bridge record is missing a required field: "} + e.what();
+        out.clear();
         return false;
     }
 

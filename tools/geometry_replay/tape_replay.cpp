@@ -865,6 +865,15 @@ int main(int argc, char** argv) {
         // obtain a join from a bridge that resolved a different object. The matcher reports it as
         // a positive mismatch, which the gate below treats as fatal.
 
+        // A bridge whose address-slot predicate was not determinable cannot establish which slot
+        // the draw consumed, so its address is not evidence. This is checked before the join so the
+        // failure names the actual cause rather than a downstream symptom.
+        if (have_bridge && !bridge_record.predicate_determinable) {
+            std::cerr << "identity rejected: the address-slot predicate was not determinable, so "
+                         "the selected address is not evidence of the buffer the draw consumed\n";
+            return 1;
+        }
+
         // The manifest must name the same session as the tape and the package. A manifest from a
         // different run means the directory holds artifacts from more than one execution.
         //

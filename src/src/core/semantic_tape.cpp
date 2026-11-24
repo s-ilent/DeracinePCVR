@@ -444,15 +444,47 @@ void ExportTape() noexcept {
         if (!g_state.enabled)
             return;
 
-        // Select the draw. An explicit selection wins; otherwise the last recorded draw is used, so
-        // a run without a selection still produces a tape rather than nothing.
-        u64 record_id = g_state.selected_provenance_id;
-        if (record_id == 0)
-            record_id = RhiEntryProbe::LastRecordedProvenanceId();
+        // Select the draw.
+        //
+        // In combined-capture mode the resource package is authoritative: it selects its own draw by
+        // completeness, and the tape must describe that same original command. Defaulting to the
+        // last recorded draw would export a tape for a different draw than the package, which no
+        // later validation can repair.
+        //
+        // An explicit manual selection is still honoured for standalone diagnostic work, but it is
+        // refused when it conflicts with the package's choice, because the two artifacts would then
+        // describe different draws.
+        u64 record_id = 0;
+        bool package_selected = false;
+        {
+            DrawPackage::Package probe{};
+            std::string probe_error;
+            if (DrawPackage::ReadPackage(g_state.output_directory, probe, probe_error) &&
+                probe.provenance_id != 0) {
+                package_selected = true;
+                record_id = probe.provenance_id;
+                if (g_state.selected_provenance_id != 0 &&
+                    g_state.selected_provenance_id != record_id) {
+                    LOG_WARNING(Core_Linker,
+                                "DERACINE_SEMANTIC_TAPE_MANUAL_CONFLICT manual={} package={} "
+                                "the package selection is authoritative",
+                                g_state.selected_provenance_id, record_id);
+                }
+            }
+        }
+        if (!package_selected) {
+            // No package: a standalone diagnostic run. The explicit selection wins, otherwise the
+            // last recorded draw is used so a run without a selection still produces a tape.
+            record_id = g_state.selected_provenance_id;
+            if (record_id == 0)
+                record_id = RhiEntryProbe::LastRecordedProvenanceId();
+        }
         if (record_id == 0) {
             LOG_INFO(Core_Linker, "DERACINE_SEMANTIC_TAPE_NONE no recorded draw to describe");
             return;
         }
+        LOG_INFO(Core_Linker, "DERACINE_SEMANTIC_TAPE_SELECTED provenance_id={} source={}",
+                 record_id, package_selected ? "package" : "manual_or_last");
 
         RhiEntryProbe::ProvenanceSnapshot snapshot{};
         if (!RhiEntryProbe::GetProvenanceSnapshot(record_id, snapshot)) {

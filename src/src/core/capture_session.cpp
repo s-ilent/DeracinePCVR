@@ -3,6 +3,10 @@
 
 #include "core/capture_session.h"
 
+#include <nlohmann/json.hpp>
+
+#include "core/capture_artifacts.h"
+
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -88,48 +92,6 @@ void TryInstall() noexcept {
              SessionId(), g_state.directory);
 }
 
-namespace {
-
-/// Reads a JSON file, returning false when it is absent or malformed.
-[[nodiscard]] bool ReadJson(const std::filesystem::path& path, std::string& out) {
-    std::ifstream file{path};
-    if (!file) {
-        return false;
-    }
-    out.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
-    return !out.empty();
-}
-
-/// Extracts a numeric field from a flat JSON object without a full parser.
-///
-/// The manifest is written by this module and the fields are top-level integers, so a targeted
-/// scan is sufficient and avoids adding a JSON dependency to Core.
-[[nodiscard]] bool FindNumber(const std::string& json, std::string_view key, u64& out) {
-    const std::string needle = "\"" + std::string{key} + "\":";
-    const auto at = json.find(needle);
-    if (at == std::string::npos) {
-        return false;
-    }
-    std::size_t i = at + needle.size();
-    while (i < json.size() && (json[i] == ' ' || json[i] == '\t')) {
-        ++i;
-    }
-    u64 value = 0;
-    bool any = false;
-    while (i < json.size() && json[i] >= '0' && json[i] <= '9') {
-        value = value * 10 + static_cast<u64>(json[i] - '0');
-        any = true;
-        ++i;
-    }
-    if (!any) {
-        return false;
-    }
-    out = value;
-    return true;
-}
-
-} // namespace
-
 bool FinalizeSelection() noexcept {
     try {
         if (!g_state.enabled.load(std::memory_order_relaxed)) {
@@ -140,100 +102,157 @@ bool FinalizeSelection() noexcept {
             return false;
         }
 
-        // Gather the candidates the exporters actually wrote. Each artifact is read from disk, so
-        // the selection operates on what exists rather than on in-memory state that may not have
-        // been serialized.
-        std::string package_json;
-        std::string tape_json;
-        std::string bridge_json;
-        const bool have_package = ReadJson(dir / "package.json", package_json);
-        const bool have_tape = ReadJson(dir / "tape.json", tape_json);
-        const bool have_bridge = ReadJson(dir / "index_bridge.json", bridge_json);
+        // Read the artifacts structurally. The package index address is read from its own object,
+        // never by searching the file for the first "guest_base", because the package writes
+        // vertex_bindings before index_binding and both carry that field name.
+        CaptureArtifacts::PackageMetadata package{};
+        CaptureArtifacts::FieldProblem package_problem{};
+        std::string package_error;
+        const bool have_package = CaptureArtifacts::ReadPackageMetadata(
+            (dir / "package.json").string(), package, package_problem, package_error);
 
-        u64 package_provenance = 0;
-        u64 package_session = 0;
+        std::vector<CaptureArtifacts::BridgeRecord> bridge_records;
+        CaptureArtifacts::FieldProblem bridge_problem{};
+        std::string bridge_error;
+        const bool have_bridge = CaptureArtifacts::ReadBridgeRecords(
+            (dir / "index_bridge.json").string(), bridge_records, bridge_problem, bridge_error);
+
+        // The tape is read for its provenance and session, so the manifest can report what was
+        // actually exported rather than what was intended.
         u64 tape_provenance = 0;
         u64 tape_session = 0;
-        u64 bridge_session = 0;
-        u64 bridge_provenance = 0;
-        u64 bridge_selected_address = 0;
-        u64 package_index_base = 0;
-
-        if (have_package) {
-            FindNumber(package_json, "provenance_id", package_provenance);
-            FindNumber(package_json, "session_id", package_session);
-            FindNumber(package_json, "guest_base", package_index_base);
-        }
-        if (have_tape) {
-            FindNumber(tape_json, "provenance_id", tape_provenance);
-            FindNumber(tape_json, "session_id", tape_session);
-        }
-        if (have_bridge) {
-            FindNumber(bridge_json, "session_id", bridge_session);
-            FindNumber(bridge_json, "provenance_id", bridge_provenance);
-            FindNumber(bridge_json, "selected_guest_address", bridge_selected_address);
+        {
+            std::ifstream tape_file{dir / "tape.json"};
+            if (tape_file) {
+                try {
+                    nlohmann::json tape_json;
+                    tape_file >> tape_json;
+                    tape_provenance = tape_json.value("provenance_id", 0ull);
+                    tape_session = tape_json.value("session_id", 0ull);
+                } catch (const std::exception&) {
+                    // A malformed tape is reported through the zero values below.
+                }
+            }
         }
 
-        // The selection decision, recorded in the manifest. Every rejection names its reason so a
-        // failed capture is actionable.
-        const char* outcome = "not_attempted";
+        const u64 session_id = SessionId();
+        const char* outcome = "insufficient_evidence";
+        const char* verification = "not_attempted";
         std::string reason;
-        bool selected = false;
+        bool candidate_selected = false;
+        bool identity_verified = false;
+
+        u64 bridge_provenance = 0;
+        u64 bridge_object = 0;
+        u64 bridge_address = 0;
+        u64 package_index_address = 0;
 
         if (!have_package) {
-            outcome = "no_package";
-            reason = "the resource package was not written";
-        } else if (!have_tape) {
-            outcome = "no_tape";
-            reason = "the semantic tape was not written";
+            outcome = "rejected";
+            reason = "package: " + std::string{CaptureArtifacts::FieldProblemName(package_problem)} +
+                     " (" + package_error + ")";
+        } else if (!package.index.present) {
+            outcome = "insufficient_evidence";
+            reason = "the package carries no index binding";
+        } else if (!package.index.has_guest_base) {
+            outcome = "insufficient_evidence";
+            reason = "the package index binding carries no guest address";
         } else if (!have_bridge) {
-            outcome = "no_bridge";
-            reason = "the index bridge sidecar was not written";
-        } else if (package_session == 0 || tape_session == 0 || bridge_session == 0) {
-            outcome = "missing_session";
-            reason = "an artifact carries no capture session identity";
-        } else if (package_session != tape_session || package_session != bridge_session) {
-            outcome = "session_mismatch";
-            reason = "the artifacts were not written in one capture session";
-        } else if (package_provenance != tape_provenance ||
-                   package_provenance != bridge_provenance) {
-            outcome = "provenance_mismatch";
-            reason = "the artifacts describe different draws";
-        } else if (bridge_selected_address == 0) {
-            outcome = "bridge_unresolved";
-            reason = "the index bridge did not resolve a guest address";
-        } else if (package_index_base != 0 &&
-                   bridge_selected_address != package_index_base) {
-            outcome = "address_mismatch";
-            reason = "the resolved index allocation and the package name different buffers";
+            outcome = "insufficient_evidence";
+            reason = "bridge: " + std::string{CaptureArtifacts::FieldProblemName(bridge_problem)} +
+                     " (" + bridge_error + ")";
+        } else if (!package.has_session_id || package.session_id == 0) {
+            outcome = "insufficient_evidence";
+            reason = "the package carries no capture session identity";
+        } else if (package.session_id != session_id) {
+            outcome = "rejected";
+            reason = "the package was written in a different capture session";
+        } else if (tape_session == 0) {
+            outcome = "insufficient_evidence";
+            reason = "the tape carries no capture session identity";
+        } else if (tape_session != session_id) {
+            outcome = "rejected";
+            reason = "the tape was written in a different capture session";
+        } else if (tape_provenance != package.provenance_id) {
+            outcome = "rejected";
+            reason = "the tape describes a different draw than the package";
         } else {
-            outcome = "selected";
-            selected = true;
+            // The candidate is the package-selected provenance. The bridge record is selected by
+            // session and provenance, not by position in the array.
+            CaptureArtifacts::BridgeRecord bridge{};
+            bool ambiguous = false;
+            std::string select_error;
+            if (!CaptureArtifacts::SelectBridgeRecord(bridge_records, session_id,
+                                                      package.provenance_id, bridge, ambiguous,
+                                                      select_error)) {
+                outcome = ambiguous ? "ambiguous" : "insufficient_evidence";
+                reason = select_error;
+            } else {
+                candidate_selected = true;
+                bridge_provenance = bridge.provenance_id;
+                bridge_object = bridge.original_rhi_object;
+                bridge_address = bridge.selected_guest_address;
+                package_index_address = package.index.guest_base;
+
+                if (!bridge.has_selected_guest_address || bridge.selected_guest_address == 0) {
+                    outcome = "insufficient_evidence";
+                    verification = "insufficient_evidence";
+                    reason = "the bridge did not resolve a guest address";
+                } else if (!bridge.predicate_determinable) {
+                    outcome = "insufficient_evidence";
+                    verification = "insufficient_evidence";
+                    reason = "the address-slot predicate was not determinable";
+                } else if (package.index.guest_base == 0) {
+                    // A zero index address is not comparable. Accepting it would let a missing or
+                    // unparsed address pass as a match.
+                    outcome = "insufficient_evidence";
+                    verification = "insufficient_evidence";
+                    reason = "the package index address is zero, so it cannot be compared";
+                } else if (bridge.selected_guest_address != package.index.guest_base) {
+                    outcome = "rejected";
+                    verification = "rejected";
+                    reason = "the resolved index allocation and the package name different "
+                             "buffers";
+                } else {
+                    outcome = "candidate_selected";
+                    verification = "identity_verified";
+                    identity_verified = true;
+                }
+            }
         }
 
         LOG_INFO(Core_Linker,
-                 "DERACINE_CAPTURE_SELECTION outcome={} session_id={} provenance_id={} "
-                 "package_session={} tape_session={} bridge_session={} reason={}",
-                 outcome, SessionId(), package_provenance, package_session, tape_session,
-                 bridge_session, reason);
+                 "DERACINE_CAPTURE_SELECTION outcome={} verification={} session_id={} "
+                 "package_provenance={} tape_provenance={} bridge_provenance={} "
+                 "package_index_address={:#x} bridge_address={:#x} bridge_object={:#x} "
+                 "reason={}",
+                 outcome, verification, session_id, package.provenance_id, tape_provenance,
+                 bridge_provenance, package_index_address, bridge_address, bridge_object, reason);
 
-        // Rewrite the manifest with the decision. It is written last so it cannot claim a
-        // selection before the artifacts exist.
+        // The manifest records selection and verification separately. It never reports success
+        // merely because the artifacts share a provenance ordinal.
         const auto path = dir / "session.json";
         std::ofstream out{path, std::ios::trunc};
         if (!out) {
             return false;
         }
         out << "{\n";
-        out << "  \"schema_version\": 1,\n";
-        out << "  \"session_id\": " << SessionId() << ",\n";
+        out << "  \"schema_version\": 2,\n";
+        out << "  \"session_id\": " << session_id << ",\n";
         out << "  \"selection\": {\n";
         out << "    \"outcome\": \"" << outcome << "\",\n";
-        out << "    \"selected\": " << (selected ? "true" : "false") << ",\n";
-        out << "    \"provenance_id\": " << package_provenance << ",\n";
-        out << "    \"package_session_id\": " << package_session << ",\n";
-        out << "    \"tape_session_id\": " << tape_session << ",\n";
-        out << "    \"bridge_session_id\": " << bridge_session << ",\n";
+        out << "    \"candidate_selected\": " << (candidate_selected ? "true" : "false")
+            << ",\n";
+        out << "    \"identity_verified\": " << (identity_verified ? "true" : "false")
+            << ",\n";
+        out << "    \"verification\": \"" << verification << "\",\n";
+        out << "    \"package_provenance_id\": " << package.provenance_id << ",\n";
+        out << "    \"tape_provenance_id\": " << tape_provenance << ",\n";
+        out << "    \"bridge_provenance_id\": " << bridge_provenance << ",\n";
+        out << "    \"original_rhi_object\": " << bridge_object << ",\n";
+        out << "    \"package_index_address\": " << package_index_address << ",\n";
+        out << "    \"bridge_selected_address\": " << bridge_address << ",\n";
+        out << "    \"package_schema_version\": " << package.schema_version << ",\n";
         out << "    \"reason\": \"" << reason << "\"\n";
         out << "  },\n";
         out << "  \"note\": \"the session id proves the artifacts claim the same execution; it "
@@ -241,7 +260,7 @@ bool FinalizeSelection() noexcept {
         out << "}\n";
         out.close();
 
-        return selected;
+        return identity_verified;
     } catch (...) {
         return false;
     }
