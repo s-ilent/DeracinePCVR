@@ -39,7 +39,7 @@ using u32 = std::uint32_t;
 using u64 = std::uint64_t;
 using s32 = std::int32_t;
 
-constexpr u32 kSchemaVersion = 3;
+constexpr u32 kSchemaVersion = 4;
 
 /// One effective shader stage, as the package describes it.
 struct ShaderStage {
@@ -195,10 +195,14 @@ bool ReadPackage(const std::string& directory, Package& out, std::string& error)
             return false;
         }
         out.provenance_id = json.at("provenance_id").get<u64>();
-        const auto& pipeline = json.at("pipeline");
-        out.num_indices = pipeline.value("num_indices", 0u);
-        out.num_instances = pipeline.value("num_instances", 0u);
-        out.is_indexed = pipeline.value("is_indexed", false);
+        // The pipeline block is optional. A package that carries shader state but no pipeline block
+        // is not malformed, and requiring it refused packages the shared reader accepts.
+        if (json.contains("pipeline")) {
+            const auto& pipeline = json.at("pipeline");
+            out.num_indices = pipeline.value("num_indices", 0u);
+            out.num_instances = pipeline.value("num_instances", 0u);
+            out.is_indexed = pipeline.value("is_indexed", false);
+        }
 
         std::vector<u8> blob;
         if (!ReadSidecar(dir / "resources.bin", blob)) {

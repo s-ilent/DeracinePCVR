@@ -112,12 +112,117 @@ struct Geometry {
     float bounds_max[3]{};
 };
 
+/// One descriptor the effective module declares, as the production layout allocated it.
+struct ShaderDescriptor {
+    u32 set{};
+    u32 binding{};
+    /// The descriptor class, in the vocabulary the SPIR-V uses.
+    u32 descriptor_class{};
+    u32 count{1};
+    /// The shader stages that can see this binding, as a Vulkan stage-flags mask.
+    u32 stage_flags{};
+    /// The guest shader-resource index this came from, or 0xFFFFFFFF when it did not.
+    u32 guest_resource_index{0xFFFFFFFFu};
+    bool written{};
+};
+
+/// The descriptor interface of one effective shader permutation.
+///
+/// The identity is (program hash, permutation index), matching the binary capture. One program can
+/// produce permutations with different resource interfaces, so a lookup by program hash alone is
+/// insufficient.
+struct ShaderInterface {
+    u64 program_hash{};
+    u32 permutation_index{};
+    u64 permutation_hash{};
+    u32 hardware_stage{};
+    u32 logical_stage{};
+    bool patched{};
+    std::vector<ShaderDescriptor> descriptors;
+    u32 push_constant_offset{};
+    u32 push_constant_size{};
+    u32 push_constant_stage_flags{};
+    u32 unified_binding_count{};
+};
+
+/// One effective shader stage: the module identity and the bytes it resolved to.
+struct ShaderStage {
+    u64 program_hash{};
+    u32 permutation_index{};
+    u64 permutation_hash{};
+    u32 hardware_stage{};
+    u32 logical_stage{};
+    bool patched{};
+    std::string generated_sha256;
+    std::string effective_sha256;
+    std::string entry_point;
+    u64 generated_byte_length{};
+    u64 effective_byte_length{};
+    std::string generated_file;
+    std::string effective_file;
+    /// The effective module's bytes, loaded from its sidecar.
+    std::vector<u8> effective_bytes;
+};
+
+/// The graphics pipeline state the draw used, as the renderer actually configured it.
+struct PipelineState {
+    /// Whether the topology was captured. Zero is a legitimate Vulkan topology value, so it cannot
+    /// double as a missing-data sentinel.
+    bool has_topology{};
+    u32 topology{};
+    u32 cull_mode{};
+    u32 front_face{};
+    u32 polygon_mode{};
+    bool depth_test{};
+    bool depth_write{};
+    u32 depth_compare_op{};
+    std::vector<u32> color_formats;
+    u32 depth_format{};
+    u32 samples{};
+    std::vector<u32> blend_enable;
+    std::vector<u32> write_mask;
+    float viewport_x{};
+    float viewport_y{};
+    float viewport_width{};
+    float viewport_height{};
+    float viewport_min_depth{};
+    float viewport_max_depth{};
+    u32 push_constant_offset{};
+    u32 push_constant_size{};
+    std::vector<u8> push_constant_bytes;
+};
+
+/// A reference image of the colour attachment around the draw.
+struct ReferenceOutput {
+    u32 width{};
+    u32 height{};
+    u32 format{};
+    u32 bytes_per_pixel{};
+    std::string pre_sha256;
+    std::string post_sha256;
+    std::string pre_file;
+    std::string post_file;
+    bool has_pre{};
+    /// The post-draw contents, loaded from its sidecar.
+    std::vector<u8> post_bytes;
+    /// The pre-draw contents, when captured.
+    std::vector<u8> pre_bytes;
+};
+
 struct Readiness {
     bool geometry_ready{};
     bool texture_binding_ready{};
     bool texture_contents_ready{};
     bool sampler_ready{};
     bool diagnostic_textured_replay_ready{};
+    // Schema 4 adds the original-shader dimensions. Each is a claim to verify, not permission to
+    // skip verification.
+    bool shader_binaries_ready{};
+    bool shader_bindings_ready{};
+    bool shader_parameters_ready{};
+    bool pipeline_state_ready_original{};
+    bool reference_output_ready{};
+    bool original_shader_replay_ready{};
 };
 
 struct Package {
@@ -135,11 +240,33 @@ struct Package {
     Readiness readiness;
     /// The texture payload sidecar, kept separate from the geometry blob.
     std::vector<u8> texture_blob;
+    // Schema 4.
+    std::vector<ShaderStage> shader_stages;
+    std::vector<ShaderInterface> shader_interfaces;
+    PipelineState pipeline_state;
+    ReferenceOutput reference;
+    /// The capture session the package belongs to, when the producer recorded one.
+    u64 session_id{};
+    u64 execution_id{};
 };
 
-/// Reads a package directory. Returns false with a reason when a required field is absent or the
-/// JSON is malformed, rather than producing a partially populated package.
-[[nodiscard]] bool Read(const std::string& directory, Package& out, std::string& error);
+/// The schema versions this reader accepts.
+///
+/// Schema 2 is the resource-only package. Schema 4 adds the effective shader stages, their
+/// descriptor interfaces, the pipeline state and the reference images. A version outside this set
+/// is refused rather than reinterpreted, because a missing field would otherwise read as a default
+/// and a default is not a captured value.
+inline constexpr u32 SchemaResourceOnly = 2;
+inline constexpr u32 SchemaEffectiveShader = 4;
+
+/// Reads a package directory. Returns false with a reason when a required field is absent, a
+/// sidecar is missing or the wrong length, or the JSON is malformed, rather than producing a
+/// partially populated package.
+///
+/// param require_effective  When true, a schema-2 package is refused. Effective-shader mode must
+///                          not silently fall back to a resource-only package.
+[[nodiscard]] bool Read(const std::string& directory, Package& out, std::string& error,
+                        bool require_effective = false);
 
 /// The resource with the given id, or nullptr.
 [[nodiscard]] const Resource* FindResource(const Package& package, u32 id);
