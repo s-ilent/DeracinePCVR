@@ -246,7 +246,15 @@ public:
     virtual void TransitionResource(ResourceId id, ImageAspect aspect, ResourceState from,
                                     ResourceState to) = 0;
     virtual void DrawIndexed(const DrawIndexedDesc& desc) = 0;
+    // Ends recording. Returns false if the recording was invalidated by an
+    // invalid operation, so a poisoned command buffer cannot be submitted.
     virtual bool EndCommands(std::string& error) = 0;
+    // Discards the current recording and releases its references.
+    virtual void AbandonRecording() = 0;
+    // True when the current recording was invalidated by a rejected operation.
+    virtual bool RecordingPoisoned() const = 0;
+    // The reason for the most recent rejection, for tests and diagnostics.
+    virtual const std::string& LastRejection() const = 0;
 
     // --- Submission and completion ---
     // Submits the recorded commands. Returns a completion value for the domain.

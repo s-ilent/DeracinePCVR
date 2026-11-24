@@ -22,6 +22,10 @@ the Khronos validation layer active and zero validation errors.
 | `t06_semantic_nri_draw` | **The end-to-end path**: an indexed stereo draw recorded through the semantic RHI, executed by NRI, into an externally owned image, verified per layer |
 | `t07_resource_registry` | Deterministic CPU test of the corrected ownership model: app ownership and GPU retention are independent |
 | `t08_lifetime_gpu` | The same lifetime semantics against real GPU completion, including deferred destruction and stale-id rejection |
+| `t09_stale_resource_handles` | Stale ids are rejected with a structured reason and never reach a freed NRI object |
+| `t10_recording_lifetime` | A recording owns its resources; views retain their parent textures; external images survive wrapper destruction |
+| `t11_multi_submission` | Multiple submissions outstanding at once, with a reusable command-context pool and backpressure |
+| `t12_expected_diagnostic_scope` | A closed expectation cannot be satisfied by a later unrelated validation error |
 
 ## Dependencies
 
@@ -90,10 +94,27 @@ native-renderer/
 
 ## Ownership model
 
-A resource has two independent reasons to stay alive: the application still owns
-it, and GPU submissions still reference it. Physical destruction happens only
-when both are gone. `Destroy()` revokes application ownership and defers
-physical destruction while references remain.
+A resource has several independent reasons to stay alive: the application still
+owns it, a command buffer being recorded references it, submitted GPU work
+references it, and a dependent resource needs it. Physical destruction happens
+only when all of them are gone.
+
+`Destroy()` revokes application ownership and defers physical destruction while
+references remain. A pending-destroy resource rejects new work while previously
+recorded commands finish safely.
+
+The registry is the single authority for resource identity. Every lookup
+validates index, generation, type and lifecycle state, so a stale id can never
+reach a freed backend object. Backend payloads live behind the registry and are
+deleted by its destruction callback.
+
+## Command contexts
+
+Four reusable command contexts, each with its own allocator and command buffer.
+A context is only reset once its command buffer is known to have completed, so
+an allocator is never reset while pending. When all contexts are in flight,
+`BeginCommands` waits for the oldest submission. There is no per-frame
+`vkQueueWaitIdle`.
 
 ## Status vocabulary
 

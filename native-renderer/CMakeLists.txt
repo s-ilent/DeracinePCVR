@@ -70,6 +70,10 @@ set(HARNESS_TESTS
   t06_semantic_nri_draw
   t07_resource_registry
   t08_lifetime_gpu
+  t09_stale_resource_handles
+  t10_recording_lifetime
+  t11_multi_submission
+  t12_expected_diagnostic_scope
 )
 
 foreach(t ${HARNESS_TESTS})

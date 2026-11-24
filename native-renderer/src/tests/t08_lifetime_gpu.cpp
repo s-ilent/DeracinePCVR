@@ -126,10 +126,35 @@ int main() {
                 if (!device->Submit(v, error)) log.Fail("Submit 3: " + error);
                 if (i == 0) v1 = v; else v2 = v;
             }
+            // Both submissions were accepted before any wait, so both are
+            // outstanding in the backend's bookkeeping. This is not a claim
+            // about simultaneous GPU execution.
+            auto* nri = static_cast<harness::NriDevice*>(device.get());
+            if (nri->OutstandingSubmissionCount() == 2) {
+                log.Pass("two submissions outstanding without an intervening wait");
+            } else {
+                log.Fail("outstanding submissions = " +
+                         std::to_string(nri->OutstandingSubmissionCount()));
+            }
             device->Destroy(id);
             device->WaitForCompletion(v1);
-            if (device->Registry().IsAlive(id)) log.Pass("still retained by the second in-flight submission");
-            else log.Fail("destroyed after only the first submission");
+            // The GPU may have finished both submissions before the wait
+            // returned. The honest assertion is that liveness matches the
+            // observed completion value, not that the second is still running.
+            const uint64_t afterFirst = device->CompletedValue();
+            if (afterFirst >= v2) {
+                if (!device->Registry().IsAlive(id)) {
+                    log.Pass("both submissions had completed, so the resource retired");
+                } else {
+                    log.Fail("both submissions completed but the resource is still alive");
+                }
+            } else {
+                if (device->Registry().IsAlive(id)) {
+                    log.Pass("still retained by the second in-flight submission");
+                } else {
+                    log.Fail("destroyed after only the first submission");
+                }
+            }
             device->WaitForCompletion(v2);
             if (!device->Registry().IsAlive(id)) log.Pass("destroyed after both submissions completed");
             else log.Fail("not destroyed after both submissions");

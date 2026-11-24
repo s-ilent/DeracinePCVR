@@ -287,7 +287,14 @@ int main() {
                                                   VK_IMAGE_VIEW_TYPE_2D, ignored);
             if (bad != VK_NULL_HANDLE) vkDestroyImageView(vk.device(), bad, nullptr);
             harness::EndExpectedDiagnostic(token);
-            log.Pass("case5b: declared expectation for VUID-VkImageViewCreateInfo-image-12397");
+            // Establish the boundary so the expectation is definitively closed
+            // before any later test could produce the same VUID.
+            harness::SynchronizeDiagnostics();
+            if (harness::AllExpectationsMet()) {
+                log.Pass("case5b: expected VUID-VkImageViewCreateInfo-image-12397 fired");
+            } else {
+                log.Fail("case5b: expected diagnostic did not fire");
+            }
             harness::DestroyImage(vk, img);
         }
     }

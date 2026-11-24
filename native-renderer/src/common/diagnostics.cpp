@@ -2,7 +2,6 @@
 
 #include <cstdlib>
 #include <cstring>
-#include <string>
 #include <vector>
 
 namespace harness {
@@ -13,7 +12,9 @@ struct Expectation {
     uint64_t token = 0;
     std::string vuid;
     bool fired = false;
-    bool closed = false;
+    bool closed = false;      // EndExpectedDiagnostic called
+    bool finalized = false;   // window definitively shut at a sync boundary
+    uint32_t matchCount = 0;
 };
 
 std::vector<Expectation>& Expectations() {
@@ -59,12 +60,26 @@ uint64_t BeginExpectedDiagnostic(const char* vuid) {
 bool EndExpectedDiagnostic(uint64_t token) {
     for (auto& e : Expectations()) {
         if (e.token != token) continue;
+        // Mark the intent to close, but keep the window open until the next
+        // synchronization boundary. A message already in flight must still be
+        // attributed to this expectation rather than counted as unexpected.
         e.closed = true;
-        // The diagnostic may not have arrived yet. The authoritative check is
-        // AllExpectationsMet() at the end of the run.
         return e.fired;
     }
     return false;
+}
+
+void SynchronizeDiagnostics() {
+    // The validation layer delivers messages on the calling thread, so by the
+    // time control returns here every message provoked before this point has
+    // been observed. Finalizing now means a later error with the same VUID
+    // cannot satisfy a closed expectation.
+    for (auto& e : Expectations()) {
+        if (e.closed && !e.finalized) {
+            e.finalized = true;
+            if (e.fired) ++g_expectedFired;
+        }
+    }
 }
 
 uint32_t UnexpectedErrorCount() { return g_unexpectedErrors; }
@@ -77,25 +92,29 @@ bool AllExpectationsMet() {
     return true;
 }
 
-// Called by the validation callback for every error-severity message.
-// Returns true when the message matched an open expectation.
+bool ExpectationMet(uint64_t token) {
+    for (const auto& e : Expectations()) {
+        if (e.token == token) return e.fired;
+    }
+    return false;
+}
+
 bool ConsumeExpectedDiagnostic(const char* messageIdName) {
     if (messageIdName == nullptr) return false;
-    // An expectation stays matchable for the whole run. Vulkan delivers
-    // validation messages asynchronously, so a diagnostic can arrive after the
-    // provoking call has already returned and the test has moved on.
+    // Only an expectation whose window is still open may consume a message.
+    // A finalized expectation is closed for good.
     for (auto& e : Expectations()) {
-        if (e.fired) continue;
+        if (e.finalized) continue;
         if (e.vuid.empty()) continue;
         if (std::strstr(messageIdName, e.vuid.c_str()) != nullptr) {
             e.fired = true;
+            ++e.matchCount;
             return true;
         }
     }
     return false;
 }
 
-// Called by the validation callback for an unexpected error.
 void RecordUnexpectedError() { ++g_unexpectedErrors; }
 
 }  // namespace harness

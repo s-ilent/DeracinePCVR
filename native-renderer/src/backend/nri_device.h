@@ -1,11 +1,16 @@
 // NRI implementation of the semantic RHI.
 //
 // Responsibility split:
-//   NRI   - command recording, pipeline binding, barriers, draws, submission
+//   NRI    - command recording, pipeline binding, barriers, draws, submission
 //   Vulkan - device creation, externally owned images, test-only readback
 //
 // The backend never renders through direct Vulkan. Readback is the only Vulkan
 // operation performed on the render path, and it is test-only.
+//
+// Resource identity is owned by ResourceRegistry. Every lookup validates index,
+// generation, type and lifecycle state, so a stale id can never reach a freed
+// NRI object. Backend payloads are owned by the registry and deleted by its
+// destruction callback.
 #pragma once
 
 #include <vulkan/vulkan.h>
@@ -15,9 +20,9 @@
 
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
+#include "common/resource_registry.h"
 #include "common/semantic_rhi.h"
 #include "common/vk_bootstrap.h"
 
@@ -27,9 +32,6 @@ class NriContext;
 
 namespace detail {
 
-using ResourceId = harness::ResourceId;
-
-// Backend payloads stored behind a ResourceId.
 struct BufferPayload {
     nri::Buffer* buffer = nullptr;
     uint64_t size = 0;
@@ -37,7 +39,7 @@ struct BufferPayload {
 
 struct TexturePayload {
     nri::Texture* texture = nullptr;
-    bool external = false;   // imported; must not be destroyed by us
+    bool external = false;   // imported; the VkImage is not ours
     VkImage vkImage = VK_NULL_HANDLE;
     semantic::Format format = semantic::Format::kUnknown;
     uint32_t width = 0;
@@ -48,7 +50,7 @@ struct TexturePayload {
 
 struct ViewPayload {
     nri::Descriptor* descriptor = nullptr;
-    ResourceId texture;
+    ResourceId texture;      // the parent this view depends on
     semantic::ImageAspect aspect = semantic::ImageAspect::kColor;
     uint32_t baseLayer = 0;
     uint32_t layerNum = 1;
@@ -66,6 +68,18 @@ struct PipelinePayload {
 };
 
 }  // namespace detail
+
+// One reusable recording slot. A context is only reset once its command buffer
+// is known to have completed.
+struct CommandContext {
+    enum class State { kAvailable, kRecording, kExecutable, kSubmitted, kCompleted };
+
+    nri::CommandAllocator* allocator = nullptr;
+    nri::CommandBuffer* buffer = nullptr;
+    State state = State::kAvailable;
+    uint64_t submitValue = 0;   // the fence value this context signalled
+    uint64_t recordingToken = 0;
+};
 
 class NriDevice final : public semantic::Device {
 public:
@@ -118,40 +132,56 @@ public:
     const ResourceRegistry& Registry() const override { return registry_; }
     bool LastSubmitUsedNri() const override { return lastSubmitUsedNri_; }
 
-    // Releases everything. Safe to call with outstanding work.
+    // True when the current recording was poisoned by an invalid operation.
+    bool RecordingPoisoned() const { return poisoned_; }
+    // Number of submissions accepted but not yet observed complete. This is
+    // backend bookkeeping, not a claim about simultaneous GPU execution.
+    int OutstandingSubmissionCount() const;
+    // Number of command contexts currently available for recording.
+    int AvailableContextCount() const;
+    // The last rejection reason, for tests and diagnostics.
+    const std::string& LastRejection() const { return lastRejection_; }
+
+    // Abandons the current recording, releasing its references.
+    void AbandonRecording();
+
+    // Releases everything. Drains outstanding work first.
     void Shutdown();
 
 private:
-    // Records a GPU reference for every resource touched by the current
-    // command buffer, so it survives until submission completes.
-    void RetainForCurrentRecording(ResourceId id);
+    // Validates and retains a resource for the active recording. On failure the
+    // recording is poisoned so it cannot be submitted as if it succeeded.
+    bool Acquire(ResourceId id, ResourceType type, const char* what);
+    void Reject(const std::string& reason);
+
+    // Returns a context whose command buffer is known to be complete, or null
+    // when the pool is exhausted.
+    CommandContext* AcquireContext();
+    // Retires contexts whose submit value has completed.
+    void ReapCompletedContexts();
+    // Blocks until at least one context is available.
+    bool WaitForContext(std::string& error);
 
     VulkanContext* vk_ = nullptr;
     std::unique_ptr<NriContext> nri_;
 
     nri::Queue* queue_ = nullptr;
-    nri::CommandAllocator* cmdAllocator_ = nullptr;
-    nri::CommandBuffer* cmdBuffer_ = nullptr;
     nri::Fence* fence_ = nullptr;
     nri::PipelineLayout* activeLayout_ = nullptr;
     nri::Pipeline* activePipeline_ = nullptr;
 
     ResourceRegistry registry_;
 
-    // Payload lookup by resource index.
-    std::unordered_map<uint64_t, detail::BufferPayload> buffers_;
-    std::unordered_map<uint64_t, detail::TexturePayload> textures_;
-    std::unordered_map<uint64_t, detail::ViewPayload> views_;
-    std::unordered_map<uint64_t, detail::ShaderPayload> shaders_;
-    std::unordered_map<uint64_t, detail::PipelinePayload> pipelines_;
-
-    // Resources referenced by the command buffer currently being recorded.
-    std::vector<ResourceId> recordingRefs_;
-    bool recording_ = false;
+    std::vector<CommandContext> contexts_;
+    CommandContext* active_ = nullptr;
 
     uint64_t nextSubmitValue_ = 1;
     uint64_t completedValue_ = 0;
     bool lastSubmitUsedNri_ = false;
+
+    bool recording_ = false;
+    bool poisoned_ = false;
+    std::string lastRejection_;
 
     // Parameter bytes are copied here so the recorded command owns them.
     std::vector<unsigned char> paramScratch_;
