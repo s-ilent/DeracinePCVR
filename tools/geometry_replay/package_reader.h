@@ -112,6 +112,34 @@ struct Geometry {
     float bounds_max[3]{};
 };
 
+/// One shader-buffer binding the production path actually wrote.
+///
+/// This is the correspondence between a guest shader resource and the Vulkan descriptor the
+/// renderer bound. It is captured, not derived: `vk_binding` is the unified binding number the
+/// descriptor write used, and `resource_ref` names the package resource whose bytes were bound.
+///
+/// `resource_index` is the guest shader-resource index and `sharp_idx` is the flattened descriptor
+/// index. Neither equals `vk_binding`, and treating them as equal would bind the wrong resource.
+struct ShaderBinding {
+    /// The shader stage, in the producer's vocabulary.
+    u32 stage{};
+    /// The guest shader-resource index.
+    u32 resource_index{};
+    /// The flattened descriptor index.
+    u32 sharp_idx{};
+    /// The unified Vulkan binding number the descriptor write used.
+    u32 vk_binding{};
+    /// The offset and range the descriptor was written with.
+    u64 vk_offset{};
+    u64 vk_range{};
+    /// The producer's buffer identity.
+    u64 buffer_id{};
+    /// The package resource whose bytes were bound.
+    u32 resource_ref{};
+    /// The capture status, as the producer named it.
+    std::string status;
+};
+
 /// One descriptor the effective module declares, as the production layout allocated it.
 struct ShaderDescriptor {
     u32 set{};
@@ -243,6 +271,9 @@ struct Package {
     // Schema 4.
     std::vector<ShaderStage> shader_stages;
     std::vector<ShaderInterface> shader_interfaces;
+    /// The shader-buffer bindings the production path wrote, which is what connects a descriptor
+    /// to the resource whose bytes were bound.
+    std::vector<ShaderBinding> shader_bindings;
     PipelineState pipeline_state;
     ReferenceOutput reference;
     /// The capture session the package belongs to, when the producer recorded one.

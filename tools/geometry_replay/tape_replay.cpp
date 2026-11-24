@@ -30,6 +30,7 @@
 #include <vulkan/vulkan.h>
 
 #include "draw_bounds.h"
+#include "effective_shader.h"
 #include "draw_identity.h"
 #include "package_reader.h"
 
@@ -599,7 +600,9 @@ private:
 int main(int argc, char** argv) {
     if (argc < 2) {
         std::cerr << "usage: deracine_tape_replay <tape-and-package-directory> [output-prefix] "
-                     "[--substitute-viewport] [--substitute-render-targets]\n";
+                     "[--shader-mode diagnostic|effective] [--substitute-viewport] "
+                     "[--substitute-render-targets] [--synthetic-fixture] [--untextured] "
+                     "[--instance-id]\n";
         return 2;
     }
     const std::string directory = argv[1];
@@ -609,6 +612,7 @@ int main(int argc, char** argv) {
     bool force_untextured = false;
     bool instance_id_mode = false;
     bool synthetic_fixture = false;
+    bool shader_mode_effective = false;
     for (int i = 2; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--substitute-viewport") {
@@ -625,6 +629,16 @@ int main(int argc, char** argv) {
             // the instance index so a mutation of the instance range is visible. The captured draw
             // uses two instances of the same geometry, so without this the two are identical.
             instance_id_mode = true;
+        } else if (arg == "--shader-mode" && i + 1 < argc) {
+            const std::string mode = argv[++i];
+            if (mode == "effective") {
+                shader_mode_effective = true;
+            } else if (mode == "diagnostic") {
+                shader_mode_effective = false;
+            } else {
+                std::cerr << "--shader-mode must be diagnostic or effective, not " << mode << "\n";
+                return 2;
+            }
         } else if (arg == "--untextured") {
             // A resource mutation: the semantic tape is untouched, only the sampling is disabled.
             // The draw arguments must be identical to the textured run.
@@ -705,7 +719,7 @@ int main(int argc, char** argv) {
 
     // --- Read the resource pkg -------------------------------------------------------------
     ReplayPackage pkg{};
-    if (!package::Read(directory, pkg, error)) {
+    if (!package::Read(directory, pkg, error, /*require_effective=*/shader_mode_effective)) {
         std::cerr << "pkg read failed: " << error << "\n";
         return 1;
     }
@@ -726,6 +740,43 @@ int main(int argc, char** argv) {
         textured != nullptr ? package::FindSampler(pkg, *textured) : nullptr;
     const bool textured_mode = !force_untextured && textured != nullptr && sampler != nullptr &&
                                pkg.uv.looks_like_uv && pkg.readiness.geometry_ready;
+
+    // --- Effective shader resolution -----------------------------------------------------------
+    // In effective mode the package's own captured modules are the shaders. Every check is a
+    // refusal rather than a fallback: substituting a diagnostic shader here would present a test
+    // render as original shader execution, which is the one thing this mode must never do.
+    effective::Resolution effective_shaders{};
+    if (shader_mode_effective) {
+        effective_shaders = effective::Resolve(pkg);
+        std::cout << "shader_mode: effective\n";
+        if (effective_shaders.problem != effective::Problem::None) {
+            std::cerr << "effective shader resolution failed: "
+                      << effective::ProblemName(effective_shaders.problem) << "\n";
+            std::cerr << "  " << effective_shaders.reason << "\n";
+            std::cerr << "  effective mode does not fall back to a diagnostic shader\n";
+            return 1;
+        }
+        for (const auto& stage : effective_shaders.stages) {
+            std::cout << "stage: logical=" << stage.logical_stage
+                      << " program_hash=0x" << std::hex << stage.program_hash << std::dec
+                      << " perm_idx=" << stage.permutation_index
+                      << " perm_hash=0x" << std::hex << stage.permutation_hash << std::dec
+                      << " patched=" << (stage.patched ? "yes" : "no")
+                      << " bytes=" << stage.bytes.size()
+                      << " descriptors=" << stage.declared.size() << "\n";
+        }
+        std::cout << "bindings: " << effective_shaders.bindings.size()
+                  << " push_constant=" << effective_shaders.push_constant_size << "\n";
+        for (const auto& binding : effective_shaders.bindings) {
+            std::cout << "binding: set=" << binding.set << " binding=" << binding.binding
+                      << " type=" << binding.descriptor_type << " count=" << binding.count
+                      << " stages=" << binding.stage_flags
+                      << " resource=" << binding.resource_ref
+                      << " range=" << binding.range << "\n";
+        }
+    } else {
+        std::cout << "shader_mode: diagnostic\n";
+    }
 
     // --- Resolve the tape's resources against the pkg --------------------------------------
     // The tape's resource ids are backend-neutral. The pkg reference is what connects them to
@@ -1332,16 +1383,47 @@ int main(int argc, char** argv) {
         return module;
     };
     const bool instid = textured_mode && instance_id_mode;
-    VkShaderModule vert_module =
-        make_module(instid ? kTapeInstidVertSpv : (textured_mode ? kTapeTexVertSpv : kVertSpv),
-                    instid ? sizeof(kTapeInstidVertSpv) / sizeof(u32)
-                           : (textured_mode ? sizeof(kTapeTexVertSpv) / sizeof(u32)
-                                            : sizeof(kVertSpv) / sizeof(u32)));
-    VkShaderModule frag_module =
-        make_module(instid ? kTapeInstidFragSpv : (textured_mode ? kTapeTexFragSpv : kFragSpv),
-                    instid ? sizeof(kTapeInstidFragSpv) / sizeof(u32)
-                           : (textured_mode ? sizeof(kTapeTexFragSpv) / sizeof(u32)
-                                            : sizeof(kFragSpv) / sizeof(u32)));
+
+    // In effective mode the modules come from the package. They are the shaders this run executes,
+    // and the diagnostic pair is not a fallback: resolution already refused a package that could
+    // not supply them.
+    const auto make_module_from_bytes = [&ctx](const std::vector<u8>& bytes) -> VkShaderModule {
+        if (bytes.empty() || bytes.size() % 4 != 0) {
+            return VK_NULL_HANDLE;
+        }
+        VkShaderModuleCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        info.codeSize = bytes.size();
+        info.pCode = reinterpret_cast<const u32*>(bytes.data());
+        VkShaderModule module{};
+        if (vkCreateShaderModule(ctx.device, &info, nullptr, &module) != VK_SUCCESS) {
+            return VK_NULL_HANDLE;
+        }
+        return module;
+    };
+
+    VkShaderModule vert_module{};
+    VkShaderModule frag_module{};
+    if (shader_mode_effective) {
+        for (const auto& stage : effective_shaders.stages) {
+            if (stage.logical_stage == 0) {
+                vert_module = make_module_from_bytes(stage.bytes);
+            } else if (stage.logical_stage == 4) {
+                frag_module = make_module_from_bytes(stage.bytes);
+            }
+        }
+    } else {
+        vert_module =
+            make_module(instid ? kTapeInstidVertSpv : (textured_mode ? kTapeTexVertSpv : kVertSpv),
+                        instid ? sizeof(kTapeInstidVertSpv) / sizeof(u32)
+                               : (textured_mode ? sizeof(kTapeTexVertSpv) / sizeof(u32)
+                                                : sizeof(kVertSpv) / sizeof(u32)));
+        frag_module =
+            make_module(instid ? kTapeInstidFragSpv : (textured_mode ? kTapeTexFragSpv : kFragSpv),
+                        instid ? sizeof(kTapeInstidFragSpv) / sizeof(u32)
+                               : (textured_mode ? sizeof(kTapeTexFragSpv) / sizeof(u32)
+                                                : sizeof(kFragSpv) / sizeof(u32)));
+    }
     if (vert_module == VK_NULL_HANDLE || frag_module == VK_NULL_HANDLE) {
         std::cerr << "shader module creation failed\n";
         return 1;
@@ -1461,11 +1543,42 @@ int main(int argc, char** argv) {
         }
     }
 
+    // In effective mode the descriptor set layout comes from the resolved bindings, which came from
+    // the modules themselves and the captured production bindings. It is not a fixed layout: the
+    // modules declare what they need, and a package whose captured interface disagrees with them
+    // was already refused.
+    VkDescriptorSetLayout effective_set_layout{};
+    std::vector<VkBuffer> effective_buffers;
+    std::vector<VkDeviceMemory> effective_memories;
+    std::vector<VkDescriptorSetLayoutBinding> effective_bindings;
+    if (shader_mode_effective) {
+        for (const auto& binding : effective_shaders.bindings) {
+            VkDescriptorSetLayoutBinding entry{};
+            entry.binding = binding.binding;
+            entry.descriptorType = static_cast<VkDescriptorType>(binding.descriptor_type);
+            entry.descriptorCount = binding.count;
+            entry.stageFlags = binding.stage_flags;
+            effective_bindings.push_back(entry);
+        }
+        VkDescriptorSetLayoutCreateInfo set_info{};
+        set_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        set_info.bindingCount = static_cast<u32>(effective_bindings.size());
+        set_info.pBindings = effective_bindings.data();
+        if (vkCreateDescriptorSetLayout(ctx.device, &set_info, nullptr, &effective_set_layout) !=
+            VK_SUCCESS) {
+            std::cerr << "effective descriptor set layout creation failed\n";
+            return 1;
+        }
+    }
+
     VkPipelineLayoutCreateInfo layout_info{};
     layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     layout_info.pushConstantRangeCount = 1;
     layout_info.pPushConstantRanges = &push_range;
-    if (textured_mode) {
+    if (shader_mode_effective) {
+        layout_info.setLayoutCount = 1;
+        layout_info.pSetLayouts = &effective_set_layout;
+    } else if (textured_mode) {
         layout_info.setLayoutCount = 1;
         layout_info.pSetLayouts = &descriptor_layout;
     }
@@ -1729,6 +1842,116 @@ int main(int argc, char** argv) {
             vkUpdateDescriptorSets(ctx.device, 1, &write, 0, nullptr);
         }
 
+        // --- Effective-mode descriptor set -----------------------------------------------------
+        // Every binding the modules declare is written from the resource the captured binding
+        // named. A buffer binding whose resource the package does not carry was already refused, so
+        // there is no path here that binds a dummy to make the draw succeed.
+        if (shader_mode_effective) {
+            std::map<u32, u32> type_counts;
+            for (const auto& binding : effective_shaders.bindings) {
+                type_counts[binding.descriptor_type] += binding.count;
+            }
+            std::vector<VkDescriptorPoolSize> pool_sizes;
+            for (const auto& [type, count] : type_counts) {
+                pool_sizes.push_back({static_cast<VkDescriptorType>(type), count});
+            }
+            VkDescriptorPoolCreateInfo pool_ci{};
+            pool_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+            pool_ci.maxSets = 1;
+            pool_ci.poolSizeCount = static_cast<u32>(pool_sizes.size());
+            pool_ci.pPoolSizes = pool_sizes.data();
+            if (vkCreateDescriptorPool(ctx.device, &pool_ci, nullptr, &descriptor_pool) !=
+                VK_SUCCESS) {
+                std::cerr << "effective descriptor pool creation failed\n";
+                return 1;
+            }
+            VkDescriptorSetAllocateInfo set_alloc{};
+            set_alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            set_alloc.descriptorPool = descriptor_pool;
+            set_alloc.descriptorSetCount = 1;
+            set_alloc.pSetLayouts = &effective_set_layout;
+            if (vkAllocateDescriptorSets(ctx.device, &set_alloc, &descriptor_set) != VK_SUCCESS) {
+                std::cerr << "effective descriptor set allocation failed\n";
+                return 1;
+            }
+
+            // The buffer infos must outlive the update call, so they are held in a vector sized to
+            // the binding count rather than in a loop-local.
+            std::vector<VkDescriptorBufferInfo> buffer_infos;
+            buffer_infos.reserve(effective_shaders.bindings.size());
+            std::vector<VkDescriptorImageInfo> image_infos;
+            image_infos.reserve(effective_shaders.bindings.size());
+            std::vector<VkWriteDescriptorSet> writes;
+            writes.reserve(effective_shaders.bindings.size());
+            for (const auto& binding : effective_shaders.bindings) {
+                VkWriteDescriptorSet write{};
+                write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                write.dstSet = descriptor_set;
+                write.dstBinding = binding.binding;
+                write.descriptorCount = binding.count;
+                write.descriptorType = static_cast<VkDescriptorType>(binding.descriptor_type);
+
+                if (binding.descriptor_type == 6 || binding.descriptor_type == 7) {
+                    const package::Resource* resource =
+                        package::FindResource(pkg, binding.resource_ref);
+                    if (resource == nullptr) {
+                        std::cerr << "binding " << binding.binding << " names resource "
+                                  << binding.resource_ref << ", which is absent\n";
+                        return 1;
+                    }
+                    VkBuffer buffer{};
+                    VkDeviceMemory memory{};
+                    if (!CreateBuffer(ctx, resource->bytes.size(),
+                                      binding.descriptor_type == 6
+                                          ? VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT
+                                          : VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                      buffer, memory)) {
+                        std::cerr << "effective buffer creation failed\n";
+                        return 1;
+                    }
+                    void* mapped = nullptr;
+                    vkMapMemory(ctx.device, memory, 0, resource->bytes.size(), 0, &mapped);
+                    std::memcpy(mapped, resource->bytes.data(), resource->bytes.size());
+                    vkUnmapMemory(ctx.device, memory);
+                    effective_buffers.push_back(buffer);
+                    effective_memories.push_back(memory);
+
+                    VkDescriptorBufferInfo info{};
+                    info.buffer = buffer;
+                    info.offset = binding.offset;
+                    info.range = binding.range != 0 ? binding.range : resource->bytes.size();
+                    buffer_infos.push_back(info);
+                    write.pBufferInfo = &buffer_infos.back();
+                } else if (binding.descriptor_type == 1 || binding.descriptor_type == 2) {
+                    // A sampled image is written from the package's captured texture. Binding a
+                    // placeholder would present a test render as a captured one, so a package
+                    // without a usable texture is refused rather than satisfied.
+                    if (texture_view == VK_NULL_HANDLE || vk_sampler == VK_NULL_HANDLE) {
+                        std::cerr << "binding " << binding.binding
+                                  << " needs a sampled image, and this package carries no captured "
+                                     "texture with a verified sampler\n";
+                        return 1;
+                    }
+                    VkDescriptorImageInfo info{};
+                    info.sampler = binding.descriptor_type == 1 ? vk_sampler : VK_NULL_HANDLE;
+                    info.imageView = texture_view;
+                    info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                    image_infos.push_back(info);
+                    write.pImageInfo = &image_infos.back();
+                } else {
+                    std::cerr << "binding " << binding.binding << " has descriptor type "
+                              << binding.descriptor_type
+                              << ", which this renderer cannot bind\n";
+                    return 1;
+                }
+                writes.push_back(write);
+            }
+            vkUpdateDescriptorSets(ctx.device, static_cast<u32>(writes.size()), writes.data(), 0,
+                                   nullptr);
+        }
+
         // The texture upload is recorded before the render pass begins. A buffer-to-image copy and
         // its layout barriers cannot be issued inside a subpass, so doing it there is a validation
         // error and the image would not be in a sampled layout when the shader reads it.
@@ -1913,9 +2136,17 @@ int main(int argc, char** argv) {
     std::cout << "\n-- provenance separation --\n";
     std::cout << "provenance: " << (synthetic_fixture ? "synthetic_fixture" : "original_tape")
               << "\n";
+    std::cout << "shader_mode: " << (shader_mode_effective ? "effective" : "diagnostic") << "\n";
     std::cout << "semantic_commands: recovered from the UE4 deferred command record\n";
     std::cout << "resource_contents: supplied by the SC-09H pkg (shadPS4-exported)\n";
-    std::cout << "shaders: diagnostic substitute, not the game's\n";
+    if (shader_mode_effective) {
+        std::cout << "shaders: the package's own effective modules, "
+                  << effective_shaders.stages.size() << " stages\n";
+        std::cout << "shaders: these are captured-style modules from a synthetic fixture, not a "
+                     "verified original-game capture\n";
+    } else {
+        std::cout << "shaders: diagnostic substitute, not the game's\n";
+    }
     if (!tape.unresolved.empty()) {
         std::cout << "unresolved_dependencies:\n";
         for (const auto& dependency : tape.unresolved) {

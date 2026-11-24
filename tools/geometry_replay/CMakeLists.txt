@@ -33,7 +33,7 @@ add_executable(deracine_renderpass_capture_test renderpass_capture_test.cpp)
 
 # The semantic-tape replay. Same dependency discipline as the diagnostic replay: the Vulkan loader,
 # the C++ standard library and a JSON parser, nothing from the emulator.
-add_executable(deracine_tape_replay tape_replay.cpp tape.cpp draw_identity.cpp package_reader.cpp draw_bounds.cpp index_bridge_reader.cpp)
+add_executable(deracine_tape_replay tape_replay.cpp tape.cpp draw_identity.cpp package_reader.cpp draw_bounds.cpp index_bridge_reader.cpp effective_shader.cpp spirv_interface.cpp)
 
 # Every executable in this project. One list, because a second assignment would silently drop the
 # targets the first named and leave them without includes or link settings.

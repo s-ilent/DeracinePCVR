@@ -348,6 +348,24 @@ bool Read(const std::string& directory, Package& out, std::string& error,
             out.shader_stages.push_back(std::move(stage));
         }
 
+        // --- Shader-buffer bindings ------------------------------------------------------------
+        // The production path's own record of which resource each descriptor bound. This is the
+        // correspondence a consumer needs; deriving it from the guest resource index would bind
+        // the wrong resource, because that index is not the Vulkan binding number.
+        for (const auto& entry : doc.value("bindings", nlohmann::json::array())) {
+            ShaderBinding binding{};
+            binding.stage = entry.value("stage", 0u);
+            binding.resource_index = entry.value("resource_index", 0u);
+            binding.sharp_idx = entry.value("sharp_idx", 0u);
+            binding.vk_binding = entry.value("vk_binding", 0u);
+            binding.vk_offset = entry.value("vk_offset", 0ull);
+            binding.vk_range = entry.value("vk_range", 0ull);
+            binding.buffer_id = entry.value("buffer_id", 0ull);
+            binding.resource_ref = entry.value("resource_ref", 0u);
+            binding.status = entry.value("status", std::string{});
+            out.shader_bindings.push_back(std::move(binding));
+        }
+
         // --- Schema 4: descriptor interfaces ---------------------------------------------------
         for (const auto& entry : doc.value("shader_interfaces", nlohmann::json::array())) {
             ShaderInterface interface{};
