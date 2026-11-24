@@ -17,7 +17,11 @@ nri::Format ToNriFormat(semantic::Format f) {
         case semantic::Format::kRGBA8Unorm: return nri::Format::RGBA8_UNORM;
         case semantic::Format::kRGBA8Srgb: return nri::Format::RGBA8_SRGB;
         case semantic::Format::kR32G32B32A32Float: return nri::Format::RGBA32_SFLOAT;
+        case semantic::Format::kR32G32B32Float: return nri::Format::RGB32_SFLOAT;
         case semantic::Format::kR32G32Float: return nri::Format::RG32_SFLOAT;
+        case semantic::Format::kRGBA16Float: return nri::Format::RGBA16_SFLOAT;
+        case semantic::Format::kBC3Unorm: return nri::Format::BC3_RGBA_UNORM;
+        case semantic::Format::kBC3Srgb: return nri::Format::BC3_RGBA_SRGB;
         case semantic::Format::kD32Float: return nri::Format::D32_SFLOAT;
         case semantic::Format::kD24UnormS8: return nri::Format::D24_UNORM_S8_UINT;
         case semantic::Format::kD32FloatS8: return nri::Format::D32_SFLOAT_S8_UINT;
@@ -30,7 +34,11 @@ VkFormat ToVkFormat(semantic::Format f) {
         case semantic::Format::kRGBA8Unorm: return VK_FORMAT_R8G8B8A8_UNORM;
         case semantic::Format::kRGBA8Srgb: return VK_FORMAT_R8G8B8A8_SRGB;
         case semantic::Format::kR32G32B32A32Float: return VK_FORMAT_R32G32B32A32_SFLOAT;
+        case semantic::Format::kR32G32B32Float: return VK_FORMAT_R32G32B32_SFLOAT;
         case semantic::Format::kR32G32Float: return VK_FORMAT_R32G32_SFLOAT;
+        case semantic::Format::kRGBA16Float: return VK_FORMAT_R16G16B16A16_SFLOAT;
+        case semantic::Format::kBC3Unorm: return VK_FORMAT_BC3_UNORM_BLOCK;
+        case semantic::Format::kBC3Srgb: return VK_FORMAT_BC3_SRGB_BLOCK;
         case semantic::Format::kD32Float: return VK_FORMAT_D32_SFLOAT;
         case semantic::Format::kD24UnormS8: return VK_FORMAT_D24_UNORM_S8_UINT;
         case semantic::Format::kD32FloatS8: return VK_FORMAT_D32_SFLOAT_S8_UINT;
@@ -615,7 +623,9 @@ ResourceId NriDevice::CreateGraphicsPipeline(const semantic::GraphicsPipelineDes
     omd.colors = colors.empty() ? nullptr : colors.data();
     omd.colorNum = static_cast<uint32_t>(colors.size());
     omd.depthStencilFormat = ToNriFormat(desc.depthStencilFormat);
-    omd.depth.compareOp = nri::CompareOp::ALWAYS;
+    // A depth-tested pipeline compares with LESS_OR_EQUAL, matching the
+    // reference replay's diagnostic depth state.
+    omd.depth.compareOp = desc.depthTest ? nri::CompareOp::LESS_EQUAL : nri::CompareOp::ALWAYS;
     omd.depth.write = desc.depthWrite;
     omd.viewMask = desc.viewMask;
     if (desc.viewMask != 0) omd.multiview = nri::Multiview::LAYER_BASED;
@@ -1090,6 +1100,26 @@ void NriDevice::BeginRenderPass(const semantic::RenderPassDesc& desc) {
     rd.colors = colors.empty() ? nullptr : colors.data();
     rd.colorNum = static_cast<uint32_t>(colors.size());
     rd.viewMask = desc.viewMask;
+
+    nri::AttachmentDesc depthAttachment{};
+    if (desc.hasDepth) {
+        LookupError derr = LookupError::kOk;
+        detail::ViewPayload* dv = registry_.Payload<detail::ViewPayload>(
+            desc.depth.view, ResourceType::kTextureView, &derr);
+        if (dv == nullptr) {
+            Reject(std::string("BeginRenderPass: depth view ") + LookupErrorName(derr));
+            return;
+        }
+        if (!Acquire(desc.depth.view, ResourceType::kTextureView, "BeginRenderPass(depth)")) return;
+        depthAttachment.descriptor = dv->descriptor;
+        depthAttachment.loadOp = (desc.depth.loadOp == semantic::LoadOp::kClear)
+                                     ? nri::LoadOp::CLEAR : nri::LoadOp::LOAD;
+        depthAttachment.storeOp = (desc.depth.storeOp == semantic::StoreOp::kStore)
+                                      ? nri::StoreOp::STORE : nri::StoreOp::DISCARD;
+        depthAttachment.clearValue.depthStencil.depth = desc.depth.clearDepth;
+        depthAttachment.clearValue.depthStencil.stencil = 0;
+        rd.depth = depthAttachment;   // a value, not a pointer
+    }
 
     nri_->core().CmdBeginRendering(*active_->buffer, rd);
 }

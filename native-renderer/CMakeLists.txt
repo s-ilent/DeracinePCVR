@@ -32,6 +32,24 @@ endif()
 
 find_package(Vulkan REQUIRED)
 
+# The capture packages are JSON. Reuse the tree's own nlohmann header rather than
+# adding a dependency.
+set(JSON_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party" CACHE PATH "nlohmann/json include dir")
+if(NOT EXISTS "${JSON_INCLUDE_DIR}/nlohmann/json.hpp")
+  set(_json_candidates
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../src/externals/json/single_include/nlohmann"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../src/externals/json/include/nlohmann"
+  )
+  foreach(_c ${_json_candidates})
+    if(EXISTS "${_c}/json.hpp")
+      # Strip the trailing /nlohmann so <nlohmann/json.hpp> resolves.
+      get_filename_component(_parent "${_c}" DIRECTORY)
+      set(JSON_INCLUDE_DIR "${_parent}")
+      break()
+    endif()
+  endforeach()
+endif()
+
 # ---------------------------------------------------------------------------
 # Shared support library: Vulkan bootstrap, NRI adoption, diagnostics.
 # ---------------------------------------------------------------------------
@@ -43,11 +61,13 @@ add_library(harness_core STATIC
   src/common/shader_compile.cpp
   src/common/resource_registry.cpp
   src/backend/nri_device.cpp
+  src/replay/package.cpp
 )
 target_include_directories(harness_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${NRI_INCLUDE_DIR}
   ${Vulkan_INCLUDE_DIRS}
+  ${JSON_INCLUDE_DIR}
 )
 target_link_libraries(harness_core PUBLIC Vulkan::Vulkan)
 target_compile_definitions(harness_core PUBLIC
@@ -92,5 +112,26 @@ foreach(t ${HARNESS_TESTS})
   )
   add_test(NAME ${t} COMMAND ${t})
 endforeach()
+
+# ---------------------------------------------------------------------------
+# The capture replay executable. Consumes an existing SC-09H / SC-10S package.
+# ---------------------------------------------------------------------------
+add_executable(deracine_nri_replay src/replay/deracine_nri_replay.cpp)
+target_link_libraries(deracine_nri_replay PRIVATE harness_core)
+target_include_directories(deracine_nri_replay PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${NRI_INCLUDE_DIR}
+  ${Vulkan_INCLUDE_DIRS}
+  ${JSON_INCLUDE_DIR}
+)
+if(TARGET NRI_VK)
+  add_dependencies(deracine_nri_replay NRI_VK)
+endif()
+target_link_libraries(deracine_nri_replay PRIVATE
+  "${NRI_LIB_DIR}/NRI.lib"
+  "${NRI_BUILD_DIR}/NRI_Shared.lib"
+  "${NRI_BUILD_DIR}/NRI_VK.lib"
+  "${NRI_BUILD_DIR}/NRI_Validation.lib"
+)
 
 enable_testing()

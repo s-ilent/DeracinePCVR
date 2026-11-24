@@ -37,7 +37,11 @@ enum class Format {
     kRGBA8Unorm,
     kRGBA8Srgb,
     kR32G32B32A32Float,
+    kR32G32B32Float,
     kR32G32Float,
+    kRGBA16Float,
+    kBC3Unorm,
+    kBC3Srgb,
     kD32Float,
     kD24UnormS8,
     kD32FloatS8,
@@ -202,8 +206,18 @@ struct GraphicsPipelineDesc {
     uint32_t viewMask = 0;   // 0 = sequential; nonzero = multiview
 };
 
+struct DepthAttachment {
+    ResourceId view;
+    LoadOp loadOp = LoadOp::kClear;
+    StoreOp storeOp = StoreOp::kStore;
+    float clearDepth = 1.0f;
+};
+
 struct RenderPassDesc {
     std::vector<ColorAttachment> colorAttachments;
+    // Optional depth attachment. Present when the captured workload needs depth.
+    bool hasDepth = false;
+    DepthAttachment depth;
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t layerCount = 1;
