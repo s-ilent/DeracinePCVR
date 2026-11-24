@@ -126,6 +126,11 @@ constexpr std::array<u8, 16> BinderPrologue = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x5
 constexpr std::array<u8, 16> ProviderPrologue = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56,
                                                  0x41, 0x55, 0x41, 0x54, 0x53, 0x50, 0x49, 0x89};
 
+/// The descriptor adapter prologue. It also pushes rax, then begins with a byte compare against a
+/// global flag.
+constexpr std::array<u8, 16> AdapterPrologue = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56,
+                                                0x41, 0x55, 0x41, 0x54, 0x53, 0x50, 0x80, 0x3d};
+
 struct CaptureState {
     std::atomic<bool> enabled{};
     std::atomic<bool> exported{};
@@ -154,6 +159,10 @@ struct CaptureState {
     std::vector<BindingRecord> records;
     std::vector<BinderRecord> binder_records;
     std::vector<GroupedRecord> grouped_records;
+    std::vector<ProviderChainRecord> provider_chains;
+    std::atomic<u32> adapter_calls{};
+    std::atomic<u32> adapter_unmatched{};
+    std::atomic<u32> writer_calls_32{};
     std::array<HelperStats, GroupedHelpers.size()> helper_stats{};
     std::atomic<u32> grouped_dropped{};
     std::atomic<u32> binder_no_pending{};
@@ -170,9 +179,24 @@ struct CaptureState {
     GuestEntryObserverHandle binder_handle{};
     std::array<GuestEntryObserverHandle, GroupedHelpers.size()> grouped_handles{};
     GuestEntryObserverHandle upload_handle{};
+    GuestEntryObserverHandle adapter_handle{};
 };
 
 CaptureState g_state{};
+
+[[nodiscard]] const char* ChainStatusName(ChainStatus status) noexcept {
+    switch (status) {
+    case ChainStatus::BinderOnly:
+        return "binder-only";
+    case ChainStatus::AdapterMatched:
+        return "adapter-matched";
+    case ChainStatus::Complete:
+        return "complete";
+    case ChainStatus::AdapterUnmatched:
+        return "adapter-unmatched";
+    }
+    return "unknown";
+}
 
 [[nodiscard]] const char* UploadProvenanceName(UploadProvenance provenance) noexcept {
     switch (provenance) {
@@ -564,6 +588,172 @@ PS4_SYSV_ABI void UploadCallerObserver(const GuestEntryRegisterFrame* frame, voi
     }
 }
 
+/// A provider result the binder produced and is about to hand to the adapter.
+///
+/// The binder calls the virtual provider and passes the return value straight into the adapter's
+/// rsi. Recording it here, keyed by thread, lets the adapter observer prove it consumed *that*
+/// result rather than one that merely appeared nearby.
+struct PendingProvider {
+    VAddr provider_result{};
+    VAddr selected_object{};
+    u64 object_vptr{};
+    VAddr provider_target{};
+    u64 binder_sequence{};
+    u8 helper_index{};
+    VAddr context{};
+    VAddr shader_resource{};
+    u64 shader_hash{};
+    bool shader_hash_valid{};
+};
+
+struct ProviderThreadState {
+    std::array<PendingProvider, MaxUploadNesting> stack{};
+    size_t depth{};
+    u32 overflow{};
+};
+
+thread_local ProviderThreadState g_provider_thread{};
+
+/// Pushes a provider result the binder just received.
+void PushPendingProvider(const PendingProvider& pending) noexcept {
+    ProviderThreadState& state = g_provider_thread;
+    if (state.depth >= MaxUploadNesting) {
+        // Drop the oldest: a stale entry that never reached an adapter is worth less than the
+        // invocation that just happened.
+        for (size_t i = 1; i < MaxUploadNesting; ++i) {
+            state.stack[i - 1] = state.stack[i];
+        }
+        state.depth = MaxUploadNesting - 1;
+        ++state.overflow;
+    }
+    state.stack[state.depth++] = pending;
+}
+
+/// Consumes the pending provider whose result the adapter received.
+///
+/// The binder observer runs at binder entry, before the virtual call, so it cannot know the result
+/// in advance. The match is therefore made on the relationship the provider itself establishes:
+/// the adapter's rsi must be a pointer the pending object can produce. Two forms are accepted, and
+/// which one matched is recorded rather than assumed:
+///
+///   inline   provider_result == selected_object + 0x60   (the 0x0CF9E20 method returns this)
+///   indirect provider_result is a pointer read from the object's own provider chain
+///
+/// A pending entry that matches neither is left in place, so an unrelated adapter call cannot
+/// claim it.
+[[nodiscard]] bool TakePendingProvider(VAddr provider_result, PendingProvider& out,
+                                       u8& match_kind) noexcept {
+    ProviderThreadState& state = g_provider_thread;
+    if (state.depth == 0) {
+        return false;
+    }
+    for (size_t i = state.depth; i-- > 0;) {
+        const PendingProvider& candidate = state.stack[i];
+        if (candidate.selected_object == 0) {
+            continue;
+        }
+        if (provider_result == candidate.selected_object + ProviderInlineResultOffset) {
+            out = candidate;
+            match_kind = 1;
+            state.depth = i;
+            return true;
+        }
+        // The delegating class returns whatever its inner object's +0x38 produced. That inner
+        // object is read from the selected object itself, so the match is still causal: the result
+        // must be the inline result of the object this selected object delegates to.
+        VAddr inner{};
+        if (ReadGuestValue(candidate.selected_object + ProviderDelegateObjectOffset, inner) &&
+            inner != 0 && provider_result == inner + ProviderInlineResultOffset) {
+            out = candidate;
+            match_kind = 2;
+            state.depth = i;
+            return true;
+        }
+    }
+    return false;
+}
+
+/// The descriptor adapter observer.
+///
+/// ABI, verified from the original machine code at 0x0CC13B0:
+///   rdi = graphics context, rsi = provider result, edx = logical API slot, ecx = count.
+///
+/// The adapter advances rsi by 0x18 and tail-jumps to the 32-byte resource writer with
+/// r8 = *(provider_result+0x18). Observing here captures the provider result and the descriptor
+/// source in one place, at the boundary where the original code itself uses them.
+PS4_SYSV_ABI void AdapterObserver(const GuestEntryRegisterFrame* frame, void*) noexcept {
+    try {
+        if (frame == nullptr) {
+            return;
+        }
+        g_state.adapter_calls.fetch_add(1, std::memory_order_relaxed);
+
+        const VAddr context = frame->rdi;
+        const VAddr provider_result = frame->rsi;
+        const u32 api_slot = static_cast<u32>(frame->rdx);
+        const u32 count = static_cast<u32>(frame->rcx);
+        if (context == 0 || provider_result == 0) {
+            return;
+        }
+
+        PendingProvider matched_provider{};
+        u8 match_kind = 0;
+        if (!TakePendingProvider(provider_result, matched_provider, match_kind)) {
+            g_state.adapter_unmatched.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+
+        // The descriptor pointer the adapter itself will read.
+        VAddr descriptor_source{};
+        const bool descriptor_readable =
+            ReadGuestValue(provider_result + ProviderResultDescriptor, descriptor_source) &&
+            descriptor_source != 0;
+
+        ProviderChainRecord record{};
+        record.sequence = g_state.next_sequence.fetch_add(1, std::memory_order_relaxed) + 1;
+        record.native_thread_id = CurrentNativeThreadId();
+        record.guest_thread_id = CurrentGuestThreadId();
+        record.binder_sequence = matched_provider.binder_sequence;
+        record.helper_index = matched_provider.helper_index;
+        record.context = matched_provider.context;
+        record.shader_resource = matched_provider.shader_resource;
+        record.selected_object = matched_provider.selected_object;
+        record.object_vptr = matched_provider.object_vptr;
+        record.provider_target = matched_provider.provider_target;
+        record.provider_result = provider_result;
+        record.descriptor_source = descriptor_source;
+        record.adapter_address = g_state.module_base + DescriptorAdapterRva;
+        record.adapter_api_slot = api_slot;
+        record.adapter_count = count;
+        record.writer_target = g_state.module_base + ResourceWriter32Rva;
+        record.shader_hash = matched_provider.shader_hash;
+        record.shader_hash_valid = matched_provider.shader_hash_valid;
+        record.status = ChainStatus::AdapterMatched;
+
+        // The descriptor bytes by value, at the boundary the adapter uses them.
+        if (descriptor_readable) {
+            const u32 bytes = std::min<u32>(count * 32, 32);
+            if (ReadGuest(descriptor_source, record.descriptor.data(), bytes)) {
+                record.descriptor_bytes = bytes;
+                u64 fingerprint = 0xcbf29ce484222325ull;
+                for (u32 b = 0; b < bytes; ++b) {
+                    fingerprint ^= record.descriptor[b];
+                    fingerprint *= 0x100000001b3ull;
+                }
+                record.descriptor_fingerprint = fingerprint;
+                record.status = ChainStatus::Complete;
+            }
+        }
+
+        std::scoped_lock lock{g_state.mutex};
+        if (g_state.provider_chains.size() >= MaxGroupedRecords) {
+            return;
+        }
+        g_state.provider_chains.push_back(record);
+    } catch (...) {
+    }
+}
+
 /// The grouped-binder observer, one instance per helper.
 ///
 /// Every invocation is counted, so a zero-pending result is a measurement rather than an absence of
@@ -808,6 +998,25 @@ PS4_SYSV_ABI void GroupedHelperObserver(const GuestEntryRegisterFrame* frame, vo
         record.shader_source = shader_source;
         g_state.grouped_records.push_back(record);
         ++g_state.helper_stats[index].records_kept;
+
+        // The binder is about to call the virtual provider and hand its return value straight to
+        // the adapter. Record what it expects, so the adapter observer can prove it consumed this
+        // exact result rather than one that merely appeared nearby.
+        //
+        // The provider result is not known until the call returns, so the pending entry is keyed
+        // by the object and target; the adapter observer matches on the result pointer it receives.
+        PendingProvider provider_pending{};
+        provider_pending.provider_result = 0;
+        provider_pending.selected_object = selected_object;
+        provider_pending.object_vptr = object_vptr;
+        provider_pending.provider_target = provider_target;
+        provider_pending.binder_sequence = record.sequence;
+        provider_pending.helper_index = static_cast<u8>(index);
+        provider_pending.context = context;
+        provider_pending.shader_resource = shader_resource;
+        provider_pending.shader_hash = shader_hash;
+        provider_pending.shader_hash_valid = shader_hash_valid;
+        PushPendingProvider(provider_pending);
     } catch (...) {
     }
 }
@@ -833,6 +1042,11 @@ std::span<const GroupedRecord> GroupedRecords() noexcept {
                                           g_state.grouped_records.size()};
 }
 
+std::span<const ProviderChainRecord> ProviderChains() noexcept {
+    return std::span<const ProviderChainRecord>{g_state.provider_chains.data(),
+                                                g_state.provider_chains.size()};
+}
+
 const std::array<HelperStats, GroupedHelpers.size()>& HelperStatistics() noexcept {
     return g_state.helper_stats;
 }
@@ -842,6 +1056,10 @@ void ResetForTesting() noexcept {
     g_state.records.clear();
     g_state.binder_records.clear();
     g_state.grouped_records.clear();
+    g_state.provider_chains.clear();
+    g_state.adapter_calls.store(0, std::memory_order_relaxed);
+    g_state.adapter_unmatched.store(0, std::memory_order_relaxed);
+    g_state.writer_calls_32.store(0, std::memory_order_relaxed);
     g_state.helper_stats = {};
     g_state.grouped_dropped.store(0, std::memory_order_relaxed);
     g_state.dropped.store(0, std::memory_order_relaxed);
@@ -947,6 +1165,10 @@ void TryInstallBeforeGuestThread(Module& module, std::string_view title_id,
     }
     install(DeferredUploadCallerRva, BinderPrologue, UploadCallerObserver, g_state.upload_handle,
             "deferred upload caller");
+    // The adapter is where the provider result becomes a descriptor. Its prologue differs from the
+    // binder's: it pushes rax rather than reserving a frame.
+    install(DescriptorAdapterRva, AdapterPrologue, AdapterObserver, g_state.adapter_handle,
+            "descriptor adapter");
 #endif
 }
 
@@ -1021,7 +1243,9 @@ void Export() noexcept {
         }
 
         json += "  ],\n";
-        char summary[512];
+        // Sized for the whole summary with room to spare: a truncated snprintf here emits invalid
+        // JSON rather than failing loudly, which is exactly what happened once already.
+        char summary[2048];
         std::snprintf(summary, sizeof(summary),
                       "  \"summary\": {\"records\": %zu, \"dropped\": %u, "
                       "\"writer_calls\": %u, \"binder_calls\": %u, \"unmapped_slot\": %u, "
@@ -1032,7 +1256,8 @@ void Export() noexcept {
                       "\"diag_last_size\": %u, \"binder_no_pending\": %u, "
                       "\"upload_overflow\": %u, \"upload_invalid\": %u, "
                       "\"unmatched_writers\": %u, "
-                      "\"image_verdict\": \"%s\"},\n",
+                      "\"image_verdict\": \"%s\", \"adapter_calls\": %u, "
+                      "\"adapter_unmatched\": %u},\n",
                       g_state.records.size(), g_state.dropped.load(std::memory_order_relaxed),
                       g_state.writer_calls.load(std::memory_order_relaxed),
                       g_state.binder_calls.load(std::memory_order_relaxed),
@@ -1051,7 +1276,9 @@ void Export() noexcept {
                       g_state.upload_invalid.load(std::memory_order_relaxed),
                       g_state.unmatched_writers.load(std::memory_order_relaxed),
                       ImageVerdictName(
-                          static_cast<ImageVerdict>(g_state.image_verdict.load())));
+                          static_cast<ImageVerdict>(g_state.image_verdict.load())),
+                      g_state.adapter_calls.load(std::memory_order_relaxed),
+                      g_state.adapter_unmatched.load(std::memory_order_relaxed));
         json += summary;
         json += "  \"grouped_helpers\": [\n";
         for (size_t i = 0; i < GroupedHelpers.size(); ++i) {
@@ -1068,6 +1295,45 @@ void Export() noexcept {
                           s.records_kept, s.records_dropped);
             json += buffer;
             json += i + 1 == GroupedHelpers.size() ? "\n" : ",\n";
+        }
+        json += "  ],\n";
+
+        json += "  \"provider_chains\": [\n";
+        for (size_t i = 0; i < g_state.provider_chains.size(); ++i) {
+            const ProviderChainRecord& p = g_state.provider_chains[i];
+            char buffer[1024];
+            std::snprintf(buffer, sizeof(buffer),
+                          "    {\"sequence\": %llu, \"native_thread\": %llu, "
+                          "\"guest_thread\": %llu, \"binder_sequence\": %llu, "
+                          "\"helper_index\": %u, \"context\": \"0x%llx\", "
+                          "\"shader_resource\": \"0x%llx\", \"selected_object\": \"0x%llx\", "
+                          "\"object_vptr\": \"0x%llx\", \"provider_target\": \"0x%llx\", "
+                          "\"provider_result\": \"0x%llx\", "
+                          "\"descriptor_source\": \"0x%llx\", "
+                          "\"adapter_address\": \"0x%llx\", \"adapter_api_slot\": %u, "
+                          "\"adapter_count\": %u, \"writer_target\": \"0x%llx\", "
+                          "\"descriptor_bytes\": %u, \"descriptor_fingerprint\": \"%016llx\", "
+                          "\"shader_hash\": \"%016llx\", \"shader_hash_valid\": %s, "
+                          "\"status\": \"%s\"}",
+                          static_cast<unsigned long long>(p.sequence),
+                          static_cast<unsigned long long>(p.native_thread_id),
+                          static_cast<unsigned long long>(p.guest_thread_id),
+                          static_cast<unsigned long long>(p.binder_sequence), p.helper_index,
+                          static_cast<unsigned long long>(p.context),
+                          static_cast<unsigned long long>(p.shader_resource),
+                          static_cast<unsigned long long>(p.selected_object),
+                          static_cast<unsigned long long>(p.object_vptr),
+                          static_cast<unsigned long long>(p.provider_target),
+                          static_cast<unsigned long long>(p.provider_result),
+                          static_cast<unsigned long long>(p.descriptor_source),
+                          static_cast<unsigned long long>(p.adapter_address), p.adapter_api_slot,
+                          p.adapter_count, static_cast<unsigned long long>(p.writer_target),
+                          p.descriptor_bytes,
+                          static_cast<unsigned long long>(p.descriptor_fingerprint),
+                          static_cast<unsigned long long>(p.shader_hash),
+                          p.shader_hash_valid ? "true" : "false", ChainStatusName(p.status));
+            json += buffer;
+            json += i + 1 == g_state.provider_chains.size() ? "\n" : ",\n";
         }
         json += "  ],\n";
 

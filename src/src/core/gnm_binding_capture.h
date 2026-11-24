@@ -104,6 +104,36 @@ inline constexpr u32 ContextShaderState = 0x468;
 inline constexpr u32 ShaderStatePrimaryResource = 0x200;
 inline constexpr u32 ShaderStateAlternateResource = 0x1E0;
 
+/// The provider-backed descriptor adapter (Atlas A-031/A-035).
+///
+/// Its ABI, verified from the original machine code at 0x0CC13B0:
+///   rdi = graphics context
+///   rsi = provider result (the value the virtual +0x38 call returned)
+///   edx = logical API slot
+///   ecx = count
+/// It advances rsi by 0x18, optionally consults a descriptor-derived context cache, then
+/// tail-jumps to the 32-byte immediate-resource writer with r8 = *(provider_result+0x18).
+inline constexpr u32 DescriptorAdapterRva = 0x0CC13B0;
+
+/// The 32-byte immediate-resource writer the adapter tail-jumps to.
+inline constexpr u32 ResourceWriter32Rva = 0x02F62A40;
+
+/// The 16-byte immediate-resource writer, used by the other adapter path.
+inline constexpr u32 ResourceWriter16Rva = 0x02F62740;
+
+/// The descriptor pointer inside a provider result, from the adapter's own access.
+inline constexpr u32 ProviderResultDescriptor = 0x18;
+
+/// The inline provider result offset, from the 0x0CF9E20 method's own code: it returns
+/// `object+0x60` directly.
+inline constexpr u32 ProviderInlineResultOffset = 0x60;
+
+/// The delegating provider's inner-object offset, from the 0x0CFFEC0 method's own code: it loads
+/// `object+0x58`, falls back to a global when that is null, then tail-jumps through that object's
+/// own `+0x38`. Its result is therefore not `object+0x60`, which is why the first match rule
+/// alone leaves this class unmatched.
+inline constexpr u32 ProviderDelegateObjectOffset = 0x58;
+
 /// The resource object's timestamp writeback pointer (Atlas A-035). The binder compares and may
 /// overwrite the double it points at, before calling the provider.
 inline constexpr u32 ResourceTimestampPointer = 0x40;
@@ -227,6 +257,63 @@ struct HelperStats {
     u32 records_dropped{};
 };
 
+/// How far a provider chain was observed.
+enum class ChainStatus : u8 {
+    /// The binder selected an object and resolved a provider target, but no adapter call followed.
+    BinderOnly = 0,
+    /// The virtual call returned and the adapter consumed that exact result.
+    AdapterMatched = 1,
+    /// The adapter ran and the typed writer consumed the descriptor.
+    Complete = 2,
+    /// An adapter call was seen but its result did not match any pending provider.
+    AdapterUnmatched = 3,
+};
+
+/// One captured provider-to-descriptor chain: the edge A-039 could not cross.
+///
+/// The association is causal, not positional. The binder records the provider result it is about
+/// to hand to the adapter, keyed by the guest thread and the adapter's argument registers. The
+/// adapter observer then matches on that same result pointer, so a descriptor is only attributed
+/// to a provider that actually produced it.
+struct ProviderChainRecord {
+    u64 sequence{};
+    u64 native_thread_id{};
+    u64 guest_thread_id{};
+
+    /// The binder invocation this chain belongs to.
+    u64 binder_sequence{};
+    u8 helper_index{};
+    VAddr context{};
+    VAddr shader_resource{};
+
+    /// The selected object and the virtual method that was actually called.
+    VAddr selected_object{};
+    u64 object_vptr{};
+    VAddr provider_target{};
+
+    /// The value the virtual call returned, and the descriptor pointer inside it.
+    VAddr provider_result{};
+    VAddr descriptor_source{};
+
+    /// The adapter invocation that consumed the result.
+    VAddr adapter_address{};
+    u32 adapter_api_slot{};
+    u32 adapter_count{};
+
+    /// The typed writer the adapter tail-jumped to, and the bytes it consumed.
+    VAddr writer_target{};
+    u32 descriptor_bytes{};
+    std::array<u8, 32> descriptor{};
+    u64 descriptor_fingerprint{};
+
+    /// The shader behind the binder's shader resource, when resolvable.
+    u64 shader_hash{};
+    bool shader_hash_valid{};
+
+    /// How far the chain got. Only `Complete` is a full provider-to-writer claim.
+    ChainStatus status{ChainStatus::BinderOnly};
+};
+
 /// One captured grouped-binder invocation with a nonzero pending mask: the layer between a shader
 /// declaration and a typed writer call. Atlas A-031's packed entry selects a live guest resource
 /// object.
@@ -324,6 +411,7 @@ void Export() noexcept;
 [[nodiscard]] std::span<const BindingRecord> Records() noexcept;
 [[nodiscard]] std::span<const BinderRecord> BinderRecords() noexcept;
 [[nodiscard]] std::span<const GroupedRecord> GroupedRecords() noexcept;
+[[nodiscard]] std::span<const ProviderChainRecord> ProviderChains() noexcept;
 [[nodiscard]] const std::array<HelperStats, GroupedHelpers.size()>& HelperStatistics() noexcept;
 void ResetForTesting() noexcept;
 
