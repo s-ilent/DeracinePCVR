@@ -28,6 +28,8 @@
 
 #include <vulkan/vulkan.h>
 
+#include "package_reader.h"
+
 #include <nlohmann/json.hpp>
 
 #include "tape.h"
@@ -42,47 +44,12 @@ using u64 = std::uint64_t;
 constexpr u32 kWidth = 640;
 constexpr u32 kHeight = 640;
 
-/// The resource package the tape references. Only the geometry contents are used: the tape supplies
-/// the draw arguments, the package supplies the bytes. That split is deliberate and is reported.
-struct PackageResource {
-    u32 id{};
-    u64 clamped_size{};
-    u64 content_hash{};
-    u64 blob_offset{};
-    u64 byte_length{};
-    std::string status;
-    std::vector<u8> bytes;
-};
-
-struct PackageVertexBinding {
-    u32 binding{};
-    u32 stride{};
-    u32 resource_ref{};
-    u32 semantic{};
-    u32 vk_format{};
-    u32 attr_offset{};
-    u32 element_count{};
-};
-
-struct PackageIndexBinding {
-    u32 index_size{};
-    u32 index_count{};
-    u32 resource_ref{};
-};
-
-struct Package {
-    u32 schema_version{};
-    u64 provenance_id{};
-    std::vector<PackageResource> resources;
-    std::vector<PackageVertexBinding> vertex_bindings;
-    bool has_index{};
-    PackageIndexBinding index{};
-    u32 position_binding{};
-    u32 position_components{};
-    float bounds_min[3]{};
-    float bounds_max[3]{};
-    bool is_three_dimensional{};
-};
+/// The resource pkg the tape references, read through the shared reader so the diagnostic
+/// textured replay and this one cannot disagree about what a field means.
+using ReplayPackage = package::Package;
+using PackageResource = package::Resource;
+using PackageVertexBinding = package::VertexBinding;
+using PackageIndexBinding = package::IndexBinding;
 
 u64 Fnv1a(const u8* data, size_t size) {
     u64 hash = 0xcbf29ce484222325ull;
@@ -93,101 +60,8 @@ u64 Fnv1a(const u8* data, size_t size) {
     return hash;
 }
 
-bool ReadPackage(const std::string& directory, Package& out, std::string& error) {
-    const auto json_path = std::filesystem::path{directory} / "package.json";
-    std::ifstream json_file{json_path};
-    if (!json_file) {
-        error = "cannot open " + json_path.string();
-        return false;
-    }
-    nlohmann::json json;
-    try {
-        json_file >> json;
-    } catch (const std::exception& e) {
-        error = std::string{"package is not valid JSON: "} + e.what();
-        return false;
-    }
-
-    std::ifstream blob{std::filesystem::path{directory} / "resources.bin", std::ios::binary};
-    if (!blob) {
-        error = "cannot open resources.bin";
-        return false;
-    }
-    std::vector<u8> blob_bytes{std::istreambuf_iterator<char>(blob),
-                               std::istreambuf_iterator<char>()};
-
-    try {
-        out = {};
-        out.schema_version = json.at("schema_version").get<u32>();
-        out.provenance_id = json.at("provenance_id").get<u64>();
-        for (const auto& entry : json.at("resources")) {
-            PackageResource resource{};
-            resource.id = entry.at("id").get<u32>();
-            resource.clamped_size = entry.at("clamped_size").get<u64>();
-            resource.content_hash = entry.at("content_hash").get<u64>();
-            resource.blob_offset = entry.at("blob_offset").get<u64>();
-            resource.byte_length = entry.at("byte_length").get<u64>();
-            resource.status = entry.value("status", "");
-            if (resource.byte_length > 0) {
-                if (resource.blob_offset + resource.byte_length > blob_bytes.size()) {
-                    error = "resource " + std::to_string(resource.id) +
-                            " extends past the blob";
-                    return false;
-                }
-                resource.bytes.assign(blob_bytes.begin() + resource.blob_offset,
-                                      blob_bytes.begin() + resource.blob_offset +
-                                          resource.byte_length);
-                // The package's own contract: the retained bytes must hash to the declared value.
-                if (Fnv1a(resource.bytes.data(), resource.bytes.size()) != resource.content_hash) {
-                    error = "resource " + std::to_string(resource.id) +
-                            " content hash does not match its bytes";
-                    return false;
-                }
-            }
-            out.resources.push_back(std::move(resource));
-        }
-        for (const auto& entry : json.at("vertex_bindings")) {
-            PackageVertexBinding binding{};
-            binding.binding = entry.at("binding").get<u32>();
-            binding.stride = entry.at("stride").get<u32>();
-            binding.resource_ref = entry.at("resource_ref").get<u32>();
-            binding.semantic = entry.value("semantic", 0u);
-            binding.vk_format = entry.value("vk_format", 0u);
-            binding.attr_offset = entry.value("attr_offset", 0u);
-            binding.element_count = entry.value("element_count", 0u);
-            out.vertex_bindings.push_back(binding);
-        }
-        if (json.contains("index_binding")) {
-            const auto& index = json.at("index_binding");
-            out.index.index_size = index.at("index_size").get<u32>();
-            out.index.index_count = index.at("index_count").get<u32>();
-            out.index.resource_ref = index.at("resource_ref").get<u32>();
-            out.has_index = true;
-        }
-        if (json.contains("geometry")) {
-            const auto& geometry = json.at("geometry");
-            out.position_binding = geometry.value("position_binding", 0u);
-            out.position_components = geometry.value("position_components", 0u);
-            out.is_three_dimensional = geometry.value("is_three_dimensional", false);
-            if (geometry.contains("bounds_min")) {
-                for (u32 i = 0; i < 3; ++i)
-                    out.bounds_min[i] = geometry.at("bounds_min")[i].get<float>();
-            }
-            if (geometry.contains("bounds_max")) {
-                for (u32 i = 0; i < 3; ++i)
-                    out.bounds_max[i] = geometry.at("bounds_max")[i].get<float>();
-            }
-        }
-    } catch (const std::exception& e) {
-        error = std::string{"package is missing a required field: "} + e.what();
-        return false;
-    }
-    error.clear();
-    return true;
-}
-
-const PackageResource* FindPackageResource(const Package& package, u32 id) {
-    for (const auto& resource : package.resources) {
+const PackageResource* FindPackageResource(const ReplayPackage& pkg, u32 id) {
+    for (const auto& resource : pkg.resources) {
         if (resource.id == id)
             return &resource;
     }
@@ -238,6 +112,81 @@ bool CreateBuffer(ReplayContext& ctx, VkDeviceSize size, VkBufferUsageFlags usag
         return false;
     return vkBindBufferMemory(ctx.device, buffer, memory, 0) == VK_SUCCESS;
 }
+
+const u32 kTapeTexVertSpv[] = {
+    0x07230203, 0x00010000, 0x000d000b, 0x00000029, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+    0x0009000f, 0x00000000, 0x00000004, 0x6e69616d, 0x00000000, 0x00000009, 0x0000000b, 0x00000013,
+    0x0000001f, 0x00030003, 0x00000002, 0x000001c2, 0x000a0004, 0x475f4c47, 0x4c474f4f, 0x70635f45,
+    0x74735f70, 0x5f656c79, 0x656e696c, 0x7269645f, 0x69746365, 0x00006576, 0x00080004, 0x475f4c47,
+    0x4c474f4f, 0x6e695f45, 0x64756c63, 0x69645f65, 0x74636572, 0x00657669, 0x00040005, 0x00000004,
+    0x6e69616d, 0x00000000, 0x00040005, 0x00000009, 0x76755f76, 0x00000000, 0x00040005, 0x0000000b,
+    0x755f6e69, 0x00000076, 0x00060005, 0x00000011, 0x505f6c67, 0x65567265, 0x78657472, 0x00000000,
+    0x00060006, 0x00000011, 0x00000000, 0x505f6c67, 0x7469736f, 0x006e6f69, 0x00070006, 0x00000011,
+    0x00000001, 0x505f6c67, 0x746e696f, 0x657a6953, 0x00000000, 0x00070006, 0x00000011, 0x00000002,
+    0x435f6c67, 0x4470696c, 0x61747369, 0x0065636e, 0x00070006, 0x00000011, 0x00000003, 0x435f6c67,
+    0x446c6c75, 0x61747369, 0x0065636e, 0x00030005, 0x00000013, 0x00000000, 0x00040005, 0x00000017,
+    0x68737550, 0x00000000, 0x00040006, 0x00000017, 0x00000000, 0x0070766d, 0x00030005, 0x00000019,
+    0x00006370, 0x00040005, 0x0000001f, 0x705f6e69, 0x0000736f, 0x00040047, 0x00000009, 0x0000001e,
+    0x00000000, 0x00040047, 0x0000000b, 0x0000001e, 0x00000001, 0x00030047, 0x00000011, 0x00000002,
+    0x00050048, 0x00000011, 0x00000000, 0x0000000b, 0x00000000, 0x00050048, 0x00000011, 0x00000001,
+    0x0000000b, 0x00000001, 0x00050048, 0x00000011, 0x00000002, 0x0000000b, 0x00000003, 0x00050048,
+    0x00000011, 0x00000003, 0x0000000b, 0x00000004, 0x00030047, 0x00000017, 0x00000002, 0x00040048,
+    0x00000017, 0x00000000, 0x00000005, 0x00050048, 0x00000017, 0x00000000, 0x00000007, 0x00000010,
+    0x00050048, 0x00000017, 0x00000000, 0x00000023, 0x00000000, 0x00040047, 0x0000001f, 0x0000001e,
+    0x00000000, 0x00020013, 0x00000002, 0x00030021, 0x00000003, 0x00000002, 0x00030016, 0x00000006,
+    0x00000020, 0x00040017, 0x00000007, 0x00000006, 0x00000002, 0x00040020, 0x00000008, 0x00000003,
+    0x00000007, 0x0004003b, 0x00000008, 0x00000009, 0x00000003, 0x00040020, 0x0000000a, 0x00000001,
+    0x00000007, 0x0004003b, 0x0000000a, 0x0000000b, 0x00000001, 0x00040017, 0x0000000d, 0x00000006,
+    0x00000004, 0x00040015, 0x0000000e, 0x00000020, 0x00000000, 0x0004002b, 0x0000000e, 0x0000000f,
+    0x00000001, 0x0004001c, 0x00000010, 0x00000006, 0x0000000f, 0x0006001e, 0x00000011, 0x0000000d,
+    0x00000006, 0x00000010, 0x00000010, 0x00040020, 0x00000012, 0x00000003, 0x00000011, 0x0004003b,
+    0x00000012, 0x00000013, 0x00000003, 0x00040015, 0x00000014, 0x00000020, 0x00000001, 0x0004002b,
+    0x00000014, 0x00000015, 0x00000000, 0x00040018, 0x00000016, 0x0000000d, 0x00000004, 0x0003001e,
+    0x00000017, 0x00000016, 0x00040020, 0x00000018, 0x00000009, 0x00000017, 0x0004003b, 0x00000018,
+    0x00000019, 0x00000009, 0x00040020, 0x0000001a, 0x00000009, 0x00000016, 0x00040017, 0x0000001d,
+    0x00000006, 0x00000003, 0x00040020, 0x0000001e, 0x00000001, 0x0000001d, 0x0004003b, 0x0000001e,
+    0x0000001f, 0x00000001, 0x0004002b, 0x00000006, 0x00000021, 0x3f800000, 0x00040020, 0x00000027,
+    0x00000003, 0x0000000d, 0x00050036, 0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200f8,
+    0x00000005, 0x0004003d, 0x00000007, 0x0000000c, 0x0000000b, 0x0003003e, 0x00000009, 0x0000000c,
+    0x00050041, 0x0000001a, 0x0000001b, 0x00000019, 0x00000015, 0x0004003d, 0x00000016, 0x0000001c,
+    0x0000001b, 0x0004003d, 0x0000001d, 0x00000020, 0x0000001f, 0x00050051, 0x00000006, 0x00000022,
+    0x00000020, 0x00000000, 0x00050051, 0x00000006, 0x00000023, 0x00000020, 0x00000001, 0x00050051,
+    0x00000006, 0x00000024, 0x00000020, 0x00000002, 0x00070050, 0x0000000d, 0x00000025, 0x00000022,
+    0x00000023, 0x00000024, 0x00000021, 0x00050091, 0x0000000d, 0x00000026, 0x0000001c, 0x00000025,
+    0x00050041, 0x00000027, 0x00000028, 0x00000013, 0x00000015, 0x0003003e, 0x00000028, 0x00000026,
+    0x000100fd, 0x00010038,
+};
+
+const u32 kTapeTexFragSpv[] = {
+    0x07230203, 0x00010000, 0x000d000b, 0x0000001e, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+    0x0007000f, 0x00000004, 0x00000004, 0x6e69616d, 0x00000000, 0x00000011, 0x00000015, 0x00030010,
+    0x00000004, 0x00000007, 0x00030003, 0x00000002, 0x000001c2, 0x000a0004, 0x475f4c47, 0x4c474f4f,
+    0x70635f45, 0x74735f70, 0x5f656c79, 0x656e696c, 0x7269645f, 0x69746365, 0x00006576, 0x00080004,
+    0x475f4c47, 0x4c474f4f, 0x6e695f45, 0x64756c63, 0x69645f65, 0x74636572, 0x00657669, 0x00040005,
+    0x00000004, 0x6e69616d, 0x00000000, 0x00040005, 0x00000009, 0x65786574, 0x0000006c, 0x00040005,
+    0x0000000d, 0x65745f75, 0x00000078, 0x00040005, 0x00000011, 0x76755f76, 0x00000000, 0x00050005,
+    0x00000015, 0x5f74756f, 0x6f6c6f63, 0x00000072, 0x00040047, 0x0000000d, 0x00000021, 0x00000000,
+    0x00040047, 0x0000000d, 0x00000022, 0x00000000, 0x00040047, 0x00000011, 0x0000001e, 0x00000000,
+    0x00040047, 0x00000015, 0x0000001e, 0x00000000, 0x00020013, 0x00000002, 0x00030021, 0x00000003,
+    0x00000002, 0x00030016, 0x00000006, 0x00000020, 0x00040017, 0x00000007, 0x00000006, 0x00000004,
+    0x00040020, 0x00000008, 0x00000007, 0x00000007, 0x00090019, 0x0000000a, 0x00000006, 0x00000001,
+    0x00000000, 0x00000000, 0x00000000, 0x00000001, 0x00000000, 0x0003001b, 0x0000000b, 0x0000000a,
+    0x00040020, 0x0000000c, 0x00000000, 0x0000000b, 0x0004003b, 0x0000000c, 0x0000000d, 0x00000000,
+    0x00040017, 0x0000000f, 0x00000006, 0x00000002, 0x00040020, 0x00000010, 0x00000001, 0x0000000f,
+    0x0004003b, 0x00000010, 0x00000011, 0x00000001, 0x00040020, 0x00000014, 0x00000003, 0x00000007,
+    0x0004003b, 0x00000014, 0x00000015, 0x00000003, 0x00040017, 0x00000016, 0x00000006, 0x00000003,
+    0x0004002b, 0x00000006, 0x00000019, 0x3f800000, 0x00050036, 0x00000002, 0x00000004, 0x00000000,
+    0x00000003, 0x000200f8, 0x00000005, 0x0004003b, 0x00000008, 0x00000009, 0x00000007, 0x0004003d,
+    0x0000000b, 0x0000000e, 0x0000000d, 0x0004003d, 0x0000000f, 0x00000012, 0x00000011, 0x00050057,
+    0x00000007, 0x00000013, 0x0000000e, 0x00000012, 0x0003003e, 0x00000009, 0x00000013, 0x0004003d,
+    0x00000007, 0x00000017, 0x00000009, 0x0008004f, 0x00000016, 0x00000018, 0x00000017, 0x00000017,
+    0x00000000, 0x00000001, 0x00000002, 0x00050051, 0x00000006, 0x0000001a, 0x00000018, 0x00000000,
+    0x00050051, 0x00000006, 0x0000001b, 0x00000018, 0x00000001, 0x00050051, 0x00000006, 0x0000001c,
+    0x00000018, 0x00000002, 0x00070050, 0x00000007, 0x0000001d, 0x0000001a, 0x0000001b, 0x0000001c,
+    0x00000019, 0x0003003e, 0x00000015, 0x0000001d, 0x000100fd, 0x00010038,
+};
 
 /// Diagnostic shaders. Not the game's shaders, and the report says so.
 const u32 kVertSpv[] = {
@@ -380,9 +329,11 @@ class VulkanSink final : public tape::CommandSink {
 public:
     VulkanSink(ReplayContext& ctx, VkCommandBuffer cmd, VkPipeline pipeline,
                VkPipelineLayout layout, VkBuffer vertex_buffer, VkBuffer index_buffer,
-               u32 index_element_size, const Mat4& mvp)
+               u32 index_element_size, const Mat4& mvp, VkDescriptorSet descriptor_set = {},
+               bool textured = false)
         : ctx_(ctx), cmd_(cmd), pipeline_(pipeline), layout_(layout), vertex_buffer_(vertex_buffer),
-          index_buffer_(index_buffer), index_element_size_(index_element_size), mvp_(mvp) {}
+          index_buffer_(index_buffer), index_element_size_(index_element_size), mvp_(mvp),
+          descriptor_set_(descriptor_set), textured_(textured) {}
 
     void BeginFrame() override {
         // The tape carries no SetGraphicsPipeline operation: the bound-shader-state command is not
@@ -390,6 +341,12 @@ public:
         // the caller reports it as substituted state rather than letting the draw silently produce
         // nothing.
         vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+        // The sampled image is bound from the descriptor set the package's texture and sampler
+        // produced. The draw arguments still come from the tape.
+        if (textured_ && descriptor_set_ != VK_NULL_HANDLE) {
+            vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1,
+                                    &descriptor_set_, 0, nullptr);
+        }
         vkCmdPushConstants(cmd_, layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(mvp_.m), mvp_.m);
         // The tape carries no BindIndexBuffer operation: the recovered command cluster has no
         // index-buffer binding command, because the PS4 RHI receives the index buffer as an argument
@@ -432,7 +389,7 @@ public:
                           u32 depth_target) override {
         // The render pass and framebuffer are already bound for this offscreen target. The tape's
         // target identities are recorded so the report can compare them; they are not used to
-        // select a different framebuffer, because the package does not carry target contents.
+        // select a different framebuffer, because the pkg does not carry target contents.
         color_target_count_ = color_target_count;
         for (u32 i = 0; i < color_target_count && i < 8; ++i)
             color_targets_[i] = color_targets[i];
@@ -497,6 +454,8 @@ private:
     VkCommandBuffer cmd_{};
     VkPipeline pipeline_{};
     VkPipelineLayout layout_{};
+    VkDescriptorSet descriptor_set_{};
+    bool textured_{};
     VkBuffer vertex_buffer_{};
     VkBuffer index_buffer_{};
     u32 index_element_size_{2};
@@ -582,23 +541,32 @@ int main(int argc, char** argv) {
               << tape.packet_offset << std::dec
               << " offset_known=" << (tape.packet_offset_known ? "yes" : "no") << "\n";
 
-    // --- Read the resource package -------------------------------------------------------------
-    Package package{};
-    if (!ReadPackage(directory, package, error)) {
-        std::cerr << "package read failed: " << error << "\n";
+    // --- Read the resource pkg -------------------------------------------------------------
+    ReplayPackage pkg{};
+    if (!package::Read(directory, pkg, error)) {
+        std::cerr << "pkg read failed: " << error << "\n";
         return 1;
     }
-    if (package.provenance_id != tape.provenance_id) {
-        std::cerr << "package provenance " << package.provenance_id
+    if (pkg.provenance_id != tape.provenance_id) {
+        std::cerr << "pkg provenance " << pkg.provenance_id
                   << " does not match tape provenance " << tape.provenance_id << "\n";
         return 1;
     }
-    std::cout << "package: provenance=" << package.provenance_id
-              << " resources=" << package.resources.size()
-              << " vertex_bindings=" << package.vertex_bindings.size() << "\n";
+    std::cout << "package: provenance=" << pkg.provenance_id
+              << " resources=" << pkg.resources.size()
+              << " vertex_bindings=" << pkg.vertex_bindings.size() << "\n";
 
-    // --- Resolve the tape's resources against the package --------------------------------------
-    // The tape's resource ids are backend-neutral. The package reference is what connects them to
+    // The tape determines the draw; the pkg supplies the texture. When the pkg carries a
+    // captured texture with a verified sampler and a usable UV attribute, the replay samples it.
+    // Otherwise it falls back to the position-only diagnostic, and says which it did.
+    const package::Texture* textured = package::FindTextured(pkg);
+    const package::Sampler* sampler =
+        textured != nullptr ? package::FindSampler(pkg, *textured) : nullptr;
+    const bool textured_mode = textured != nullptr && sampler != nullptr &&
+                               pkg.uv.looks_like_uv && pkg.readiness.geometry_ready;
+
+    // --- Resolve the tape's resources against the pkg --------------------------------------
+    // The tape's resource ids are backend-neutral. The pkg reference is what connects them to
     // bytes, and it is recorded rather than assumed.
     u32 resolved = 0;
     u32 unresolved = 0;
@@ -607,8 +575,8 @@ int main(int argc, char** argv) {
             ++unresolved;
             continue;
         }
-        if (FindPackageResource(package, resource.package_resource_ref) == nullptr) {
-            std::cerr << "tape resource " << resource.id << " references package resource "
+        if (FindPackageResource(pkg, resource.package_resource_ref) == nullptr) {
+            std::cerr << "tape resource " << resource.id << " references pkg resource "
                       << resource.package_resource_ref << " which is absent\n";
             return 1;
         }
@@ -617,37 +585,59 @@ int main(int argc, char** argv) {
     std::cout << "resources: resolved_from_package=" << resolved
               << " without_package_reference=" << unresolved << "\n";
 
-    // --- Geometry from the package -------------------------------------------------------------
+    // --- Geometry from the pkg -------------------------------------------------------------
     const PackageVertexBinding* position_binding = nullptr;
-    for (const auto& vertex : package.vertex_bindings) {
-        if (vertex.binding == package.position_binding) {
+    for (const auto& vertex : pkg.vertex_bindings) {
+        if (vertex.binding == pkg.geometry.position_binding) {
             position_binding = &vertex;
             break;
         }
     }
     if (position_binding == nullptr) {
-        std::cerr << "package has no position binding\n";
+        std::cerr << "pkg has no position binding\n";
         return 1;
     }
     const PackageResource* position_resource =
-        FindPackageResource(package, position_binding->resource_ref);
+        FindPackageResource(pkg, position_binding->resource_ref);
     if (position_resource == nullptr || position_binding->stride == 0) {
-        std::cerr << "package position resource is missing\n";
+        std::cerr << "pkg position resource is missing\n";
         return 1;
     }
 
     const u32 stride = position_binding->stride;
     const u32 vertex_count = static_cast<u32>(position_resource->bytes.size() / stride);
 
-    const float* lo = package.bounds_min;
-    const float* hi = package.bounds_max;
+    const float* lo = pkg.geometry.bounds_min;
+    const float* hi = pkg.geometry.bounds_max;
     float centre[3] = {(lo[0] + hi[0]) * 0.5f, (lo[1] + hi[1]) * 0.5f, (lo[2] + hi[2]) * 0.5f};
     float extent = 0.0f;
     for (u32 c = 0; c < 3; ++c)
         extent = std::max(extent, hi[c] - lo[c]);
     const float scale = extent > 1e-6f ? 2.0f / extent : 1.0f;
 
-    std::vector<float> positions(static_cast<size_t>(vertex_count) * 3);
+    // In textured mode the vertex stream is interleaved position and UV, because the diagnostic
+    // shader samples the captured texture with the package's attributed UV binding. The UV comes
+    // from that binding rather than from an assumption about which attribute holds it.
+    const u32 floats_per_vertex = textured_mode ? 5u : 3u;
+    std::vector<float> positions(static_cast<size_t>(vertex_count) * floats_per_vertex);
+    const PackageVertexBinding* uv_binding = nullptr;
+    const PackageResource* uv_resource = nullptr;
+    if (textured_mode) {
+        for (const auto& vertex : pkg.vertex_bindings) {
+            if (vertex.binding == pkg.uv.binding) {
+                uv_binding = &vertex;
+                break;
+            }
+        }
+        if (uv_binding != nullptr) {
+            uv_resource = FindPackageResource(pkg, uv_binding->resource_ref);
+        }
+        if (uv_binding == nullptr || uv_resource == nullptr) {
+            std::cerr << "textured mode needs a UV binding and resource\n";
+            return 1;
+        }
+    }
+
     for (u32 v = 0; v < vertex_count; ++v) {
         for (u32 c = 0; c < 3; ++c) {
             float value = 0.0f;
@@ -655,18 +645,43 @@ int main(int argc, char** argv) {
                 std::memcpy(&value, position_resource->bytes.data() + v * stride + c * 4,
                             sizeof(value));
             }
-            positions[v * 3 + c] = (value - centre[c]) * scale;
+            positions[v * floats_per_vertex + c] = (value - centre[c]) * scale;
+        }
+        if (textured_mode) {
+            // The UV stream is half-float in the captured layout, so each component is converted
+            // rather than reinterpreted as a float.
+            for (u32 c = 0; c < 2; ++c) {
+                const u32 component = c == 0 ? pkg.uv.component_u : pkg.uv.component_v;
+                u16 raw = 0;
+                std::memcpy(&raw,
+                            uv_resource->bytes.data() + v * uv_binding->stride + component * 2,
+                            sizeof(raw));
+                const u32 sign = (raw >> 15) & 0x1u;
+                const u32 exponent = (raw >> 10) & 0x1Fu;
+                const u32 mantissa = raw & 0x3FFu;
+                u32 bits = 0;
+                if (exponent == 0) {
+                    bits = sign << 31;
+                } else if (exponent == 0x1F) {
+                    bits = (sign << 31) | 0x7F800000u | (mantissa << 13);
+                } else {
+                    bits = (sign << 31) | ((exponent - 15 + 127) << 23) | (mantissa << 13);
+                }
+                float value = 0.0f;
+                std::memcpy(&value, &bits, sizeof(value));
+                positions[v * floats_per_vertex + 3 + c] = value;
+            }
         }
     }
 
-    // The index bytes come from the package; the count and offset come from the tape.
+    // The index bytes come from the pkg; the count and offset come from the tape.
     const PackageResource* index_resource =
-        package.has_index ? FindPackageResource(package, package.index.resource_ref) : nullptr;
+        pkg.has_index ? FindPackageResource(pkg, pkg.index.resource_ref) : nullptr;
     if (index_resource == nullptr) {
-        std::cerr << "package has no index resource\n";
+        std::cerr << "pkg has no index resource\n";
         return 1;
     }
-    const u32 index_width = package.index.index_size;
+    const u32 index_width = pkg.index.index_size;
     std::vector<u32> indices;
     {
         const u32 count = static_cast<u32>(index_resource->bytes.size() / index_width);
@@ -909,8 +924,14 @@ int main(int argc, char** argv) {
             return VK_NULL_HANDLE;
         return module;
     };
-    VkShaderModule vert_module = make_module(kVertSpv, sizeof(kVertSpv) / sizeof(u32));
-    VkShaderModule frag_module = make_module(kFragSpv, sizeof(kFragSpv) / sizeof(u32));
+    VkShaderModule vert_module =
+        make_module(textured_mode ? kTapeTexVertSpv : kVertSpv,
+                    textured_mode ? sizeof(kTapeTexVertSpv) / sizeof(u32)
+                                  : sizeof(kVertSpv) / sizeof(u32));
+    VkShaderModule frag_module =
+        make_module(textured_mode ? kTapeTexFragSpv : kFragSpv,
+                    textured_mode ? sizeof(kTapeTexFragSpv) / sizeof(u32)
+                                  : sizeof(kFragSpv) / sizeof(u32));
     if (vert_module == VK_NULL_HANDLE || frag_module == VK_NULL_HANDLE) {
         std::cerr << "shader module creation failed\n";
         return 1;
@@ -937,12 +958,25 @@ int main(int argc, char** argv) {
     vertex_attribute.format = VK_FORMAT_R32G32B32_SFLOAT;
     vertex_attribute.offset = 0;
 
+    // In textured mode the vertex stream is interleaved position and UV, so the stride and the
+    // attribute count both change. The UV comes from the package's attributed binding, not from a
+    // fixed assumption about which attribute holds it.
+    VkVertexInputAttributeDescription uv_attribute{};
+    if (textured_mode) {
+        vertex_binding_desc.stride = 5 * sizeof(float);
+        uv_attribute.location = 1;
+        uv_attribute.binding = 0;
+        uv_attribute.format = VK_FORMAT_R32G32_SFLOAT;
+        uv_attribute.offset = 3 * sizeof(float);
+    }
+
     VkPipelineVertexInputStateCreateInfo vertex_input{};
     vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertex_input.vertexBindingDescriptionCount = 1;
     vertex_input.pVertexBindingDescriptions = &vertex_binding_desc;
-    vertex_input.vertexAttributeDescriptionCount = 1;
-    vertex_input.pVertexAttributeDescriptions = &vertex_attribute;
+    VkVertexInputAttributeDescription attributes[2] = {vertex_attribute, uv_attribute};
+    vertex_input.vertexAttributeDescriptionCount = textured_mode ? 2u : 1u;
+    vertex_input.pVertexAttributeDescriptions = attributes;
 
     VkPipelineInputAssemblyStateCreateInfo input_assembly{};
     input_assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -990,10 +1024,41 @@ int main(int argc, char** argv) {
     push_range.offset = 0;
     push_range.size = sizeof(float) * 16;
 
+    VkDescriptorSetLayout descriptor_layout{};
+    VkDescriptorPool descriptor_pool{};
+    VkDescriptorSet descriptor_set{};
+    VkSampler vk_sampler{};
+    VkImage texture_image{};
+    VkDeviceMemory texture_memory{};
+    VkImageView texture_view{};
+    VkBuffer staging{};
+    VkDeviceMemory staging_memory{};
+
+    if (textured_mode) {
+        VkDescriptorSetLayoutBinding binding{};
+        binding.binding = 0;
+        binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        binding.descriptorCount = 1;
+        binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo set_layout{};
+        set_layout.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        set_layout.bindingCount = 1;
+        set_layout.pBindings = &binding;
+        if (vkCreateDescriptorSetLayout(ctx.device, &set_layout, nullptr, &descriptor_layout) !=
+            VK_SUCCESS) {
+            std::cerr << "vkCreateDescriptorSetLayout failed\n";
+            return 1;
+        }
+    }
+
     VkPipelineLayoutCreateInfo layout_info{};
     layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     layout_info.pushConstantRangeCount = 1;
     layout_info.pPushConstantRanges = &push_range;
+    if (textured_mode) {
+        layout_info.setLayoutCount = 1;
+        layout_info.pSetLayouts = &descriptor_layout;
+    }
     VkPipelineLayout pipeline_layout{};
     if (vkCreatePipelineLayout(ctx.device, &layout_info, nullptr, &pipeline_layout) != VK_SUCCESS) {
         std::cerr << "vkCreatePipelineLayout failed\n";
@@ -1074,11 +1139,222 @@ int main(int argc, char** argv) {
         rp_begin.framebuffer = framebuffer;
         rp_begin.renderArea = {{0, 0}, {kWidth, kHeight}};
         rp_begin.clearValueCount = 2;
+        // --- Texture upload and descriptor set -------------------------------------------------
+        // The image is created at the captured texel extent and uploaded from the package's
+        // texture sidecar. The sampler is built from the captured state, so the sampling behaviour
+        // is the one the production renderer used rather than a diagnostic default.
+        if (textured_mode) {
+            const auto& sub = textured->subresources.front();
+            VkFormat image_format = VK_FORMAT_UNDEFINED;
+            switch (textured->image_format) {
+            case 9:
+                image_format = VK_FORMAT_R8_UNORM;
+                break;
+            case 37:
+                image_format = VK_FORMAT_R8G8B8A8_UNORM;
+                break;
+            case 43:
+                image_format = VK_FORMAT_R8G8B8A8_SRGB;
+                break;
+            case 44:
+                image_format = VK_FORMAT_B8G8R8A8_UNORM;
+                break;
+            case 131:
+                image_format = VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+                break;
+            case 137:
+                image_format = VK_FORMAT_BC3_UNORM_BLOCK;
+                break;
+            case 138:
+                image_format = VK_FORMAT_BC3_SRGB_BLOCK;
+                break;
+            case 139:
+                image_format = VK_FORMAT_BC4_UNORM_BLOCK;
+                break;
+            case 145:
+                image_format = VK_FORMAT_BC5_UNORM_BLOCK;
+                break;
+            case 147:
+                image_format = VK_FORMAT_BC7_UNORM_BLOCK;
+                break;
+            case 148:
+                image_format = VK_FORMAT_BC7_SRGB_BLOCK;
+                break;
+            default:
+                std::cerr << "unsupported captured image format " << textured->image_format
+                          << "\n";
+                return 1;
+            }
+
+            VkImageCreateInfo image_info{};
+            image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+            image_info.imageType = VK_IMAGE_TYPE_2D;
+            image_info.format = image_format;
+            image_info.extent = {sub.width, sub.height, 1};
+            image_info.mipLevels = 1;
+            image_info.arrayLayers = 1;
+            image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+            image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+            image_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+            image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            if (vkCreateImage(ctx.device, &image_info, nullptr, &texture_image) != VK_SUCCESS) {
+                std::cerr << "texture image creation failed\n";
+                return 1;
+            }
+            VkMemoryRequirements image_requirements{};
+            vkGetImageMemoryRequirements(ctx.device, texture_image, &image_requirements);
+            VkMemoryAllocateInfo image_alloc{};
+            image_alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            image_alloc.allocationSize = image_requirements.size;
+            image_alloc.memoryTypeIndex = FindMemoryType(ctx, image_requirements.memoryTypeBits,
+                                                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            if (vkAllocateMemory(ctx.device, &image_alloc, nullptr, &texture_memory) !=
+                    VK_SUCCESS ||
+                vkBindImageMemory(ctx.device, texture_image, texture_memory, 0) != VK_SUCCESS) {
+                std::cerr << "texture image memory failed\n";
+                return 1;
+            }
+
+            VkImageViewCreateInfo view_info{};
+            view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            view_info.image = texture_image;
+            view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            view_info.format = image_format;
+            view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            if (vkCreateImageView(ctx.device, &view_info, nullptr, &texture_view) != VK_SUCCESS) {
+                std::cerr << "texture view creation failed\n";
+                return 1;
+            }
+
+            if (!CreateBuffer(ctx, sub.byte_length, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                              staging, staging_memory)) {
+                std::cerr << "texture staging buffer failed\n";
+                return 1;
+            }
+            void* mapped = nullptr;
+            if (vkMapMemory(ctx.device, staging_memory, 0, sub.byte_length, 0, &mapped) !=
+                VK_SUCCESS) {
+                std::cerr << "texture staging map failed\n";
+                return 1;
+            }
+            std::memcpy(mapped, pkg.texture_blob.data() + sub.blob_offset,
+                        static_cast<size_t>(sub.byte_length));
+            vkUnmapMemory(ctx.device, staging_memory);
+
+            VkSamplerCreateInfo sampler_info{};
+            sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+            sampler_info.magFilter = sampler->mag_filter == 1 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+            sampler_info.minFilter = sampler->min_filter == 1 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+            sampler_info.mipmapMode = sampler->mip_filter == 1
+                                          ? VK_SAMPLER_MIPMAP_MODE_LINEAR
+                                          : VK_SAMPLER_MIPMAP_MODE_NEAREST;
+            const auto address = [](u32 value) {
+                switch (value) {
+                case 1:
+                    return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+                case 2:
+                    return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+                case 3:
+                    return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+                case 4:
+                    return VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE;
+                default:
+                    return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+                }
+            };
+            sampler_info.addressModeU = address(sampler->address_u);
+            sampler_info.addressModeV = address(sampler->address_v);
+            sampler_info.addressModeW = address(sampler->address_w);
+            sampler_info.mipLodBias = sampler->lod_bias;
+            sampler_info.anisotropyEnable =
+                sampler->anisotropy_enable ? VK_TRUE : VK_FALSE;
+            sampler_info.maxAnisotropy =
+                sampler->max_anisotropy >= 1.0f ? sampler->max_anisotropy : 1.0f;
+            sampler_info.compareEnable = sampler->compare_enable ? VK_TRUE : VK_FALSE;
+            sampler_info.compareOp = VK_COMPARE_OP_ALWAYS;
+            sampler_info.minLod = sampler->min_lod;
+            sampler_info.maxLod = sampler->max_lod;
+            sampler_info.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+            sampler_info.unnormalizedCoordinates = VK_FALSE;
+            if (vkCreateSampler(ctx.device, &sampler_info, nullptr, &vk_sampler) != VK_SUCCESS) {
+                std::cerr << "sampler creation failed\n";
+                return 1;
+            }
+
+            VkDescriptorPoolSize pool_size{};
+            pool_size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            pool_size.descriptorCount = 1;
+            VkDescriptorPoolCreateInfo pool_ci{};
+            pool_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+            pool_ci.maxSets = 1;
+            pool_ci.poolSizeCount = 1;
+            pool_ci.pPoolSizes = &pool_size;
+            if (vkCreateDescriptorPool(ctx.device, &pool_ci, nullptr, &descriptor_pool) !=
+                VK_SUCCESS) {
+                std::cerr << "descriptor pool creation failed\n";
+                return 1;
+            }
+            VkDescriptorSetAllocateInfo set_alloc{};
+            set_alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            set_alloc.descriptorPool = descriptor_pool;
+            set_alloc.descriptorSetCount = 1;
+            set_alloc.pSetLayouts = &descriptor_layout;
+            if (vkAllocateDescriptorSets(ctx.device, &set_alloc, &descriptor_set) != VK_SUCCESS) {
+                std::cerr << "descriptor set allocation failed\n";
+                return 1;
+            }
+            VkDescriptorImageInfo descriptor_image{};
+            descriptor_image.sampler = vk_sampler;
+            descriptor_image.imageView = texture_view;
+            descriptor_image.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            VkWriteDescriptorSet write{};
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = descriptor_set;
+            write.dstBinding = 0;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.pImageInfo = &descriptor_image;
+            vkUpdateDescriptorSets(ctx.device, 1, &write, 0, nullptr);
+        }
+
         rp_begin.pClearValues = clears;
         vkCmdBeginRenderPass(cmd, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
 
+        // The texture upload happens inside the render pass recording, before the draw, so the
+        // image is in a sampled layout when the shader reads it.
+        if (textured_mode) {
+            const auto& sub = textured->subresources.front();
+            VkImageMemoryBarrier to_dst{};
+            to_dst.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            to_dst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            to_dst.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            to_dst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            to_dst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            to_dst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            to_dst.image = texture_image;
+            to_dst.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                                 &to_dst);
+            VkBufferImageCopy copy{};
+            copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            copy.imageExtent = {sub.width, sub.height, 1};
+            vkCmdCopyBufferToImage(cmd, staging, texture_image,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+            VkImageMemoryBarrier to_shader = to_dst;
+            to_shader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            to_shader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            to_shader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            to_shader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr,
+                                 1, &to_shader);
+        }
+
         VulkanSink sink{ctx, cmd, pipeline, pipeline_layout, vertex_buffer, index_buffer,
-                        index_width, mvp};
+                        index_width, mvp, descriptor_set, textured_mode};
         tape::ExecutionReport report{};
         std::string exec_error;
         if (!tape::Execute(tape, sink, report, exec_error, substitutions)) {
@@ -1146,6 +1422,26 @@ int main(int argc, char** argv) {
     std::cout << "execution: operations=" << last_report.operations_executed
               << " opaque=" << last_report.opaque_operations << " draws=" << last_report.draws
               << "\n";
+    // What the replay actually did, so a partial execution is never presented as a complete one.
+    std::cout << "mode: " << (textured_mode ? "textured" : "position_only") << "\n";
+    if (textured_mode) {
+        const auto& sub = textured->subresources.front();
+        std::cout << "texture: id=" << textured->id << " binding=" << textured->vk_binding << " "
+                  << sub.width << "x" << sub.height << " texels, " << textured->block_columns
+                  << "x" << textured->block_rows << " blocks, " << textured->bytes_per_block
+                  << " bytes/block, format=" << textured->image_format
+                  << " bytes=" << sub.byte_length << " transfer=" << textured->transfer_id << "\n";
+        std::cout << "texture: payload hash=" << sub.content_hash << "\n";
+        std::cout << "sampler: id=" << sampler->id << " (verified association)"
+                  << " mag=" << sampler->mag_filter << " min=" << sampler->min_filter
+                  << " mip=" << sampler->mip_filter << " aniso=" << sampler->max_anisotropy
+                  << " lod=[" << sampler->min_lod << "," << sampler->max_lod << "]\n";
+        std::cout << "uv: binding=" << pkg.uv.binding << " components=" << pkg.uv.component_u << ","
+                  << pkg.uv.component_v << "\n";
+    } else {
+        std::cout << "texture: none (the package carries no captured texture with a verified "
+                     "sampler and a usable UV attribute)\n";
+    }
     std::cout << "draw_from_tape: index_count=" << last_report.derived.index_count
               << " first_index=" << last_report.derived.first_index
               << " vertex_offset=" << last_report.derived.vertex_offset
@@ -1170,7 +1466,7 @@ int main(int argc, char** argv) {
 
     std::cout << "\n-- provenance separation --\n";
     std::cout << "semantic_commands: recovered from the UE4 deferred command record\n";
-    std::cout << "resource_contents: supplied by the SC-09H package (shadPS4-exported)\n";
+    std::cout << "resource_contents: supplied by the SC-09H pkg (shadPS4-exported)\n";
     std::cout << "shaders: diagnostic substitute, not the game's\n";
     if (!tape.unresolved.empty()) {
         std::cout << "unresolved_dependencies:\n";

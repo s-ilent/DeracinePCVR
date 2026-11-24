@@ -22,7 +22,7 @@ add_executable(deracine_textured_replay textured_replay.cpp)
 
 # The semantic-tape replay. Same dependency discipline as the diagnostic replay: the Vulkan loader,
 # the C++ standard library and a JSON parser, nothing from the emulator.
-add_executable(deracine_tape_replay tape_replay.cpp tape.cpp draw_identity.cpp)
+add_executable(deracine_tape_replay tape_replay.cpp tape.cpp draw_identity.cpp package_reader.cpp)
 
 set(REPLAY_TARGETS deracine_scene_replay deracine_textured_replay deracine_tape_replay)
 
