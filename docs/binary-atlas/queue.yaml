@@ -1,3 +1,12 @@
+# C-032 paired resource context slot and FDE
+  - id: C-032-PAIRED-RESOURCE-VTABLE-FDE
+    track: C
+    priority: 1
+    status: VERIFIED_STATIC
+    finding: "FDE 0x038F73B0 covers 0x0CB4330..0x0CB5130; relative relocation joins context table +0x338 to paired-resource method, adjacent +0x340 to nested shader-state callee"
+    report: "reports/atlas_paired_resource_vtable_c032.md"
+    verifier: "tools/atlas/verify_paired_resource_vtable_c032.py"
+    next: "Resolve resource vptr provenance at 0x0CB4397 and 0x0CB43A3"
 # C-030 independently verified original SELF indexed-table classifier width helpers
   - id: C-030-CLASSIFIER-INDEXED-TABLE-HELPERS
     track: C

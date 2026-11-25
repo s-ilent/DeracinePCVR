@@ -8,7 +8,7 @@
   "branch": "research/deracine-self-atlas",
   "branch_created": true,
   "draft_pr_created": true,
-  "github_write_status": "C-030 report/verifier/state/queue committed to research branch",
+  "github_write_status": "C-032 report/verifier/state/queue committed to research branch",
   "self": {
     "expected_size": 81506767,
     "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
@@ -21,7 +21,7 @@
     "expected_size": 92544428,
     "sha256_expected": "336d0746d64915c988fa985a92ce2eb8ea1ecf328034385c8d055766a93c984c",
     "bytes_accessible": true,
-    "sha256_verified_this_run": true,
+    "sha256_verified_this_run": false,
     "access_error": null,
     "source": "direct user-provided original session ZIP; private, not Git",
     "member_count_verified": 33,
@@ -60,7 +60,7 @@
         "classification": "ALREADY_VERIFIED_TABLE_ONLY"
       }
     ],
-    "sha256_verified_this_run": true,
+    "sha256_verified_this_run": false,
     "members_crosschecked_against_zip": 33,
     "first_pass_non_memory_streams_scanned": 11,
     "memory_streams_intentionally_skipped": 22,
@@ -1076,10 +1076,26 @@
       "runtime_observed": false,
       "report": "reports/atlas_classifier_helpers_c030.md",
       "verifier": "tools/atlas/verify_classifier_helpers_c030.py"
+    },
+    {
+      "id": "C-032-PAIRED-RESOURCE-VTABLE-FDE",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "method_elf_va": "0x0CB4330",
+      "fde_elf_va": "0x038F73B0",
+      "end_exclusive_elf_va": "0x0CB5130",
+      "slot_elf_va": "0x03EDFFD8",
+      "slot_self_offset": "0x03F01218",
+      "rela_self_offset": "0x044BACD0",
+      "slot_relative_to_known_table": "+0x338",
+      "confidence": "high for FDE and relative relocation; exact resource class and runtime unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_paired_resource_vtable_c032.md",
+      "verifier": "tools/atlas/verify_paired_resource_vtable_c032.py"
     }
   ],
   "known_false": [],
-  "next_action": "Resolve concrete +0x38 vtable implementation and construction for paired resources at 0x0CB4397/0x0CB43A3; establish 0x0CB4330 FDE",
+  "next_action": "Trace concrete resource vptr provenance at 0x0CB4397 and 0x0CB43A3; C-032 resolves enclosing FDE and context table slot",
   "draft_pr_url": "https://github.com/s-ilent/DeracinePCVR/pull/1",
   "draft_pr_number": 1,
   "recheck": {
