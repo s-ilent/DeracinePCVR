@@ -72,31 +72,6 @@ void ResetForTesting() noexcept {
     g_state.enabled.store(true, std::memory_order_relaxed);
 }
 
-/// Finds the retained declaration for one stage's module.
-///
-/// Matched on program hash, logical stage and binding count. The count is part of the identity
-/// because a program can have several permutations with different interfaces, and only the one the
-/// layout allocated can be the module the pipeline selected.
-[[nodiscard]] bool FindDeclaration(u64 program_hash, u32 logical_stage, u32 binding_count,
-                                   Interface& out) noexcept {
-    const u32 count = g_state.count.load(std::memory_order_relaxed);
-    for (u32 i = 0; i < count; ++i) {
-        const auto& entry = g_state.interfaces[i];
-        if (entry.program_hash != program_hash) {
-            continue;
-        }
-        if (entry.logical_stage != logical_stage) {
-            continue;
-        }
-        if (entry.unified_binding_count != binding_count) {
-            continue;
-        }
-        out = entry;
-        return true;
-    }
-    return false;
-}
-
 bool ResolvePipelineBindings(u64 pipeline_id,
                               std::span<const PipelineStageBinding> stages) noexcept {
     try {
@@ -116,19 +91,22 @@ bool ResolvePipelineBindings(u64 pipeline_id,
                 resolved.problem = "a pipeline stage has an unknown logical stage";
                 return false;
             }
-            // The pipeline must select a module the capture actually saw. A module the capture
-            // never observed has no declaration to compare against, so its bindings cannot be
-            // shown to match the layout.
-            //
-            // The match is on program hash and stage, and the declaration's own binding count must
-            // agree with what the layout allocated. A permutation of the same program with a
-            // different count is not the one this pipeline selected.
+            // The pipeline must select a permutation the capture actually saw. The match is on the
+            // exact permutation hash, which the pipeline key carries, so two permutations of one
+            // program with identical descriptor counts cannot be confused.
             Interface declaration{};
-            if (!FindDeclaration(stage.program_hash, stage.logical_stage, stage.binding_count,
-                                 declaration)) {
-                resolved.problem =
-                    "a pipeline stage selects a module the capture never saw, or its layout "
-                    "disagrees with the declaration";
+            if (!FindByPermutationHash(stage.permutation_hash, declaration)) {
+                resolved.problem = "a pipeline stage selects a permutation the capture never saw";
+                return false;
+            }
+            if (declaration.logical_stage != stage.logical_stage) {
+                resolved.problem = "a pipeline stage's permutation belongs to another stage";
+                return false;
+            }
+            // The declaration's own count must still agree with what the layout allocated, or the
+            // two describe different interfaces.
+            if (declaration.unified_binding_count != stage.binding_count) {
+                resolved.problem = "a pipeline stage's layout disagrees with its declaration";
                 return false;
             }
             resolved.stages[resolved.stage_count++] = stage;

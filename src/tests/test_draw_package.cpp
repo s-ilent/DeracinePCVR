@@ -482,7 +482,11 @@ Core::DrawPackage::ShaderInterface MakeInterface(u64 program_hash, u32 perm_idx,
     interface.unified_binding_count = 1;
     Core::DrawPackage::ShaderDescriptor descriptor{};
     descriptor.set = 0;
+    descriptor.local_binding = 0;
     descriptor.binding = 0;
+    // The effective binding is established by the pipeline's resolved mapping. A fixture that left
+    // this false would describe a descriptor whose Vulkan number was never resolved.
+    descriptor.binding_resolved = true;
     descriptor.descriptor_class = 1; // uniform buffer
     descriptor.count = 1;
     descriptor.stage_flags = 1u << logical_stage;
@@ -691,7 +695,9 @@ TEST(DrawPackageInterface, ASamplerNeedsNoCapturedBuffer) {
     auto package = MakeOriginalShaderPackage();
     Core::DrawPackage::ShaderDescriptor sampler{};
     sampler.set = 0;
+    sampler.local_binding = 5;
     sampler.binding = 5;
+    sampler.binding_resolved = true;
     sampler.descriptor_class = 5; // sampler
     sampler.count = 1;
     sampler.stage_flags = 1u << 0;
@@ -700,7 +706,8 @@ TEST(DrawPackageInterface, ASamplerNeedsNoCapturedBuffer) {
     // A sampler needs no buffer, which was the original point, but it does need a captured sampler
     // identity. A descriptor the module declares must resolve in its own domain.
     EXPECT_FALSE(ValidatePackage(package, error));
-    EXPECT_NE(error.find("no captured sampler"), std::string::npos) << error;
+    // The message now names the binding, because a sampler at the wrong binding is not a match.
+    EXPECT_NE(error.find("no captured sampler at that binding"), std::string::npos) << error;
 
     // The sampler must occupy the binding the descriptor declares, so the fixture names it.
     Core::DrawPackage::Sampler captured{};

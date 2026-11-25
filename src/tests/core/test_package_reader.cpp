@@ -113,7 +113,8 @@ std::string Schema4Json(const std::string& stage_file, const std::string& stage_
       "push_constant_stage_flags": 1,
       "unified_binding_count": 1,
       "descriptors": [
-        { "set": 0, "binding": 0, "descriptor_class": 0, "count": 1,
+        { "set": 0, "local_binding": 0, "binding": 2, "binding_resolved": true,
+          "descriptor_class": 0, "count": 1,
           "stage_flags": 1, "guest_resource_index": 4294967295, "written": true }
       ]
     }
@@ -225,7 +226,10 @@ TEST(PackageReader, TheDescriptorInterfaceIsParsed) {
     package::Read(dir.path().string(), out, error);
     ASSERT_EQ(out.shader_interfaces.size(), 1u);
     ASSERT_EQ(out.shader_interfaces[0].descriptors.size(), 1u);
-    EXPECT_EQ(out.shader_interfaces[0].descriptors[0].binding, 0u);
+    // The effective binding is distinct from the shader-local one, and the reader preserves both.
+    EXPECT_EQ(out.shader_interfaces[0].descriptors[0].local_binding, 0u);
+    EXPECT_EQ(out.shader_interfaces[0].descriptors[0].binding, 2u);
+    EXPECT_TRUE(out.shader_interfaces[0].descriptors[0].binding_resolved);
     EXPECT_EQ(out.shader_interfaces[0].descriptors[0].stage_flags, 1u);
     EXPECT_EQ(out.shader_interfaces[0].push_constant_size, 16u);
 }

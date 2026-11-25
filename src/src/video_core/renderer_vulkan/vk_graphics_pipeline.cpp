@@ -515,7 +515,10 @@ void GraphicsPipeline::BuildDescSetLayout(bool preloading) {
         if (layout_stage_count < MaxShaderStages) {
             auto& entry = layout_stages[layout_stage_count++];
             entry.logical_stage = u32(stage->l_stage);
-            entry.program_hash = stage->pgm_hash;
+            // The key's stage hash is HashCombine(program_hash, permutation_index), which is the
+            // exact permutation identity the interface capture records.
+            entry.permutation_hash = static_cast<u64>(
+                key.stage_hashes[static_cast<u32>(stage->l_stage)]);
             entry.binding_base = stage_start;
             entry.binding_count = binding - stage_start;
         }
@@ -525,15 +528,12 @@ void GraphicsPipeline::BuildDescSetLayout(bool preloading) {
     // reported and the pipeline is left unresolved, because a guessed number would be worse than an
     // absent one.
     //
-    // The identity is the pipeline key's stage hashes, which is what distinguishes two pipelines
-    // that select different permutations. It is not the permutation identity: one permutation can
-    // serve several pipelines, and each needs its own mapping.
+    // The identity must be the one the draw carries, or the exporter cannot look the mapping up.
+    // `Rasterizer` records `std::hash<GraphicsPipelineKey>{}(key)` on the draw snapshot, so the same
+    // expression is used here. Deriving a different hash from the same key would produce a mapping
+    // that is correct and unreachable.
     if (Core::ShaderInterface::IsEnabled()) {
-        u64 pipeline_id = 0xcbf29ce484222325ull;
-        for (const size_t stage_hash : key.stage_hashes) {
-            pipeline_id ^= static_cast<u64>(stage_hash);
-            pipeline_id *= 0x100000001b3ull;
-        }
+        const u64 pipeline_id = std::hash<GraphicsPipelineKey>{}(key);
         if (!Core::ShaderInterface::ResolvePipelineBindings(
                 pipeline_id,
                 std::span<const Core::ShaderInterface::PipelineStageBinding>{

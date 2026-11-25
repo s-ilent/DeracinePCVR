@@ -216,7 +216,20 @@ struct ShaderStage {
 /// One descriptor the effective module declares, as the production layout allocated it.
 struct ShaderDescriptor {
     u32 set{};
+    /// The shader's own declaration order, from zero within its stage.
+    u32 local_binding{};
+    /// The effective Vulkan binding the pipeline allocated.
+    ///
+    /// This is not the declaration's local number. `BuildDescSetLayout` allocates one counter across
+    /// every stage, so a fragment stage's first buffer is binding 0 while a vertex stage's first is
+    /// binding N. Presenting the local number as the global one would name the wrong descriptor for
+    /// every stage after the first.
     u32 binding{};
+    /// Whether the effective binding was established from the pipeline's resolved mapping.
+    ///
+    /// Zero is a legitimate binding, so this flag is what distinguishes "binding 0" from "not
+    /// resolved". An unresolved descriptor is refused by the validator.
+    bool binding_resolved{};
     /// The descriptor class, in the vocabulary the SPIR-V uses.
     u32 descriptor_class{};
     u32 count{1};
@@ -233,6 +246,12 @@ struct ShaderDescriptor {
 /// produce permutations with different resource interfaces, so a lookup by program hash alone is
 /// insufficient.
 struct ShaderInterface {
+    /// The pipeline whose layout resolved this interface's bindings.
+    ///
+    /// A permutation is reusable across pipelines with different stage combinations, so the
+    /// effective bindings are a property of the pipeline. Recording it lets a consumer check that
+    /// the interface and the draw describe the same pipeline.
+    u64 pipeline_id{};
     u64 program_hash{};
     u32 permutation_index{};
     u64 permutation_hash{};
@@ -437,6 +456,11 @@ struct Sampler {
     bool has_vk_binding{};
     /// The logical stage the descriptor belongs to.
     u32 logical_stage{};
+    /// The draw this observation belongs to.
+    ///
+    /// A sampler is only evidence for the draw that bound it. Recording the provenance lets a
+    /// consumer check that the package's samplers and its draw describe the same execution.
+    u64 provenance_id{};
     u64 guest_hash{};
     u32 mag_filter{};
     u32 min_filter{};
@@ -902,6 +926,15 @@ struct Package {
                         error = "a descriptor interface declares a zero descriptor count";
                         return false;
                     }
+                    // The effective binding must have been established from the pipeline's resolved
+                    // mapping. A descriptor still carrying its shader-local number would name the
+                    // wrong Vulkan binding for every stage after the first, and zero is a
+                    // legitimate binding, so the flag is the only way to tell them apart.
+                    if (!descriptor.binding_resolved) {
+                        error = "a descriptor interface declares a binding whose effective Vulkan "
+                                "number was never resolved";
+                        return false;
+                    }
                     // Each descriptor class is resolved in the collection that actually holds it.
                     // Buffers live in `bindings`, images in `textures`, samplers in `samplers`.
                     // Looking for an image in the buffer collection would reject a package whose
@@ -975,14 +1008,20 @@ struct Package {
                                 return false;
                             }
                         }
-                        // A record claiming more elements than the descriptor declares is a
-                        // disagreement between the capture and the layout, not a superset.
+                        // The captured array count must be known and must agree with the
+                        // declaration. Zero is the field's default, so treating it as agreement
+                        // would let an uncaptured count pass as a match: absence of evidence is not
+                        // evidence of a match.
                         for (const auto& texture : package.textures) {
                             if (texture.vk_binding != descriptor.binding) {
                                 continue;
                             }
-                            if (texture.array_count != 0 &&
-                                texture.array_count != descriptor.count) {
+                            if (texture.array_count == 0) {
+                                error = "an image descriptor's captured array count is unknown, so "
+                                        "it cannot be shown to match its declaration";
+                                return false;
+                            }
+                            if (texture.array_count != descriptor.count) {
                                 error = "an image descriptor's captured array count disagrees with "
                                         "its declaration";
                                 return false;

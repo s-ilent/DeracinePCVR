@@ -1112,6 +1112,12 @@ void WriteFirstPackage(const char* directory) noexcept {
                 const auto images = TextureCapture::Images();
                 const auto samplers = TextureCapture::Samplers();
                 for (const auto& sampler : samplers) {
+                    // Only the selected draw's observations belong in its package. A sampler from
+                    // another draw may share the shader, the binding number and even the state, and
+                    // admitting it would let an unrelated descriptor satisfy a declaration.
+                    if (sampler.provenance_id != draw.provenance_id) {
+                        continue;
+                    }
                     DrawPackage::Sampler out{};
                     out.id = sampler.id;
                     // The binding identity travels with the state, so a validator can check that
@@ -1120,6 +1126,7 @@ void WriteFirstPackage(const char* directory) noexcept {
                     out.vk_binding = sampler.vk_binding;
                     out.has_vk_binding = sampler.has_vk_binding;
                     out.logical_stage = sampler.logical_stage;
+                    out.provenance_id = sampler.provenance_id;
                     out.guest_hash = sampler.guest_hash;
                     out.mag_filter = sampler.mag_filter;
                     out.min_filter = sampler.min_filter;
@@ -1144,14 +1151,17 @@ void WriteFirstPackage(const char* directory) noexcept {
                 // late record is joined onto the binding record by the identity the two share,
                 // rather than appended as a separate entry.
                 u32 next_texture_id = 1;
-                std::map<std::tuple<u64, u64, u32, u32, u32>, u32> by_binding;
+                // The array element is part of the join identity. Two elements of one binding may
+                // reference the same image and view, and joining them would collapse two descriptors
+                // into one, leaving the second element unrepresented.
+                std::map<std::tuple<u64, u64, u32, u32, u32, u32>, u32> by_binding;
                 for (const auto& image : images) {
                     if (image.provenance_id != draw.provenance_id)
                         continue;
 
                     const auto join_key = std::make_tuple(image.stage_hash, image.image_uid,
-                                                          image.vk_binding, image.mip_first,
-                                                          image.layer_first);
+                                                          image.vk_binding, image.array_element,
+                                                          image.mip_first, image.layer_first);
                     if (const auto it = by_binding.find(join_key); it != by_binding.end()) {
                         // An existing entry for this binding: attach the contents to it.
                         auto& existing = package.textures[it->second - 1];
@@ -1185,6 +1195,11 @@ void WriteFirstPackage(const char* directory) noexcept {
                     DrawPackage::Texture out{};
                     out.id = next_texture_id++;
                     out.vk_binding = image.vk_binding;
+                    // The element identity travels with the binding. A descriptor with
+                    // `descriptorCount = N` is one binding with N elements, and the package must
+                    // preserve which element each record is.
+                    out.array_element = image.array_element;
+                    out.array_count = image.array_count;
                     out.stage = image.stage;
                     out.stage_hash = image.stage_hash;
                     out.guest_address = image.guest_address;
@@ -1344,6 +1359,12 @@ void WriteFirstPackage(const char* directory) noexcept {
                 package.readiness.shader_binaries_ready = have_vs && have_ps;
 
                 // The descriptor interface of each effective stage, keyed by permutation hash.
+                //
+                // The declaration's own `binding` is the shader-local number, not the Vulkan one.
+                // The effective number comes from the pipeline's resolved mapping, which is keyed by
+                // the identity the draw carries. A descriptor whose mapping cannot be resolved is
+                // exported with `binding_resolved = false` and the validator refuses it, rather than
+                // silently presenting a local number as a global one.
                 const auto add_interface = [&](u64 permutation_hash) {
                     Core::ShaderInterface::Interface captured{};
                     if (!Core::ShaderInterface::FindByPermutationHash(permutation_hash,
@@ -1361,11 +1382,23 @@ void WriteFirstPackage(const char* directory) noexcept {
                     out.push_constant_size = captured.push_constant.size;
                     out.push_constant_stage_flags = captured.push_constant.stage_flags;
                     out.unified_binding_count = captured.unified_binding_count;
+                    out.pipeline_id = draw.pipeline_hash;
                     for (u32 d = 0; d < captured.descriptor_count; ++d) {
                         const auto& descriptor = captured.descriptors[d];
                         DrawPackage::ShaderDescriptor entry{};
                         entry.set = descriptor.set;
+                        // Both identities are preserved: the shader's own declaration and the
+                        // effective Vulkan binding the pipeline allocated.
+                        entry.local_binding = descriptor.local_binding;
                         entry.binding = descriptor.binding;
+                        entry.binding_resolved = false;
+                        u32 resolved = 0;
+                        if (Core::ShaderInterface::ResolveDescriptorBinding(
+                                draw.pipeline_hash, captured.logical_stage,
+                                descriptor.local_binding, resolved)) {
+                            entry.binding = resolved;
+                            entry.binding_resolved = true;
+                        }
                         entry.descriptor_class = static_cast<u32>(descriptor.cls);
                         entry.count = descriptor.count;
                         entry.stage_flags = descriptor.stage_flags;

@@ -258,6 +258,8 @@ bool Read(const std::string& directory, Package& out, std::string& error,
             Texture texture{};
             texture.id = entry.at("id").get<u32>();
             texture.vk_binding = entry.value("vk_binding", 0u);
+            texture.array_element = entry.value("array_element", 0u);
+            texture.array_count = entry.value("array_count", 0u);
             texture.image_format = entry.value("image_format", 0u);
             texture.view_format = entry.value("view_format", 0u);
             texture.width = entry.value("width", 0u);
@@ -291,6 +293,7 @@ bool Read(const std::string& directory, Package& out, std::string& error,
             sampler.vk_binding = entry.value("vk_binding", 0u);
             sampler.has_vk_binding = entry.value("has_vk_binding", false);
             sampler.logical_stage = entry.value("logical_stage", 0u);
+            sampler.provenance_id = entry.value("provenance_id", 0ull);
             sampler.mag_filter = entry.value("mag_filter", 0u);
             sampler.min_filter = entry.value("min_filter", 0u);
             sampler.mip_filter = entry.value("mip_filter", 0u);
@@ -390,7 +393,9 @@ bool Read(const std::string& directory, Package& out, std::string& error,
             for (const auto& d : entry.value("descriptors", nlohmann::json::array())) {
                 ShaderDescriptor descriptor{};
                 descriptor.set = d.value("set", 0u);
-                descriptor.binding = d.value("binding", 0u);
+                descriptor.local_binding = d.value("local_binding", 0u);
+            descriptor.binding = d.value("binding", 0u);
+            descriptor.binding_resolved = d.value("binding_resolved", false);
                 descriptor.descriptor_class = d.value("descriptor_class", 0u);
                 descriptor.count = d.value("count", 1u);
                 descriptor.stage_flags = d.value("stage_flags", 0u);

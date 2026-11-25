@@ -286,6 +286,8 @@ bool WritePackage(const Package& package, const std::string& directory) noexcept
             json << "    {\n";
             json << "      \"id\": " << texture.id << ",\n";
             json << "      \"vk_binding\": " << texture.vk_binding << ",\n";
+        json << "      \"array_element\": " << texture.array_element << ",\n";
+        json << "      \"array_count\": " << texture.array_count << ",\n";
             json << "      \"stage\": " << texture.stage << ",\n";
             json << "      \"stage_hash\": " << texture.stage_hash << ",\n";
             json << "      \"guest_address\": " << texture.guest_address << ",\n";
@@ -338,6 +340,7 @@ bool WritePackage(const Package& package, const std::string& directory) noexcept
             json << "      \"has_vk_binding\": "
                  << (sampler.has_vk_binding ? "true" : "false") << ",\n";
             json << "      \"logical_stage\": " << sampler.logical_stage << ",\n";
+            json << "      \"provenance_id\": " << sampler.provenance_id << ",\n";
             json << "      \"guest_hash\": " << sampler.guest_hash << ",\n";
             json << "      \"mag_filter\": " << sampler.mag_filter << ",\n";
             json << "      \"min_filter\": " << sampler.min_filter << ",\n";
@@ -420,12 +423,16 @@ bool WritePackage(const Package& package, const std::string& directory) noexcept
                  << interface.push_constant_stage_flags << ",\n";
             json << "      \"unified_binding_count\": " << interface.unified_binding_count
                  << ",\n";
+            json << "      \"pipeline_id\": " << interface.pipeline_id << ",\n";
             json << "      \"descriptors\": [\n";
             for (size_t d = 0; d < interface.descriptors.size(); ++d) {
                 const auto& descriptor = interface.descriptors[d];
                 json << "        {\n";
                 json << "          \"set\": " << descriptor.set << ",\n";
+                json << "          \"local_binding\": " << descriptor.local_binding << ",\n";
                 json << "          \"binding\": " << descriptor.binding << ",\n";
+                json << "          \"binding_resolved\": "
+                     << (descriptor.binding_resolved ? "true" : "false") << ",\n";
                 json << "          \"descriptor_class\": " << descriptor.descriptor_class
                      << ",\n";
                 json << "          \"count\": " << descriptor.count << ",\n";

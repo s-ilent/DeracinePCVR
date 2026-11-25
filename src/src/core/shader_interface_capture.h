@@ -141,12 +141,13 @@ void NoteInterface(const Interface& entry) noexcept;
 struct PipelineStageBinding {
     /// The logical stage the layout allocated bindings for.
     u32 logical_stage{};
-    /// The program hash of the module the pipeline selected for that stage.
+    /// The exact permutation hash the pipeline selected for that stage.
     ///
-    /// The pipeline key identifies the module by hash, not by permutation index, so the declaration
-    /// is matched on the hash and the stage. A permutation whose binding count disagrees with the
-    /// layout is not the one the pipeline selected.
-    u64 program_hash{};
+    /// The pipeline key's `stage_hashes` entry is `HashCombine(program_hash, permutation_index)`,
+    /// which is the same value the interface capture records as `permutation_hash`. That is the
+    /// exact identity, so the declaration is matched on it rather than on a count that two
+    /// permutations of one program could share.
+    u64 permutation_hash{};
     /// The global binding the layout started this stage at.
     u32 binding_base{};
     /// The number of bindings the layout allocated to this stage.

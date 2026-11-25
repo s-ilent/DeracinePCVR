@@ -137,7 +137,11 @@ ShaderDescriptor Descriptor(u32 cls, u32 binding,
                             u32 count = 1) {
     ShaderDescriptor descriptor{};
     descriptor.set = 0;
+    descriptor.local_binding = binding;
     descriptor.binding = binding;
+    // The effective binding is established by the pipeline's resolved mapping. A fixture that left
+    // this false would be describing a descriptor whose Vulkan number was never resolved.
+    descriptor.binding_resolved = true;
     descriptor.descriptor_class = cls;
     descriptor.count = count;
     descriptor.stage_flags = 1;

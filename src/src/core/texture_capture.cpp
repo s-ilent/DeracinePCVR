@@ -157,9 +157,13 @@ void CommitPendingImages(u64 provenance_id) noexcept {
             // visit from a genuinely separate binding of the same image.
             const bool duplicate = std::ranges::any_of(
                 g_state.images, [&record](const ImageRecord& existing) {
+                    // The array element is part of the identity. Two elements of one binding may
+                    // reference the same image and view, and they are still two descriptors that
+                    // must both survive to the package.
                     return existing.provenance_id == record.provenance_id &&
                            existing.stage_hash == record.stage_hash &&
                            existing.vk_binding == record.vk_binding &&
+                           existing.array_element == record.array_element &&
                            existing.image_uid == record.image_uid &&
                            existing.mip_first == record.mip_first &&
                            existing.layer_first == record.layer_first;

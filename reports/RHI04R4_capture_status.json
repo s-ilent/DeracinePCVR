@@ -1,0 +1,86 @@
+{
+  "schema": 3,
+  "experiment": "RHI-04R4 end-to-end capture identity",
+  "branch": "research/rhi04r4-end-to-end-identity-20261125",
+  "base_commit": "01032226b99e158dbcc83fc283964592f19a4130",
+  "status": "READY_FOR_SECOND_CAPTURE_WITH_EXPLICIT_LIMITATIONS",
+  "offline_gate_passed": true,
+  "launch_permission": "not_requested",
+  "run_count": 0,
+  "game_sha256": "8CAEE78E40693B2E57C68CE87CE9507D907B824B6F6A4C481F414AC0627011A0",
+  "game_approved": true,
+  "corrected_emulator": {
+    "sha256": "53D0CBA2A1E6D9F74070CB0C1E1DD69A0CD9B382C5D77D3E4E3596898D502F3B",
+    "size": 77657088,
+    "runtime_confirmed": false
+  },
+  "tests": {
+    "cxx_total": 366,
+    "cxx_suites": 20,
+    "provenance_cases": 39,
+    "gpu_mutation_cases": 13,
+    "vulkan_validation_errors": 0,
+    "baseline_r3": 352,
+    "added_suite": "shadps4_end_to_end_identity_test, 14 cases"
+  },
+  "defects": [
+    {
+      "id": "SC-R4",
+      "name": "the pipeline mapping was never consumed by package export",
+      "confirmed": true,
+      "detail": "the exporter copied the shader-local binding, and the resolver keyed on a different hash from the one the draw carries",
+      "repaired": true
+    },
+    {
+      "id": "SC-R5",
+      "name": "descriptor array elements did not survive export",
+      "confirmed": true,
+      "detail": "five gaps: capture, dedup, join key, export and serialization",
+      "repaired": true
+    },
+    {
+      "id": "SC-R6",
+      "name": "sampler observations crossed draw boundaries",
+      "confirmed": true,
+      "detail": "the exporter copied every retained sampler regardless of the selected draw",
+      "repaired": true
+    },
+    {
+      "id": "SC-R7",
+      "name": "exact permutation identity",
+      "confirmed": false,
+      "detail": "a real ambiguity in the code, eliminated by matching on the permutation hash the pipeline key already carries; not a reproducible runtime defect",
+      "repaired": true
+    },
+    {
+      "id": "SC-R8",
+      "name": "unknown array counts were tolerated",
+      "confirmed": true,
+      "detail": "zero is the field default, so an uncaptured count passed as agreement",
+      "repaired": true
+    }
+  ],
+  "identity_map": {
+    "session": "CaptureSession::TryInstall to session.json and every artifact",
+    "draw_provenance": "RhiEntryProbe::CurrentDrawProvenanceId to package, tape, bridge and samplers",
+    "pipeline": "std::hash<GraphicsPipelineKey>{}(key) to ShaderInterface::pipeline_id",
+    "permutation": "HashCombine(program_hash, perm_index) to permutation_hash",
+    "descriptor": "pipeline + set + binding",
+    "array_element": "dstBinding + dstArrayElement + element to Texture::array_element",
+    "buffer_resource": "host allocation + range + content hash",
+    "image_resource": "image uid + subresource + content hash",
+    "sampler": "provenance + stage + binding + state"
+  },
+  "first_unresolved_invariant": "no runtime evidence exists that any draw has a complete descriptor set",
+  "next_experiment": "one bounded second capture against the corrected binary",
+  "next_experiment_needs_launch": true,
+  "next_experiment_authorized": false,
+  "next_experiment_acceptance": [
+    "no pipeline reported a layout disagreement",
+    "NoteHostUpload was called with a nonzero count",
+    "at least one draw has every declared descriptor resolved with retained bytes",
+    "a package is written, or a precise refusal names the first missing resource class",
+    "if a package is written, a tape is produced for its selected provenance",
+    "if both exist, the identity gate runs and reports its outcome"
+  ]
+}

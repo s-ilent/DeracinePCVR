@@ -46,10 +46,10 @@ Interface MakeDeclaration(u64 program_hash, u32 logical_stage, u32 count) {
     return interface;
 }
 
-PipelineStageBinding Stage(u32 logical_stage, u64 program_hash, u32 base, u32 count) {
+PipelineStageBinding Stage(u32 logical_stage, u64 permutation_hash, u32 base, u32 count) {
     PipelineStageBinding stage{};
     stage.logical_stage = logical_stage;
-    stage.program_hash = program_hash;
+    stage.permutation_hash = permutation_hash;
     stage.binding_base = base;
     stage.binding_count = count;
     return stage;

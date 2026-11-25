@@ -64,6 +64,13 @@ struct TextureSubresource {
 struct Texture {
     u32 id{};
     u32 vk_binding{};
+    /// The element index within the descriptor binding.
+    ///
+    /// A descriptor with `descriptorCount = N` is one binding with N elements. The element is not a
+    /// separate binding, and a consumer that treated it as one would address the wrong descriptor.
+    u32 array_element{};
+    /// The number of elements the descriptor write declared. Zero means unknown.
+    u32 array_count{};
     u32 image_format{};
     u32 view_format{};
     u32 width{};
@@ -86,6 +93,8 @@ struct Sampler {
     bool has_vk_binding{};
     /// The logical stage the descriptor belongs to.
     u32 logical_stage{};
+    /// The draw this observation belongs to.
+    u64 provenance_id{};
     u32 mag_filter{};
     u32 min_filter{};
     u32 mip_filter{};
@@ -148,7 +157,13 @@ struct ShaderBinding {
 /// One descriptor the effective module declares, as the production layout allocated it.
 struct ShaderDescriptor {
     u32 set{};
+    /// The shader's own declaration order, from zero within its stage.
+    u32 local_binding{};
+    /// The effective Vulkan binding the pipeline allocated.
     u32 binding{};
+    /// Whether the effective binding was established. Zero is a legitimate binding, so this flag is
+    /// what distinguishes "binding 0" from "not resolved".
+    bool binding_resolved{};
     /// The descriptor class, in the vocabulary the SPIR-V uses.
     u32 descriptor_class{};
     u32 count{1};
