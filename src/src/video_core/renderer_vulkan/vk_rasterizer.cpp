@@ -2204,7 +2204,23 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
             // joins the two: shadPS4 binds them as separate descriptors.
             record.associated_image = sampler.associated_image;
             record.stage_hash = stage.pgm_hash;
+            record.logical_stage = static_cast<u32>(stage.l_stage);
+
+            image_infos.emplace_back(vk_sampler, VK_NULL_HANDLE, vk::ImageLayout::eGeneral);
+            auto& set_write = set_writes[set_write_index++];
+            set_write.dstSet = VK_NULL_HANDLE;
+            set_write.dstBinding = binding.unified++;
+            set_write.dstArrayElement = 0;
+            set_write.descriptorCount = 1;
+            set_write.descriptorType = vk::DescriptorType::eSampler;
+            set_write.pImageInfo = &image_infos.back();
+
+            // The binding number is the descriptor write's own, taken after the counter advanced.
+            // Predicting it before the write would be a second source of truth that could drift.
+            record.vk_binding = set_write.dstBinding;
+            record.has_vk_binding = true;
             Core::TextureCapture::NoteSampler(record);
+            continue;
         }
 
         image_infos.emplace_back(vk_sampler, VK_NULL_HANDLE, vk::ImageLayout::eGeneral);

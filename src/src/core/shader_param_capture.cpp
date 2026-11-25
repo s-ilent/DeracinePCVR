@@ -1114,6 +1114,12 @@ void WriteFirstPackage(const char* directory) noexcept {
                 for (const auto& sampler : samplers) {
                     DrawPackage::Sampler out{};
                     out.id = sampler.id;
+                    // The binding identity travels with the state, so a validator can check that
+                    // the sampler occupying a declared binding is the one the draw used rather than
+                    // merely that some sampler exists.
+                    out.vk_binding = sampler.vk_binding;
+                    out.has_vk_binding = sampler.has_vk_binding;
+                    out.logical_stage = sampler.logical_stage;
                     out.guest_hash = sampler.guest_hash;
                     out.mag_filter = sampler.mag_filter;
                     out.min_filter = sampler.min_filter;

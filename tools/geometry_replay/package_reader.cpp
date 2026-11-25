@@ -288,6 +288,9 @@ bool Read(const std::string& directory, Package& out, std::string& error,
         for (const auto& entry : doc.value("samplers", nlohmann::json::array())) {
             Sampler sampler{};
             sampler.id = entry.at("id").get<u64>();
+            sampler.vk_binding = entry.value("vk_binding", 0u);
+            sampler.has_vk_binding = entry.value("has_vk_binding", false);
+            sampler.logical_stage = entry.value("logical_stage", 0u);
             sampler.mag_filter = entry.value("mag_filter", 0u);
             sampler.min_filter = entry.value("min_filter", 0u);
             sampler.mip_filter = entry.value("mip_filter", 0u);

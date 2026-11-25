@@ -81,6 +81,11 @@ struct Texture {
 
 struct Sampler {
     u64 id{};
+    /// The unified Vulkan binding number this sampler descriptor occupies.
+    u32 vk_binding{};
+    bool has_vk_binding{};
+    /// The logical stage the descriptor belongs to.
+    u32 logical_stage{};
     u32 mag_filter{};
     u32 min_filter{};
     u32 mip_filter{};

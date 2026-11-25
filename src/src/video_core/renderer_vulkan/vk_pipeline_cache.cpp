@@ -762,7 +762,12 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
             }
             auto& descriptor = interface.descriptors[interface.descriptor_count++];
             descriptor.set = 0;
+            // The shader-local binding, counted from zero within this stage. The effective Vulkan
+            // binding is resolved later, when the full pipeline layout is known, because
+            // BuildDescSetLayout allocates one counter across every stage.
+            descriptor.local_binding = binding;
             descriptor.binding = binding;
+            descriptor.binding_resolved = false;
             descriptor.cls = cls;
             descriptor.count = count;
             descriptor.stage_flags = stage_bit;

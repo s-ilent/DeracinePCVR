@@ -421,6 +421,14 @@ struct Texture {
 /// The effective sampler state, as the production sampler construction produced it.
 struct Sampler {
     u64 id{};
+    /// The unified Vulkan binding number this sampler descriptor occupies.
+    ///
+    /// A sampler's identity is the binding it fills, not merely that a sampler exists. Without this
+    /// a validator can only check that some sampler is present, which an unrelated one satisfies.
+    u32 vk_binding{};
+    bool has_vk_binding{};
+    /// The logical stage the descriptor belongs to.
+    u32 logical_stage{};
     u64 guest_hash{};
     u32 mag_filter{};
     u32 min_filter{};
@@ -929,36 +937,54 @@ struct Package {
                     }
                     case 3: // SampledImage
                     case 4: { // StorageImage
-                        bool resolved = false;
-                        for (const auto& texture : package.textures) {
-                            if (texture.vk_binding != descriptor.binding) {
-                                continue;
-                            }
-                            // The descriptor may address an array, so every element must carry
-                            // content rather than merely the first.
-                            if (!texture.subresources.empty()) {
-                                resolved = true;
+                        // A descriptor with count N occupies N consecutive bindings, one per array
+                        // element. Every element must carry content: one texture with several mip
+                        // levels is not an array of several elements, and a duplicated element
+                        // cannot stand in for a missing one.
+                        for (u32 element = 0; element < descriptor.count; ++element) {
+                            const u32 element_binding = descriptor.binding + element;
+                            bool element_resolved = false;
+                            for (const auto& texture : package.textures) {
+                                if (texture.vk_binding != element_binding) {
+                                    continue;
+                                }
+                                if (texture.subresources.empty()) {
+                                    continue;
+                                }
+                                element_resolved = true;
                                 break;
                             }
-                        }
-                        if (!resolved) {
-                            error = "an image descriptor declares a binding with no captured image "
-                                    "content";
-                            return false;
+                            if (!element_resolved) {
+                                error = "an image descriptor array element " +
+                                        std::to_string(element) + " at binding " +
+                                        std::to_string(element_binding) +
+                                        " has no captured image content";
+                                return false;
+                            }
                         }
                         break;
                     }
                     case 5: { // Sampler
+                        // The sampler must occupy the binding the descriptor declares. Any sampler
+                        // with a nonzero id would let an unrelated one from another stage or draw
+                        // satisfy the declaration.
                         bool resolved = false;
                         for (const auto& sampler : package.samplers) {
-                            if (sampler.id != 0) {
-                                resolved = true;
-                                break;
+                            if (!sampler.has_vk_binding) {
+                                continue;
                             }
+                            if (sampler.vk_binding != descriptor.binding) {
+                                continue;
+                            }
+                            if (sampler.id == 0) {
+                                continue;
+                            }
+                            resolved = true;
+                            break;
                         }
                         if (!resolved) {
                             error = "a sampler descriptor declares a binding with no captured "
-                                    "sampler";
+                                    "sampler at that binding";
                             return false;
                         }
                         break;

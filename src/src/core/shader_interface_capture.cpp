@@ -14,6 +14,10 @@
 #include "common/logging/log.h"
 
 namespace Core::ShaderInterface {
+
+/// The logical stages a graphics pipeline can allocate bindings for. The shader compiler's
+/// own enum is not visible here, and this module only needs the bound.
+inline constexpr u32 MaxLogicalStages = 8;
 namespace {
 
 struct CaptureState {
@@ -53,6 +57,69 @@ void TryInstall() noexcept {
     g_state.enabled.store(true, std::memory_order_relaxed);
     LOG_INFO(Core_Linker, "DERACINE_SHADER_INTERFACE_INSTALL limit={} max_descriptors={}",
              MaxRetainedInterfaces, MaxDescriptorsPerStage);
+}
+
+void ResetForTesting() noexcept {
+    std::scoped_lock lock{g_state.mutex};
+    g_state.count.store(0, std::memory_order_relaxed);
+    g_state.duplicate_count.store(0, std::memory_order_relaxed);
+    g_state.capacity_dropped.store(0, std::memory_order_relaxed);
+    g_state.enabled.store(true, std::memory_order_relaxed);
+}
+
+bool ResolveGlobalBindings(std::span<const u32> stage_order,
+                           std::span<const u32> stage_counts) noexcept {
+    try {
+        if (!g_state.enabled.load(std::memory_order_relaxed)) {
+            return true;
+        }
+        if (stage_order.size() != stage_counts.size()) {
+            return false;
+        }
+
+        // The base and count each stage is allocated at, keyed by logical stage. The layout's
+        // arrays are positional, so they are indexed by position here and by stage afterwards.
+        std::array<u32, MaxLogicalStages> base{};
+        std::array<u32, MaxLogicalStages> count_by_stage{};
+        std::array<bool, MaxLogicalStages> known{};
+        u32 running = 0;
+        for (size_t i = 0; i < stage_order.size(); ++i) {
+            if (stage_order[i] >= MaxLogicalStages) {
+                return false;
+            }
+            base[stage_order[i]] = running;
+            count_by_stage[stage_order[i]] = stage_counts[i];
+            known[stage_order[i]] = true;
+            running += stage_counts[i];
+        }
+
+        std::scoped_lock lock{g_state.mutex};
+        const u32 count = g_state.count.load(std::memory_order_relaxed);
+        for (u32 i = 0; i < count; ++i) {
+            auto& interface = g_state.interfaces[i];
+            if (interface.logical_stage >= MaxLogicalStages ||
+                !known[interface.logical_stage]) {
+                // A stage the layout did not allocate has no binding number. Leaving it unresolved
+                // is correct: a guessed number would be worse than an absent one.
+                continue;
+            }
+            // The capture's own count must agree with the layout's for this stage, or the two
+            // describe different interfaces and no binding number can be trusted.
+            if (interface.unified_binding_count != count_by_stage[interface.logical_stage]) {
+                return false;
+            }
+            interface.stage_binding_base = base[interface.logical_stage];
+            interface.stage_binding_base_known = true;
+            for (u32 d = 0; d < interface.descriptor_count; ++d) {
+                auto& descriptor = interface.descriptors[d];
+                descriptor.binding = interface.stage_binding_base + descriptor.local_binding;
+                descriptor.binding_resolved = true;
+            }
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
 }
 
 void NoteInterface(const Interface& entry) noexcept {

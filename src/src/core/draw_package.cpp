@@ -334,6 +334,10 @@ bool WritePackage(const Package& package, const std::string& directory) noexcept
             const auto& sampler = package.samplers[i];
             json << "    {\n";
             json << "      \"id\": " << sampler.id << ",\n";
+            json << "      \"vk_binding\": " << sampler.vk_binding << ",\n";
+            json << "      \"has_vk_binding\": "
+                 << (sampler.has_vk_binding ? "true" : "false") << ",\n";
+            json << "      \"logical_stage\": " << sampler.logical_stage << ",\n";
             json << "      \"guest_hash\": " << sampler.guest_hash << ",\n";
             json << "      \"mag_filter\": " << sampler.mag_filter << ",\n";
             json << "      \"min_filter\": " << sampler.min_filter << ",\n";

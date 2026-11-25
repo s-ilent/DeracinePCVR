@@ -702,8 +702,11 @@ TEST(DrawPackageInterface, ASamplerNeedsNoCapturedBuffer) {
     EXPECT_FALSE(ValidatePackage(package, error));
     EXPECT_NE(error.find("no captured sampler"), std::string::npos) << error;
 
+    // The sampler must occupy the binding the descriptor declares, so the fixture names it.
     Core::DrawPackage::Sampler captured{};
     captured.id = 1;
+    captured.vk_binding = 5;
+    captured.has_vk_binding = true;
     package.samplers.push_back(captured);
     EXPECT_TRUE(ValidatePackage(package, error)) << error;
 }

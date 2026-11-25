@@ -71,6 +71,15 @@ enum class ContentStatus : u8 {
 /// state the VkSampler was built from, not a guess at material defaults.
 struct SamplerRecord {
     u64 id{};
+    /// The unified Vulkan binding number the production descriptor write used.
+    ///
+    /// A sampler's identity is not its state: two draws can use the same state at different
+    /// bindings, and two bindings can carry different state. Without the binding number a validator
+    /// can only check that some sampler exists, which an unrelated one would satisfy.
+    u32 vk_binding{};
+    bool has_vk_binding{};
+    /// The logical stage the descriptor belongs to.
+    u32 logical_stage{};
     /// The guest S# descriptor hash the cache keyed the sampler on.
     u64 guest_hash{};
     /// The guest descriptor words, kept so the state can be re-derived independently.

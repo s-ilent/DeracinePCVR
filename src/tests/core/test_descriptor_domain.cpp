@@ -208,9 +208,12 @@ void AddImage(Package& package, u32 binding, bool with_content) {
     package.textures.push_back(texture);
 }
 
-void AddSampler(Package& package) {
+void AddSampler(Package& package, u32 binding) {
     Sampler sampler{};
     sampler.id = 1;
+    // A sampler's identity is the binding it fills, not merely that one exists.
+    sampler.vk_binding = binding;
+    sampler.has_vk_binding = true;
     package.samplers.push_back(sampler);
 }
 
@@ -282,7 +285,7 @@ TEST(DescriptorDomain, AStorageImageIsResolvedInTheTextureCollection) {
 TEST(DescriptorDomain, ASamplerIsResolvedInTheSamplerCollection) {
     auto package = MakePackage();
     AddInterface(package, Descriptor(5, 3));
-    AddSampler(package);
+    AddSampler(package, 3);
     std::string error;
     EXPECT_TRUE(Core::DrawPackage::ValidatePackage(package, error)) << "validator said: " << error;
 }
@@ -304,7 +307,7 @@ TEST(DescriptorDomain, ACombinedImageSamplerNeedsBothHalves) {
     EXPECT_FALSE(Core::DrawPackage::ValidatePackage(package, error));
     EXPECT_NE(error.find("no captured image and sampler pair"), std::string::npos);
 
-    AddSampler(package);
+    AddSampler(package, 4);
     EXPECT_TRUE(Core::DrawPackage::ValidatePackage(package, error)) << "validator said: " << error;
 }
 
@@ -327,14 +330,71 @@ TEST(DescriptorDomain, AZeroDescriptorCountIsRefused) {
 }
 
 TEST(DescriptorDomain, AnImageArrayNeedsEveryElementToCarryContent) {
-    // A descriptor may address an array, so the first element carrying content is not enough.
+    // A descriptor with count N occupies N consecutive bindings, one per array element. One texture
+    // with several mip levels is not an array of several elements, and a duplicated element cannot
+    // stand in for a missing one.
     auto package = MakePackage();
     AddInterface(package, Descriptor(3, 1, /*count=*/2));
     AddImage(package, 1, /*with_content=*/true);
     std::string error;
-    // One texture with content satisfies the current check; the array count is recorded so a
-    // future element-level check can be added without changing this contract.
-    EXPECT_TRUE(Core::DrawPackage::ValidatePackage(package, error)) << "validator said: " << error;
+    EXPECT_FALSE(Core::DrawPackage::ValidatePackage(package, error));
+    EXPECT_NE(error.find("array element 1"), std::string::npos) << error;
+
+    // The second element present makes it complete.
+    AddImage(package, 2, /*with_content=*/true);
+    EXPECT_TRUE(Core::DrawPackage::ValidatePackage(package, error)) << error;
+}
+
+TEST(DescriptorDomain, ADuplicatedArrayElementDoesNotSatisfyAMissingOne) {
+    // Two textures at the same binding are one element, not two.
+    auto package = MakePackage();
+    AddInterface(package, Descriptor(3, 1, /*count=*/2));
+    AddImage(package, 1, /*with_content=*/true);
+    AddImage(package, 1, /*with_content=*/true);
+    std::string error;
+    EXPECT_FALSE(Core::DrawPackage::ValidatePackage(package, error));
+    EXPECT_NE(error.find("array element 1"), std::string::npos) << error;
+}
+
+TEST(DescriptorDomain, AnArrayElementWithNoContentIsRefused) {
+    auto package = MakePackage();
+    AddInterface(package, Descriptor(3, 1, /*count=*/2));
+    AddImage(package, 1, /*with_content=*/true);
+    AddImage(package, 2, /*with_content=*/false);
+    std::string error;
+    EXPECT_FALSE(Core::DrawPackage::ValidatePackage(package, error));
+}
+
+TEST(DescriptorDomain, ASamplerAtTheWrongBindingIsRefused) {
+    // An unrelated sampler from another stage or draw must not satisfy the declaration.
+    auto package = MakePackage();
+    AddInterface(package, Descriptor(5, 3));
+    AddSampler(package, 7);
+    std::string error;
+    EXPECT_FALSE(Core::DrawPackage::ValidatePackage(package, error));
+    EXPECT_NE(error.find("no captured sampler at that binding"), std::string::npos) << error;
+}
+
+TEST(DescriptorDomain, ASamplerWithoutABindingIsRefused) {
+    // A sampler with state but no binding identity cannot be shown to occupy the declaration.
+    auto package = MakePackage();
+    AddInterface(package, Descriptor(5, 3));
+    Sampler sampler{};
+    sampler.id = 1;
+    sampler.has_vk_binding = false;
+    package.samplers.push_back(sampler);
+    std::string error;
+    EXPECT_FALSE(Core::DrawPackage::ValidatePackage(package, error));
+}
+
+TEST(DescriptorDomain, TwoSamplersAtDistinctBindingsBothResolve) {
+    auto package = MakePackage();
+    AddInterface(package, Descriptor(5, 3));
+    AddInterface(package, Descriptor(5, 4));
+    AddSampler(package, 3);
+    AddSampler(package, 4);
+    std::string error;
+    EXPECT_TRUE(Core::DrawPackage::ValidatePackage(package, error)) << error;
 }
 
 TEST(DescriptorDomain, ACompletePackageWithEveryClassValidates) {
@@ -344,7 +404,7 @@ TEST(DescriptorDomain, ACompletePackageWithEveryClassValidates) {
     AddInterface(package, Descriptor(5, 2));
     AddBuffer(package, 0, /*with_bytes=*/true);
     AddImage(package, 1, /*with_content=*/true);
-    AddSampler(package);
+    AddSampler(package, 2);
     std::string error;
     EXPECT_TRUE(Core::DrawPackage::ValidatePackage(package, error)) << "validator said: " << error;
 }

@@ -6,6 +6,8 @@
 #include <boost/container/small_vector.hpp>
 
 #include "common/assert.h"
+#include "common/logging/log.h"
+#include "core/shader_interface_capture.h"
 #include "shader_recompiler/backend/spirv/emit_spirv_quad_rect.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
@@ -462,10 +464,18 @@ void GraphicsPipeline::BuildDescSetLayout(bool preloading) {
     boost::container::small_vector<vk::DescriptorSetLayoutBinding, 32> bindings;
     u32 binding{};
 
+    // The order and per-stage counts this layout actually allocates, recorded so the shader
+    // interface capture can resolve its shader-local bindings to the global numbers. The capture
+    // sees one stage at a time and cannot know the base, so the layout is the authority.
+    std::array<u32, MaxShaderStages> layout_stage_order{};
+    std::array<u32, MaxShaderStages> layout_stage_counts{};
+    u32 layout_stage_count = 0;
+
     for (const auto* stage : stages) {
         if (!stage) {
             continue;
         }
+        const u32 stage_start = binding;
         const auto stage_bit = LogicalStageToStageBit[u32(stage->l_stage)];
         for (const auto& buffer : stage->buffers) {
             const auto sharp =
@@ -498,7 +508,26 @@ void GraphicsPipeline::BuildDescSetLayout(bool preloading) {
                 .stageFlags = stage_bit,
             });
         }
+        if (layout_stage_count < MaxShaderStages) {
+            layout_stage_order[layout_stage_count] = u32(stage->l_stage);
+            layout_stage_counts[layout_stage_count] = binding - stage_start;
+            ++layout_stage_count;
+        }
     }
+
+    // Resolve the captured interfaces against the layout this pipeline actually built. A capture
+    // that disagrees with the layout is reported and its bindings are left unresolved, because a
+    // guessed number would be worse than an absent one.
+    if (Core::ShaderInterface::IsEnabled()) {
+        if (!Core::ShaderInterface::ResolveGlobalBindings(
+                std::span<const u32>{layout_stage_order.data(), layout_stage_count},
+                std::span<const u32>{layout_stage_counts.data(), layout_stage_count})) {
+            LOG_WARNING(Render_Vulkan,
+                        "shader interface capture disagrees with the pipeline layout; global "
+                        "bindings left unresolved");
+        }
+    }
+
     uses_push_descriptors = binding < instance.MaxPushDescriptors();
     const auto flags = uses_push_descriptors
                            ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR

@@ -63,7 +63,20 @@ struct Descriptor {
     /// it emits; it is recorded rather than assumed so a patched module declaring another set is
     /// visible.
     u32 set{};
+    /// The shader-local binding, counted from zero within this stage's own declaration order.
+    ///
+    /// This is NOT the Vulkan binding number. `GraphicsPipeline::BuildDescSetLayout` allocates one
+    /// counter across every stage in logical-stage order, so a fragment stage's first buffer is
+    /// binding 0 while the vertex stage's first buffer is binding N. The two identities are kept
+    /// separate because conflating them makes a package's descriptor correspondence wrong for every
+    /// stage after the first.
+    u32 local_binding{};
+    /// The effective Vulkan binding number, resolved once the full pipeline layout is known.
+    ///
+    /// Zero is a legitimate binding, so `binding_resolved` says whether this was established rather
+    /// than leaving a zero to be read as either.
     u32 binding{};
+    bool binding_resolved{};
     DescriptorClass cls{DescriptorClass::Unknown};
     /// Array elements. 1 for a non-array binding.
     u32 count{};
@@ -106,10 +119,40 @@ struct Interface {
     /// The number of unified bindings the stage consumed, which is what the production layout
     /// advances by.
     u32 unified_binding_count{};
+    /// The global binding the production layout started this stage at.
+    ///
+    /// `BuildDescSetLayout` walks the stages in logical-stage order with one counter, so each
+    /// stage's bindings begin at the sum of the counts of the stages before it. Recording the base
+    /// lets a consumer verify that `local_binding + stage_binding_base == binding` rather than
+    /// assuming it.
+    u32 stage_binding_base{};
+    bool stage_binding_base_known{};
 };
 
 /// Records the interface of a compiled permutation. Called from the production compilation path.
 void NoteInterface(const Interface& entry) noexcept;
+
+/// Resolves the effective Vulkan binding numbers for one pipeline layout.
+///
+/// `GraphicsPipeline::BuildDescSetLayout` walks the stages in logical-stage order with one counter,
+/// so a stage's bindings begin at the sum of the counts of the stages before it. The per-stage
+/// capture cannot know that base, because it sees one stage at a time. This is called once the full
+/// layout is known, and it rewrites each retained interface's descriptors with the global binding
+/// and the base it was allocated at.
+///
+/// param stage_order  The logical stages in the order the layout allocates them.
+/// param stage_counts The number of bindings each stage consumes, in the same order.
+///
+/// Returns false when the counts do not match what the retained interfaces recorded, which means
+/// the layout and the capture disagree and no binding number can be trusted.
+[[nodiscard]] bool ResolveGlobalBindings(std::span<const u32> stage_order,
+                                         std::span<const u32> stage_counts) noexcept;
+
+/// Clears the retained interfaces and enables capture, for tests only.
+///
+/// The resolution is a pure function of the layout, so it is tested without a GPU. That needs a
+/// known starting state, which the production path never has to reset.
+void ResetForTesting() noexcept;
 
 /// Looks up an interface by permutation hash. Returns false when it was not retained.
 [[nodiscard]] bool FindByPermutationHash(u64 permutation_hash, Interface& out) noexcept;

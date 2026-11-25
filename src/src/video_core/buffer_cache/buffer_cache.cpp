@@ -1401,6 +1401,16 @@ void BufferCache::WriteDataBuffer(Buffer& buffer, VAddr address, const void* val
         src_buffer = temp_buffer.Handle();
         u8* const staging = temp_buffer.mapped_data.data();
         std::memcpy(staging, value, num_bytes);
+        // The upload is recorded against the destination buffer, not the temporary source: the
+        // descriptor the draw reads names the destination, so that is the allocation a binding must
+        // resolve to. The temporary buffer is destroyed after the copy and its handle would never
+        // match.
+        if (Core::RhiEntryProbe::CurrentDrawProvenanceId() != 0) {
+            Core::ShaderParamCapture::NoteHostUpload(
+                address, num_bytes, static_cast<const u8*>(value),
+                reinterpret_cast<u64>(static_cast<VkBuffer>(buffer.Handle())),
+                buffer.Offset(address));
+        }
         scheduler.DeferOperation([buffer = std::move(temp_buffer)]() mutable {});
     }
     scheduler.EndRendering();

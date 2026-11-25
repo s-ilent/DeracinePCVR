@@ -131,16 +131,81 @@
     ]
   },
   "offline_verification": {
-    "cxx_tests": 322,
-    "suites": 17,
-    "new_suite": "shadps4_descriptor_domain_test, 15 cases",
-    "corrected_emulator_sha256": "DD70464BE9B8949993F46E2E394FDFA43CABB981E27674D2B773E3594C719D76",
-    "corrected_emulator_size": 77402624,
+    "cxx_tests": 335,
+    "suites": 18,
+    "new_suites": [
+      "shadps4_descriptor_domain_test, 20 cases",
+      "shadps4_global_binding_test, 8 cases"
+    ],
+    "provenance_cases": 39,
+    "gpu_mutation_cases": 13,
+    "vulkan_validation_errors": 0,
+    "corrected_emulator_sha256": "831B01A24BF6D470F0B8C39C6A0970E560B2D8B74DE2A9F475322542A1984B0E",
+    "corrected_emulator_size": 77542912,
     "runtime_confirmed": false
   },
-  "next_experiment": "second bounded run to observe whether original shader bindings now retain valid resources and whether a complete package can be produced",
+  "rhi04r2": {
+    "status": "READY_FOR_SECOND_CAPTURE_WITH_EXPLICIT_LIMITATIONS",
+    "defects": [
+      {
+        "id": 5,
+        "name": "interface capture used a per-stage binding counter",
+        "location": "vk_pipeline_cache.cpp add_descriptor",
+        "cause": "BuildDescSetLayout allocates one counter across every stage in logical-stage order, but the capture reset to zero per stage",
+        "effect": "the captured interface named the wrong binding for every stage after the first",
+        "repaired": true
+      },
+      {
+        "id": 6,
+        "name": "sampler identity was not captured",
+        "location": "draw_package.h Sampler and ValidatePackage",
+        "cause": "no binding number, and the validator accepted any sampler with a nonzero id",
+        "effect": "an unrelated sampler from another stage or draw could satisfy a declaration",
+        "repaired": true
+      },
+      {
+        "id": 7,
+        "name": "image arrays were not checked element by element",
+        "location": "draw_package.h ValidatePackage",
+        "cause": "the check accepted one texture with content for a count-N descriptor",
+        "effect": "a partial array passed as complete",
+        "repaired": true
+      },
+      {
+        "id": 8,
+        "name": "the large-transfer upload path recorded nothing",
+        "location": "buffer_cache.cpp WriteDataBuffer large branch",
+        "cause": "NoteHostUpload was added only to the ordinary staging branch",
+        "effect": "a large one-time transfer could not become a package resource",
+        "repaired": true
+      }
+    ],
+    "binding_contract": {
+      "local_binding": "the shader's own declaration order, from zero",
+      "binding": "the effective Vulkan binding",
+      "binding_resolved": "whether the effective number was established",
+      "stage_binding_base": "the global binding the layout started this stage at",
+      "stage_order": "fragment (0) before vertex (3), as LogicalStage declares them"
+    },
+    "upload_paths": {
+      "obtain_buffer_stream": "recorded",
+      "write_data_buffer_ordinary": "recorded",
+      "write_data_buffer_large": "recorded, against the destination buffer",
+      "isolated_readconst": "retained directly through RetainHostBytes",
+      "gpu_modified": "reported unsupported, never as verified"
+    }
+  },
+  "next_experiment": "second bounded run against the corrected binary to observe whether descriptor bindings resolve, whether uploads are recorded, and whether a complete package can be produced",
   "next_experiment_needs_launch": true,
   "next_experiment_authorized": false,
+  "next_experiment_acceptance": [
+    "ResolveGlobalBindings did not report a layout disagreement",
+    "NoteHostUpload was called with a nonzero count",
+    "at least one draw has every declared descriptor resolved with retained bytes",
+    "a package is written, or a precise refusal names the first missing resource class",
+    "if a package is written, a tape is produced for its selected provenance",
+    "if both exist, the identity gate runs and reports its outcome"
+  ],
   "private_artifacts": {
     "capture_directory": "_build/rhi04-capture-1",
     "lab": "_build/headless/labs/rhi04-capture-1",
