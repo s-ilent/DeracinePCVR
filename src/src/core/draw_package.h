@@ -886,23 +886,107 @@ struct Package {
                         error = "a descriptor interface declares a zero descriptor count";
                         return false;
                     }
-                    // A buffer or image descriptor must resolve to a captured binding. A sampler
-                    // may legitimately have no buffer, so it is not required to.
-                    if (descriptor.descriptor_class == 1 || descriptor.descriptor_class == 2 ||
-                        descriptor.descriptor_class == 3 || descriptor.descriptor_class == 4 ||
-                        descriptor.descriptor_class == 6) {
-                        bool resolved = false;
+                    // Each descriptor class is resolved in the collection that actually holds it.
+                    // Buffers live in `bindings`, images in `textures`, samplers in `samplers`.
+                    // Looking for an image in the buffer collection would reject a package whose
+                    // images were captured perfectly, which is a domain mismatch rather than a
+                    // missing resource.
+                    //
+                    // A binding existing is also not the same as its bytes being captured, so the
+                    // buffer classes additionally require a resource with content.
+                    switch (descriptor.descriptor_class) {
+                    case 1: // UniformBuffer
+                    case 2: { // StorageBuffer
+                        const Binding* found = nullptr;
                         for (const auto& binding : package.bindings) {
                             if (binding.vk_binding == descriptor.binding) {
+                                found = &binding;
+                                break;
+                            }
+                        }
+                        if (found == nullptr) {
+                            error = "a buffer descriptor declares a binding with no captured "
+                                    "binding record";
+                            return false;
+                        }
+                        if (found->resource_ref == 0) {
+                            error = "a buffer descriptor's binding names no captured resource";
+                            return false;
+                        }
+                        bool has_bytes = false;
+                        for (const auto& resource : package.resources) {
+                            if (resource.id == found->resource_ref &&
+                                !resource.bytes.empty()) {
+                                has_bytes = true;
+                                break;
+                            }
+                        }
+                        if (!has_bytes) {
+                            error = "a buffer descriptor's resource carries no captured bytes";
+                            return false;
+                        }
+                        break;
+                    }
+                    case 3: // SampledImage
+                    case 4: { // StorageImage
+                        bool resolved = false;
+                        for (const auto& texture : package.textures) {
+                            if (texture.vk_binding != descriptor.binding) {
+                                continue;
+                            }
+                            // The descriptor may address an array, so every element must carry
+                            // content rather than merely the first.
+                            if (!texture.subresources.empty()) {
                                 resolved = true;
                                 break;
                             }
                         }
                         if (!resolved) {
-                            error = "a descriptor interface declares a binding with no captured "
-                                    "resource";
+                            error = "an image descriptor declares a binding with no captured image "
+                                    "content";
                             return false;
                         }
+                        break;
+                    }
+                    case 5: { // Sampler
+                        bool resolved = false;
+                        for (const auto& sampler : package.samplers) {
+                            if (sampler.id != 0) {
+                                resolved = true;
+                                break;
+                            }
+                        }
+                        if (!resolved) {
+                            error = "a sampler descriptor declares a binding with no captured "
+                                    "sampler";
+                            return false;
+                        }
+                        break;
+                    }
+                    case 6: { // CombinedImageSampler
+                        // A combined sampler needs both halves. The production layout does not emit
+                        // one, so a package that declares it must carry both or be refused.
+                        bool has_image = false;
+                        for (const auto& texture : package.textures) {
+                            if (texture.vk_binding == descriptor.binding &&
+                                !texture.subresources.empty()) {
+                                has_image = true;
+                                break;
+                            }
+                        }
+                        if (!has_image || package.samplers.empty()) {
+                            error = "a combined image sampler descriptor has no captured image and "
+                                    "sampler pair";
+                            return false;
+                        }
+                        break;
+                    }
+                    default:
+                        // An unknown class is not resolved by guessing. It is refused, because a
+                        // descriptor this validator cannot classify cannot be shown to be
+                        // satisfied.
+                        error = "a descriptor interface declares an unknown descriptor class";
+                        return false;
                     }
                 }
             }

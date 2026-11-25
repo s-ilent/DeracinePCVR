@@ -1380,6 +1380,18 @@ void BufferCache::WriteDataBuffer(Buffer& buffer, VAddr address, const void* val
         std::memcpy(staging, value, num_bytes);
         copy.srcOffset = offset;
         staging_buffer.Commit();
+        // Record the upload so a shader binding can later resolve to the exact bytes the draw
+        // reads. This is the only point where the guest range and the host copy are both in hand,
+        // and without it the binding registry stays empty and every binding is reported as
+        // guest-observed rather than host-verified.
+        // NoteHostUpload checks the capture flag itself, so only the provenance gate is needed
+        // here.
+        if (Core::RhiEntryProbe::CurrentDrawProvenanceId() != 0) {
+            Core::ShaderParamCapture::NoteHostUpload(
+                address, num_bytes, static_cast<const u8*>(value),
+                reinterpret_cast<u64>(static_cast<VkBuffer>(buffer.Handle())),
+                buffer.Offset(address));
+        }
     } else {
         // For large one time transfers use a temporary host buffer.
         // RenderDoc can lag quite a bit if the stream buffer is too large.

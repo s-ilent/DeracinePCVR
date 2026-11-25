@@ -310,7 +310,15 @@ struct UploadKey {
                                      u64& content_hash) noexcept;
 
 /// Reads retained bytes back out of the pool. Used by the package writer.
-[[nodiscard]] bool ReadRetainedBytes(u32 pool_offset, u32 size, u8* out) noexcept;
+[[nodiscard]] /// Retains bytes the caller already holds, without an upload record to look up.
+///
+/// The isolated read-constant path has the exact host copy in hand and no upload to match, so it
+/// needs a direct entry point. The bytes retained are the ones the draw reads, and the returned
+/// hash covers exactly them.
+[[nodiscard]] bool RetainHostBytes(const u8* host_bytes, u32 size, u32& pool_offset,
+                                   u32& retained, u64& content_hash) noexcept;
+
+bool ReadRetainedBytes(u32 pool_offset, u32 size, u8* out) noexcept;
 
 /// Records one vertex binding at the point production binds it.
 void NoteVertexBinding(const VertexBindingRecord& record) noexcept;

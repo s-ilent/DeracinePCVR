@@ -1661,6 +1661,23 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
                         take == size
                             ? Core::ShaderParamCapture::CaptureStatus::HostContentVerified
                             : Core::ShaderParamCapture::CaptureStatus::Partial);
+                    // Retain the exact bytes hashed above. Without this the binding is
+                    // host-verified but unusable by the exporter, which reads retained_bytes: the
+                    // isolated path would report a verified capture that can never become a
+                    // package resource. The bytes retained are the ones the draw reads, not a
+                    // later guest read.
+                    u32 pool_offset = 0;
+                    u32 retained = 0;
+                    u64 slice_hash = 0;
+                    if (Core::ShaderParamCapture::RetainHostBytes(
+                            host_bytes, static_cast<u32>(take), pool_offset, retained,
+                            slice_hash)) {
+                        record.retained_offset = pool_offset;
+                        record.retained_bytes = retained;
+                        // The hash must describe exactly the bytes retained, so it is replaced by
+                        // the slice hash rather than left describing a longer range.
+                        record.captured_hash = slice_hash;
+                    }
                 }
                 Core::ShaderParamCapture::RecordBinding(record);
             }

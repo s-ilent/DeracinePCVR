@@ -333,6 +333,34 @@ bool RetainUploadBytes(const UploadKey& key, u32& pool_offset, u32& retained,
     }
 }
 
+bool RetainHostBytes(const u8* host_bytes, u32 size, u32& pool_offset, u32& retained,
+                     u64& content_hash) noexcept {
+    try {
+        pool_offset = 0;
+        retained = 0;
+        content_hash = 0;
+        if (!g_state.enabled.load(std::memory_order_relaxed))
+            return false;
+        if (host_bytes == nullptr || size == 0)
+            return false;
+        const u32 want = static_cast<u32>(std::min<u64>(size, MaxBytesPerResource));
+        if (want == 0)
+            return false;
+        const u32 offset = g_retained_used.fetch_add(want, std::memory_order_relaxed);
+        if (static_cast<size_t>(offset) + want > g_retained_pool.size())
+            return false;
+        std::memcpy(g_retained_pool.data() + offset, host_bytes, want);
+        pool_offset = offset;
+        retained = want;
+        // The hash covers exactly the bytes retained, so the package's hash and its bytes always
+        // agree.
+        content_hash = HashCapturedBytes(g_retained_pool.data() + offset, retained);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
 bool ReadRetainedBytes(u32 pool_offset, u32 size, u8* out) noexcept {
     try {
         if (out == nullptr || size == 0)
@@ -1031,12 +1059,27 @@ void WriteFirstPackage(const char* directory) noexcept {
                 }
             }
 
-            // Readiness is derived per dimension, not asserted as one flag.
+            // Readiness is derived per dimension, not asserted as one flag. A non-empty binding
+            // list is not proof that every required shader buffer is available: one captured
+            // binding beside three missing ones would otherwise read as ready.
+            //
+            // A binding with no resource is a descriptor the draw used and the capture could not
+            // retain, which is not readiness. A resource with no bytes is the same.
             package.readiness.shader_buffers_ready = !package.bindings.empty();
             for (const auto& binding : package.bindings) {
-                if (binding.resource_ref == 0)
-                    continue;
+                if (binding.resource_ref == 0) {
+                    package.readiness.shader_buffers_ready = false;
+                    break;
+                }
+                if (binding.resource_ref > package.resources.size()) {
+                    package.readiness.shader_buffers_ready = false;
+                    break;
+                }
                 const auto& resource = package.resources[binding.resource_ref - 1];
+                if (resource.bytes.empty()) {
+                    package.readiness.shader_buffers_ready = false;
+                    break;
+                }
                 if (resource.status != static_cast<u8>(CaptureStatus::HostContentVerified) &&
                     resource.status != static_cast<u8>(CaptureStatus::HostContentCaptured)) {
                     package.readiness.shader_buffers_ready = false;

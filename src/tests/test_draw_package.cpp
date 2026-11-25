@@ -670,7 +670,12 @@ TEST(DrawPackageInterface, ADescriptorWithNoCapturedResourceIsRejected) {
     package.shader_interfaces[0].descriptors[0].binding = 9;
     std::string error;
     EXPECT_FALSE(ValidatePackage(package, error));
-    EXPECT_NE(error.find("no captured resource"), std::string::npos) << error;
+    // The message now names the domain the descriptor was resolved in, which is what makes a
+    // domain mismatch distinguishable from a missing resource.
+    const bool named = error.find("no captured binding record") != std::string::npos ||
+                       error.find("no captured resource") != std::string::npos ||
+                       error.find("no captured image content") != std::string::npos;
+    EXPECT_TRUE(named) << error;
 }
 
 TEST(DrawPackageInterface, AZeroDescriptorCountIsRejected) {
@@ -692,6 +697,14 @@ TEST(DrawPackageInterface, ASamplerNeedsNoCapturedBuffer) {
     sampler.stage_flags = 1u << 0;
     package.shader_interfaces[1].descriptors.push_back(sampler);
     std::string error;
+    // A sampler needs no buffer, which was the original point, but it does need a captured sampler
+    // identity. A descriptor the module declares must resolve in its own domain.
+    EXPECT_FALSE(ValidatePackage(package, error));
+    EXPECT_NE(error.find("no captured sampler"), std::string::npos) << error;
+
+    Core::DrawPackage::Sampler captured{};
+    captured.id = 1;
+    package.samplers.push_back(captured);
     EXPECT_TRUE(ValidatePackage(package, error)) << error;
 }
 

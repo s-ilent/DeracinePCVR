@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "experiment": "RHI-04 first original capture",
   "branch": "research/rhi04-first-original-capture-20261125",
   "base_commit": "fbe46f9ca341984386b0d614c14f112963d14e3b",
@@ -65,7 +65,13 @@
     "duplicates": 0,
     "capacity_dropped": 0,
     "descriptors_per_interface": 2,
-    "shader_buffer_bytes_captured": 0
+    "binding_records": 770,
+    "bindings_host_content_verified": 698,
+    "bindings_partial": 72,
+    "bindings_with_resource_ref": 0,
+    "bindings_readconst": 616,
+    "bindings_ordinary": 154,
+    "total_captured_bytes": 5461968
   },
   "identity_result": "RESOURCE_PACKAGE_MISSING",
   "identity_gate_ran": false,
@@ -83,12 +89,58 @@
     "7_output_comparable": false,
     "8_reference_matched": false
   },
-  "first_failing_invariant": "a descriptor interface declares a binding with no captured resource",
-  "first_failing_location": "shader_param_capture.cpp:1476",
+  "first_failing_invariant": "the host-upload registry is never populated, so no binding can retain bytes",
+  "first_failing_location": "shader_param_capture.cpp NoteHostUpload has no caller",
   "package_refusal": "Draw package for draw 11 refused: a descriptor interface declares a binding with no captured resource",
   "tape_refusal": "the tape could not be built: draw_unresolved",
-  "next_experiment": "determine why the shader-buffer resource capture retained zero bytes while the descriptor interfaces were captured in full",
-  "next_experiment_needs_launch": false,
+  "root_cause": {
+    "status": "MULTIPLE_DEFECTS_CONFIRMED",
+    "defects": [
+      {
+        "id": 1,
+        "name": "host-upload registry never populated",
+        "location": "shader_param_capture.cpp NoteHostUpload",
+        "cause": "declared and implemented but called from nowhere, so g_host_uploads stays empty and FindHostUploadForBinding always fails",
+        "effect": "every ordinary binding records GuestMemoryObserved and retains no bytes",
+        "repaired": true
+      },
+      {
+        "id": 2,
+        "name": "isolated read-constant path retains no bytes",
+        "location": "vk_rasterizer.cpp ShouldIsolateReadConstBuffer branch",
+        "cause": "sets captured_bytes and captured_hash but never retained_offset or retained_bytes",
+        "effect": "616 of 770 bindings are host-verified and unusable by the exporter",
+        "repaired": true
+      },
+      {
+        "id": 3,
+        "name": "validator resolves descriptors in the wrong domain",
+        "location": "draw_package.h ValidatePackage",
+        "cause": "image and sampler classes were looked for in package.bindings, but images live in package.textures and samplers in package.samplers",
+        "effect": "a package whose images were captured perfectly would be rejected",
+        "repaired": true
+      },
+      {
+        "id": 4,
+        "name": "readiness accepted a partial binding set",
+        "location": "shader_param_capture.cpp shader_buffers_ready",
+        "cause": "readiness was !package.bindings.empty(), and a binding with no resource was skipped rather than failing",
+        "effect": "one captured binding beside three missing ones read as ready",
+        "repaired": true
+      }
+    ]
+  },
+  "offline_verification": {
+    "cxx_tests": 322,
+    "suites": 17,
+    "new_suite": "shadps4_descriptor_domain_test, 15 cases",
+    "corrected_emulator_sha256": "DD70464BE9B8949993F46E2E394FDFA43CABB981E27674D2B773E3594C719D76",
+    "corrected_emulator_size": 77402624,
+    "runtime_confirmed": false
+  },
+  "next_experiment": "second bounded run to observe whether original shader bindings now retain valid resources and whether a complete package can be produced",
+  "next_experiment_needs_launch": true,
+  "next_experiment_authorized": false,
   "private_artifacts": {
     "capture_directory": "_build/rhi04-capture-1",
     "lab": "_build/headless/labs/rhi04-capture-1",
