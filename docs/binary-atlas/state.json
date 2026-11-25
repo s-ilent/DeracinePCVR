@@ -1,0 +1,1120 @@
+{
+  "schema_version": 1,
+  "run_status": "VERIFIED_STATIC_NEW",
+  "run_is_accepted_finding": true,
+  "repo": "s-ilent/DeracinePCVR",
+  "checked_main_commit": "e2f981c40cba7c8490177c20c179cb3608cc1442",
+  "repo_visibility_at_check": "public",
+  "branch": "research/deracine-self-atlas",
+  "branch_created": true,
+  "draft_pr_created": true,
+  "github_write_status": "C-032 report/verifier/state/queue committed to research branch",
+  "self": {
+    "expected_size": 81506767,
+    "sha256_expected": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+    "bytes_accessible": true,
+    "sha256_verified_this_run": true,
+    "access_error": null,
+    "source": "direct user-provided original SELF; private, not Git"
+  },
+  "archive": {
+    "expected_size": 92544428,
+    "sha256_expected": "336d0746d64915c988fa985a92ce2eb8ea1ecf328034385c8d055766a93c984c",
+    "bytes_accessible": true,
+    "sha256_verified_this_run": false,
+    "access_error": null,
+    "source": "direct user-provided original session ZIP; private, not Git",
+    "member_count_verified": 33,
+    "total_uncompressed_bytes_verified": 272185371,
+    "all_zip_member_crcs_passed": true
+  },
+  "index": {
+    "sha256": "1f661e2956ef8c34e75c83ace75823149a9e1dee10045fa96536a15697f4b772",
+    "structural_checks_passed_prior_run": true,
+    "archive_integrity_verified": true,
+    "stream_count": 33,
+    "declared_uncompressed_bytes": 272185371,
+    "inspected_archive_event_ranges": [
+      {
+        "member_role": "first-round A/RHI",
+        "ordinal_event_windows": [
+          "237/seq235"
+        ],
+        "classification": "ALREADY_VERIFIED_IMPORT_CALLSITE"
+      },
+      {
+        "member_role": "first-round E/runtime",
+        "ordinal_event_windows": [
+          "253/seq251"
+        ],
+        "classification": "ALREADY_VERIFIED_IMPORT_INVENTORY"
+      },
+      {
+        "member_role": "A2/internal UE4 RHI",
+        "ordinal_event_windows": [
+          "292/seq290",
+          "936/seq934",
+          "944/seq942",
+          "1019/seq1017"
+        ],
+        "classification": "ALREADY_VERIFIED_TABLE_ONLY"
+      }
+    ],
+    "sha256_verified_this_run": false,
+    "members_crosschecked_against_zip": 33,
+    "first_pass_non_memory_streams_scanned": 11,
+    "memory_streams_intentionally_skipped": 22,
+    "sanitized_provenance_path": "docs/binary-atlas/session-provenance-20261121.md"
+  },
+  "source_branches": {
+    "A2": "research/ue4-internal-rhi-a2-20261121",
+    "B3": "research/semantic-capture-b2-20261121",
+    "checked_main_commit": "e2f981c40cba7c8490177c20c179cb3608cc1442"
+  },
+  "already_reported": {
+    "draw_elf_va": "0x0CBB9C0",
+    "draw_vtable_base": "0x03EDFCA0",
+    "draw_vtable_entry": "0x03EE0190",
+    "runtime_caller_rva_0101": "0x13A68E8"
+  },
+  "new_original_binary_findings": [
+    {
+      "id": "A-002-INDEXED-INDIRECT-VTABLE",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "method_elf_va": "0x0CBBEF0",
+      "table_base_elf_va": "0x03EDFCA0",
+      "vtable_slot_elf_va": "0x03EE0198",
+      "slot_offset": "+0x4F8",
+      "fde_start_elf_va": "0x0CBBEF0",
+      "fde_end_exclusive_elf_va": "0x0CBC4D7",
+      "fde_record_elf_va": "0x038F7A50",
+      "callsite_elf_va": "0x0CBC359",
+      "call_target_import_stub_elf_va": "0x033C8390",
+      "call_target_import_got_elf_va": "0x04381DA8",
+      "raw_nid": "ED9-Fjr8Ta4",
+      "friendly_import_name": "sceGnmDrawIndexIndirect",
+      "rela_index": 37982,
+      "jmprel_index": 451,
+      "body_sha256": "53fbfe5da0dbe6a7e6bf85e37a0062fbbfb1557247c7506bcd3a6e74c5344bc5",
+      "confidence": "high for indexed-indirect GNM emitter; C++ exact virtual method/class unresolved",
+      "runtime_observed": false,
+      "notes": "Existing A2 indexed table pointer and earlier raw E8 callsite were known separately; new binary-backed semantic attribution and method-state argument flow verified",
+      "report": "reports/atlas_indirect_indexed_draw_a002.md",
+      "map": "maps/atlas_indirect_draw_a002.tsv",
+      "verifier": "tools/atlas/verify_indexed_indirect.py"
+    },
+    {
+      "id": "A-005-DEFERRED-ATTACHMENT-COMMAND",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "vtable_elf_va": "0x03F26A28",
+      "constructor_site_elf_va": "0x1420F77",
+      "execute_elf_va": "0x13A6A30",
+      "context_callee_elf_va": "0x0CC2420",
+      "resource_binding_helper_elf_va": "0x0CC7E00",
+      "descriptor_stride": "0x18",
+      "descriptor_slots": 8,
+      "confidence": "high for command producer and binding semantics; exact C++ class and resource ownership unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_render_target_command_a005.md",
+      "map": "maps/atlas_attachment_command_a005.tsv",
+      "verifier": "tools/atlas/verify_render_target_command.py"
+    },
+    {
+      "id": "A-006-ATTACHMENT-BACKING-STATE",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "helper_elf_va": "0x0CC7E00",
+      "state_writer_elf_va": "0x0CC9240",
+      "resource_virtual_offset": "+0x38",
+      "backing_field_offset": "+0x3C",
+      "context_writer_offset": "+0x460",
+      "context_state_offsets": [
+        "+0x480",
+        "+0x484"
+      ],
+      "confidence": "high for backing-state dispatch and command writer; exact packet semantics and resource ownership unknown",
+      "runtime_observed": false,
+      "report": "reports/atlas_attachment_backing_a006.md",
+      "verifier": "tools/atlas/verify_attachment_backing_a006.py"
+    },
+    {
+      "id": "A-007-ATTACHMENT-STATE-TEMPLATES",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "caller_elf_va": "0x0CC9240",
+      "callee_elf_va": "0x02F5D0F0",
+      "callsite_elf_va": "0x0CC93B5",
+      "table_selector": "1..4",
+      "table_va": [
+        "0x035AF340",
+        "0x035AF350",
+        "0x035AF360",
+        "0x035AF370",
+        "0x035AF380",
+        "0x035C3940"
+      ],
+      "packet_lengths_dwords": [
+        18,
+        4,
+        3
+      ],
+      "confidence": "high for writer packet sizes and four-case dispatch; exact table relocated values and GPU semantics unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_attachment_template_a007.md",
+      "verifier": "tools/atlas/verify_attachment_template_a007.py"
+    },
+    {
+      "id": "A-008-ATTACHMENT-PROFILE-CONTENTS",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "selector_elf_va": "0x02F5D101",
+      "table_elf_vas": [
+        "0x035AF340",
+        "0x035AF350",
+        "0x035AF360",
+        "0x035AF370",
+        "0x035AF380",
+        "0x035C3940"
+      ],
+      "profile_values": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "packed_final_dwords": [
+        "0x00108001",
+        "0x0020C002",
+        "0x0030E003",
+        "0x00410004"
+      ],
+      "confidence": "high for exact scalar table contents and instruction-boundary-confirmed loads; GPU register meanings and resource ownership unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_attachment_profiles_a008.md",
+      "verifier": "tools/atlas/verify_attachment_profiles_a008.py"
+    },
+    {
+      "id": "A-009-ATTACHMENT-BACKING-METADATA",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "helper_elf_va": "0x0CC7E00",
+      "resource_virtual_offset": "+0x38",
+      "backing_field_offsets": [
+        "+0x08",
+        "+0x0C",
+        "+0x10",
+        "+0x3C"
+      ],
+      "metadata_global_elf_vas": [
+        "0x047B438A",
+        "0x04496748"
+      ],
+      "distinguished_backing_table_elf_va": "0x044962C8",
+      "confidence": "high for conditional backing writes and same-object relation; meanings and ownership unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_attachment_metadata_a009.md",
+      "verifier": "tools/atlas/verify_attachment_metadata_a009.py"
+    },
+    {
+      "id": "A-010-DIRECT-CONTEXT-ATTACHMENT",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "function_entry_elf_va": "0x0D049F0",
+      "direct_callsite_elf_va": "0x0D04DBE",
+      "direct_callee_elf_va": "0x0CC2420",
+      "context_writer_offset": "+0x460",
+      "global_resource_table_elf_va": "0x044962C8",
+      "global_index_elf_va": "0x044965FC",
+      "resource_dimension_offsets": [
+        "+0x58",
+        "+0x5C"
+      ],
+      "resource_metadata_offsets": [
+        "+0x68",
+        "+0x6C",
+        "+0x70"
+      ],
+      "metadata_source_global_elf_va": "0x04496748",
+      "confidence": "high for original-byte call and field accesses; dimensions, C++ identity and runtime reachability unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_context_attachment_a010.md",
+      "verifier": "tools/atlas/verify_context_attachment_a010.py"
+    },
+    {
+      "id": "A-011-RESOURCE-BATCH-REGISTRATION",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "block_elf_va": "0x0CC2ADE–0x0CC2C48",
+      "metadata_source_global_elf_va": "0x04496748",
+      "entry_offsets": [
+        "+0x18",
+        "+0x20",
+        "+0x28",
+        "+0x34",
+        "+0x38",
+        "+0x3C"
+      ],
+      "context_array_offsets": [
+        "+0x428",
+        "+0x438"
+      ],
+      "record_stride_bytes": 16,
+      "growth_targets_elf_va": [
+        "0x0CC8CE0",
+        "0x0CC8780"
+      ],
+      "confidence": "high for byte-verified metadata paths, two arrays and arithmetic; exact ownership and semantics unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_resource_batch_a011.md",
+      "verifier": "tools/atlas/verify_resource_batch_a011.py"
+    },
+    {
+      "id": "A-012-RESOURCE-SCALAR-CACHE-EMISSION",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "block_elf_va": "0x0CC2766–0x0CC27F9",
+      "resource_offsets": [
+        "+0x1C",
+        "+0x20"
+      ],
+      "context_offsets": [
+        "+0x51C",
+        "+0x460"
+      ],
+      "writer_command_constant": "0x0000000BC0016900",
+      "writer_payload_bytes": 12,
+      "confidence": "high for exact field uses, conversion, comparison and conditional command emission; semantic GPU register and C++ identity unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_resource_scalar_a012.md",
+      "verifier": "tools/atlas/verify_resource_scalar_a012.py"
+    },
+    {
+      "id": "A-013-CONDITIONAL-GRAPHICS-STATE-BUNDLE",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "entry_elf_va": "0x03090310",
+      "caller_elf_va": "0x0CC28E9",
+      "predicate_elf_vas": [
+        "0x0308FE70",
+        "0x03090090"
+      ],
+      "descriptor_offsets": [
+        "+0x00..+0x1F",
+        "+0x20",
+        "+0x24",
+        "+0x28",
+        "+0x2C",
+        "+0x30"
+      ],
+      "writer_offset": "+0x460",
+      "emission_bytes": [
+        24,
+        96
+      ],
+      "confidence": "high for verified original-byte predicate/call/capacity/command construction; register meaning and C++ ownership unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_state_bundle_a013.md",
+      "verifier": "tools/atlas/verify_state_bundle_a013.py"
+    },
+    {
+      "id": "A-014-DEFERRED-VIEWPORT-CACHE",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "vtable_elf_va": "0x03F26A08",
+      "execute_elf_va": "0x013A6BB0",
+      "context_callee_elf_va": "0x00CB8AE0",
+      "writer_field": "+0x460",
+      "cached_fields": [
+        "+0x80",
+        "+0x84",
+        "+0x88",
+        "+0x8C",
+        "+0xA0",
+        "+0xA4"
+      ],
+      "reserved_dwords": 12,
+      "confidence": "high for six-field viewport command and cache/growth semantics; exact C++ symbol and runtime reachability unverified",
+      "runtime_observed": false,
+      "report": "reports/atlas_viewport_a014.md",
+      "verifier": "tools/atlas/verify_viewport_a014.py"
+    },
+    {
+      "id": "A-015-DEFERRED-VIEWPORT-PRODUCER",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "producer_elf_va": "0x1400ACF",
+      "vtable_lea_elf_va": "0x1400B1E",
+      "vtable_elf_va": "0x03F26A08",
+      "execute_elf_va": "0x13A6BB0",
+      "payload_offsets": [
+        "+0x10",
+        "+0x14",
+        "+0x18",
+        "+0x1C",
+        "+0x20",
+        "+0x24"
+      ],
+      "depth_interval": [
+        0,
+        1
+      ],
+      "confidence": "high for command allocation, linked-list insertion and payload; packed-coordinate owner and runtime reachability unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_viewport_producer_a015.md",
+      "verifier": "tools/atlas/verify_viewport_producer_a015.py"
+    },
+    {
+      "id": "A-016-VIEWPORT-INPUT-AND-OWNER-CACHE",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "producer_elf_va": "0x1400A40",
+      "arena_helper_elf_va": "0x13D67E0",
+      "helper_callsite_elf_va": "0x1400A98",
+      "coordinate_input": "incoming RCX: two qwords at +0,+8",
+      "owner_cache_offsets": [
+        "+0x30",
+        "+0x34",
+        "+0x38",
+        "+0x3C"
+      ],
+      "confidence": "high for instruction-confirmed call and dual coordinate writes; owner/eye identity unknown",
+      "runtime_observed": false,
+      "report": "reports/atlas_viewport_source_a016.md"
+    },
+    {
+      "id": "A-017-PACKED-VIEWPORT-UPSTREAM",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "caller_elf_va": "0x14002A0",
+      "viewport_callsite_elf_va": "0x140047B",
+      "viewport_target_elf_va": "0x1400A40",
+      "alternate_callsite_elf_va": "0x1400456",
+      "alternate_target_elf_va": "0x1404710",
+      "branch_field": "+0xD8",
+      "packed_input_offsets": [
+        "+0x70",
+        "+0x78"
+      ],
+      "confidence": "high for scaled packed coordinate producer and conditional alternate dispatch; semantic owner and per-eye usage unknown",
+      "runtime_observed": false,
+      "report": "reports/atlas_viewport_upstream_a017.md"
+    },
+    {
+      "id": "A-018-ALTERNATE-VIEWPORT-MULTILIST",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "producer_elf_va": "0x1404710",
+      "viewport_vtable_elf_va": "0x03F26A08",
+      "mode_field": "+0xD8",
+      "mode2_local_vtable_elf_va": "0x03EDFC00",
+      "mode2_global_vtable_elf_va": "0x03EDFC80",
+      "confidence": "high for decoded command construction and separate list ownership; Execute identities and runtime unknown",
+      "runtime_observed": false,
+      "report": "reports/atlas_alternate_viewport_a018.md"
+    },
+    {
+      "id": "A-019-MODE2-DUAL-CONTEXT-DISPATCH",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "local_command_vtable_elf_va": "0x03EDFC00",
+      "local_execute_elf_va": "0x0CACC90",
+      "local_context_field": "+0x20",
+      "local_context_virtual_slot": "+0x30",
+      "global_command_vtable_elf_va": "0x03EDFC80",
+      "global_execute_elf_va": "0x0CACD70",
+      "global_context_field": "+0x28",
+      "global_context_virtual_slot": "+0x00",
+      "confidence": "high for byte-decoded dual context routing; concrete context types and live reachability unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_mode2_context_dispatch_a019.md"
+    },
+    {
+      "id": "A-020-CONTEXT-RESOURCE-RELEASE",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "vtable_elf_va": "0x03EDFCA0",
+      "vtable_slot": "+0x00",
+      "method_elf_va": "0x0CACDA0",
+      "conditional_writer_elf_va": "0x02F62440",
+      "cache_update_elf_va": "0x0CAB2E0",
+      "release_elf_va": "0x0CACE80",
+      "context_offsets": [
+        "+0x460",
+        "+0x568",
+        "+0x928"
+      ],
+      "confidence": "high for byte-decoded state/cache/refcount behavior; medium for exact destructor kind",
+      "runtime_observed": false,
+      "report": "reports/atlas_context_resource_release_a020.md"
+    },
+    {
+      "id": "A-021-CONTEXT-NODE-CONSTRUCTION",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "constructor_elf_va": "0x197588A",
+      "vtable_elf_va": "0x03EDFCA0",
+      "node_size": "0x30",
+      "node_fields": [
+        "+0x00 vptr",
+        "+0x08 Next",
+        "+0x10 payload pointer",
+        "+0x18 slot",
+        "+0x20 nested reference",
+        "+0x28 refcounted reference"
+      ],
+      "reference_increment_sites": [
+        "0x19758C8",
+        "0x19758D4"
+      ],
+      "confidence": "high for queued node construction and reference increments; source C++ class unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_context_node_constructor_a021.md"
+    },
+    {
+      "id": "C-001-SHADER-RESOURCE-INTERFACE",
+      "status": "VERIFIED_STATIC_NEW",
+      "method_elf_va": "0x0CB5130",
+      "resource_vcall_offset": "+0x38",
+      "writer_context_offset": "+0x460",
+      "packet_dwords": 7,
+      "report": "reports/atlas_shader_resource_interface_c001.md",
+      "verifier": "tools/atlas/verify_shader_resource_c001.py",
+      "runtime_observed": false,
+      "confidence": "high for object field accesses and writer contract; medium for shader binding attribution"
+    },
+    {
+      "id": "C-002-DESCRIPTOR-WORD-MASK",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "callee_elf_va": "0x03092D20",
+      "callee_self_offset": "0x030B2A50",
+      "lookup_elf_va": "0x03752FB0",
+      "lookup_self_offset": "0x03772CE0",
+      "caller_elf_va": "0x0CB524B",
+      "descriptor_offsets": [
+        "+0x00",
+        "+0x04",
+        "+0x06",
+        "+0x0C",
+        "+0x18"
+      ],
+      "confidence": "high for original-byte read-only descriptor masking and caller edge; exact resource type unknown",
+      "runtime_observed": false,
+      "report": "reports/atlas_shader_descriptor_mask_c002.md",
+      "verifier": "tools/atlas/verify_shader_descriptor_c002.py"
+    },
+    {
+      "id": "C-003-NESTED-SHADER-DESCRIPTOR",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "block_elf_va": "0x0CB55B1..0x0CB5909",
+      "window_elf_va": "0x0CB57CF..0x0CB59CF",
+      "window_self_offset": "0x0CD54FF",
+      "window_sha256": "a2162445681946519c8d2a46e05622bf8e62dd34c54996f066175fa1028f17e3",
+      "nested_descriptor_pointer": "+0x20",
+      "nested_descriptor_offsets": [
+        "+0x11",
+        "+0x1C",
+        "+0x3C"
+      ],
+      "context_writer": "+0x460",
+      "predicate_callee_elf_va": "0x03091BF0",
+      "writer_dwords": [
+        18,
+        3
+      ],
+      "full_packet_bytes": 72,
+      "confidence": "high for instruction/packet mechanics; GPU register and runtime unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_nested_shader_descriptor_c003.md",
+      "verifier": "tools/atlas/verify_nested_shader_c003.py"
+    },
+    {
+      "id": "C-004-DESCRIPTOR-MASK-PACKET-SELECTION",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "helper_elf_va": "0x03091BF0",
+      "caller_elf_va": "0x0CB5872",
+      "abbreviated_packet_elf_va": "0x0CB5A1D",
+      "descriptor_offsets": [
+        "+0x00",
+        "+0x10",
+        "+0x14"
+      ],
+      "emission_dwords": [
+        18,
+        3
+      ],
+      "runtime_observed": false,
+      "confidence": "high for mask-based conditional packet selection; hardware meaning unresolved",
+      "report": "reports/atlas_shader_descriptor_predicate_c004.md",
+      "verifier": "tools/atlas/verify_shader_descriptor_c004.py"
+    },
+    {
+      "id": "C-005-DESCRIPTOR-FORMAT-CLASSIFIER",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "classifier_elf_va": "0x0308F8F0",
+      "membership_helper_elf_va": "0x00000AB0",
+      "caller_elf_va": "0x03091BF0",
+      "format_tables_elf_va": "0x035AF3A0..0x035AF480",
+      "accepted_low5_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        6,
+        7,
+        10,
+        11,
+        12,
+        14,
+        15,
+        16,
+        17,
+        18,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26
+      ],
+      "confidence": "high for classifier table dispatch and exact bitset gate; hardware meaning unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_shader_format_classifier_c005.md",
+      "verifier": "tools/atlas/verify_shader_format_c005.py"
+    },
+    {
+      "id": "C-006-SHADER-MASK-SELECTOR",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "positive_decoder_elf_va": "0x00003220",
+      "negative_decoder_elf_va": "0x00003450",
+      "common_resolver_elf_va": "0x00000240",
+      "metadata_table_elf_va": "0x033CA910",
+      "caller_elf_va": "0x03091BF0",
+      "mask_site_elf_va": "0x03091CFD",
+      "bit_extract_controls": [
+        "0x206",
+        "0x20C"
+      ],
+      "mask_start_bits": [
+        3,
+        4
+      ],
+      "confidence": "high for original-byte sign-selected output extraction and mask; resolver validity and GPU semantics unknown",
+      "runtime_observed": false,
+      "report": "reports/atlas_shader_mask_selector_c006.md",
+      "verifier": "tools/atlas/verify_shader_mask_c006.py"
+    },
+    {
+      "id": "C-007-BOUNDED-SHADER-METADATA-INDEX",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "resolver_elf_va": "0x00000240",
+      "power_two_helper_elf_va": "0x00002EC0",
+      "selector_decoder_elf_va": "0x00003020",
+      "index_predicate_elf_va": "0x00002FE0",
+      "selector_table_elf_va": "0x033CA890",
+      "metadata_table_elf_va": "0x033CA910",
+      "success_index_range": "0..14",
+      "confidence": "high for success-path bound and table; semantic identity unknown",
+      "runtime_observed": false,
+      "report": "reports/atlas_shader_metadata_index_c007.md",
+      "verifier": "tools/atlas/verify_shader_metadata_index_c007.py"
+    },
+    {
+      "id": "C-008-RESOURCE-LAYOUT-PRODUCER",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "producer_elf_va": "0x00005760",
+      "producer_self_offset": "0x00025490",
+      "callers_elf_va": [
+        "0x000092CA",
+        "0x0000963A",
+        "0x0000999A"
+      ],
+      "consumers_elf_va": [
+        "0x00006190",
+        "0x00006F40",
+        "0x00005B90"
+      ],
+      "record_offsets": [
+        "+0x28",
+        "+0x48",
+        "+0x4C",
+        "+0x50",
+        "+0x54",
+        "+0x58"
+      ],
+      "confidence": "high for original byte producer/consumer edges; resource identity, GPU semantics, FDE and runtime use unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_resource_layout_c008.md",
+      "verifier": "tools/atlas/verify_resource_layout_c008.py"
+    },
+    {
+      "id": "C-009-CPU-RESOURCE-TRANSFER-CONSUMERS",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "wrapper_elf_vas": [
+        "0x6190",
+        "0x6F40"
+      ],
+      "shared_helper_elf_va": "0x5B90",
+      "shared_classifier_elf_va": "0x2EC0",
+      "verified_edges": [
+        "0x636C -> 0x5B90",
+        "0x6380 -> 0x2EC0",
+        "0x711C -> 0x5B90",
+        "0x7130 -> 0x2EC0",
+        "0x5BE9 -> 0x4090"
+      ],
+      "confidence": "high for shared call graph and CPU load/store transfer; ownership/GPU semantics unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_resource_transfer_c009.md",
+      "verifier": "tools/atlas/verify_resource_transfer_c009.py"
+    },
+    {
+      "id": "C-010-SPECIAL-CPU-TRANSFER-DIRECTION",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "first_helper_elf_va": "0x64D0",
+      "second_helper_elf_va": "0x7280",
+      "first_helper_self_offset": "0x26200",
+      "second_helper_self_offset": "0x26FB0",
+      "shared_address_helper_elf_va": "0x5B90",
+      "classifier_elf_va": "0x2EC0",
+      "confidence": "high for opposite CPU copy direction; GPU and shader identities unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_resource_special_transfer_c010.md",
+      "verifier": "tools/atlas/verify_resource_special_transfer_c010.py"
+    },
+    {
+      "id": "C-011-TRANSFER-POINTER-ABI",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "entry_elf_vas": [
+        "0x91C0",
+        "0x9530"
+      ],
+      "consumer_elf_vas": [
+        "0x6190",
+        "0x6F40"
+      ],
+      "layout_builder_elf_va": "0x5760",
+      "confidence": "high for same six-argument API and opposite CPU transfer paths; resource ownership unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_transfer_pointer_abi_c011.md",
+      "verifier": "tools/atlas/verify_transfer_pointer_abi_c011.py"
+    },
+    {
+      "id": "C-012-TRANSFER-DESCRIPTOR-NORMALIZERS",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "entry_elf_vas": [
+        "0x9460",
+        "0x97D0"
+      ],
+      "entry_self_offsets": [
+        "0x29190",
+        "0x29500"
+      ],
+      "direct_call_sites": [
+        "0x950C -> 0x91C0",
+        "0x987C -> 0x9530"
+      ],
+      "jump_table_elf_vas": [
+        "0x33CAD10",
+        "0x33CAD90"
+      ],
+      "confidence": "high for paired descriptor field normalizers and direct call edges; endpoint ownership and GPU identity unknown",
+      "runtime_observed": false,
+      "report": "reports/atlas_transfer_wrappers_c012.md",
+      "verifier": "tools/atlas/verify_transfer_wrappers_c012.py"
+    },
+    {
+      "id": "C-013-TRANSFER-SELECTOR-EXHAUSTIVE",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "table_elf_vas": [
+        "0x033CAD10",
+        "0x033CAD90"
+      ],
+      "selector_valid": [
+        1,
+        4,
+        8,
+        16
+      ],
+      "selector_error": [
+        2,
+        3,
+        5,
+        6,
+        7,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
+      "table_sha256": [
+        "bb1753f7f8e6086d74826edfb1b38af75f7b306bee3557a38ae6ab85bfb2c889",
+        "c75bab0c8df9cddff9e8e9397b4e86a876b93505321262332dd2a92a458d69f0"
+      ],
+      "report": "reports/atlas_transfer_selector_c013.md",
+      "verifier": "tools/atlas/verify_transfer_selector_c013.py",
+      "runtime_observed": false,
+      "confidence": "high for original jump-table control flow; unknown semantic format IDs"
+    },
+    {
+      "id": "C-014-SHADER-MODE-DISPATCH",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "dispatch_elf_va": "0x0CB51BF",
+      "table_elf_va": "0x035C3980",
+      "targets_elf_va": [
+        "0x0CB51E0",
+        "0x0CB82B4",
+        "0x0CB51E0",
+        "0x0CB8637",
+        "0x0CB51E0",
+        "0x0CB846C"
+      ],
+      "mode_1_virtual_offset": "+0x38",
+      "mode_1_returned_object_write": "+0x08",
+      "mode_1_and_5_writer_dwords": 6,
+      "confidence": "high for exact modes, object write, capacity and early-return; shader stage and runtime unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_shader_modes_c014.md",
+      "verifier": "tools/atlas/verify_shader_modes_c014.py"
+    },
+    {
+      "id": "C-015-SHADER-MODE-EMISSION",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "mode1_elf_va": "0x0CB82B4",
+      "mode5_elf_va": "0x0CB846C",
+      "mode1_second_record": "0x00038528C0044700",
+      "mode5_second_record": "0x00038504C0044700",
+      "second_record_bytes": 24,
+      "third_record_bytes": 28,
+      "report": "reports/atlas_shader_emission_c015.md",
+      "verifier": "tools/atlas/verify_shader_emission_c015.py",
+      "confidence": "high for three-phase writer and mode-specific constant; hardware register identity and runtime unknown",
+      "runtime_observed": false
+    },
+    {
+      "id": "C-016-PAIRED-SHADER-RESOURCE-DESCRIPTORS",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "entry_elf_va": "0x0CB4330",
+      "self_offset": "0x0CD4060",
+      "shader_state_callsite": "0x0CB438C",
+      "shader_state_target": "0x0CB5130",
+      "resource_virtual_offset": "+0x38",
+      "descriptor_field": "+0x18",
+      "descriptor_transform": "0x03092D20",
+      "conditional_pointer_field": "+0x140",
+      "conditional_stamp_field": "+0x148",
+      "stamp_source_elf_va": "0x04496748",
+      "runtime_observed": false,
+      "confidence": "high for instructions and fields; medium for semantic interpretation",
+      "report": "reports/atlas_paired_shader_resource_c016.md",
+      "verifier": "tools/atlas/verify_paired_shader_resource_c016.py"
+    },
+    {
+      "id": "C-017-SHADER-CONTEXT-CACHE-TRANSITION",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "block_elf_va": "0x0CB4AF3–0x0CB4C6B",
+      "self_offset_range": "0x0CB6E23–0x0CB6F9B",
+      "context_cache_offsets": [
+        "+0x448",
+        "+0x450"
+      ],
+      "context_writer_offset": "+0x460",
+      "writer_dirty_offsets": [
+        "+0xC388",
+        "+0xC530",
+        "+0xC538",
+        "+0xC54E"
+      ],
+      "descriptor_consumer_elf_vas": [
+        "0x02F62A40",
+        "0x02F62BD0"
+      ],
+      "confidence": "high for original bytes, field accesses and call edges; semantic shader stage unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_shader_context_cache_c017.md",
+      "verifier": "tools/atlas/verify_shader_context_cache_c017.py"
+    },
+    {
+      "id": "C-018-DESCRIPTOR-CONSUMER-SEMANTICS",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "functions_elf_va": [
+        "0x02F62A40",
+        "0x02F62BD0"
+      ],
+      "lookup_offsets": [
+        "+0x22",
+        "+0x82"
+      ],
+      "record_bytes": 48,
+      "cache_write_bytes": 32,
+      "confidence": "high for signed-word branch, CPU cache versus writer record; stage attribution unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_descriptor_consumers_c018.md",
+      "verifier": "tools/atlas/verify_descriptor_consumers_c018.py"
+    },
+    {
+      "id": "C-019-DESCRIPTOR-SELECTOR-REGISTER-OFFSETS",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "table_elf_va": "0x037530B0",
+      "table_self_offset": "0x03772DE0",
+      "table_entries": [
+        "0x2E40",
+        "0x2C0C",
+        "0x2C4C",
+        "0x2C8C",
+        "0x2CCC",
+        "0x2D0C",
+        "0x2D4C"
+      ],
+      "consumer_elf_vas": [
+        "0x02F62B38",
+        "0x02F62CC8"
+      ],
+      "control_word_formula": "(mapping_word & 0x3FFF) + table[input_ESI] - 0x2C00",
+      "confidence": "high for byte-level formula; hardware register semantics unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_descriptor_selector_c019.md",
+      "verifier": "tools/atlas/verify_descriptor_selector_c019.py"
+    },
+    {
+      "id": "C-020-FOUR-DWORD-DESCRIPTOR-CONSUMER",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "entry_elf_va": "0x02F62D60",
+      "end_exclusive_elf_va": "0x02F62EDA",
+      "callsite_elf_va": "0x0CC02B3",
+      "mapping_offset": "+0xA2",
+      "writer_record_bytes": 32,
+      "cpu_descriptor_bytes": 16,
+      "body_sha256": "89673455122f571b5907fa474a61517d29c0b4839a67d7a33521114672a6c63b",
+      "confidence": "high for byte-verified call and descriptor routing; GPU register meaning unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_descriptor_consumer_c020.md",
+      "verifier": "tools/atlas/verify_descriptor_consumer_c020.py"
+    },
+    {
+      "id": "C-021-THREE-RESOURCE-DISPATCH-STREAMS",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "entry_region_elf_va": "0x0CC0190..0x0CC02D2",
+      "resource_array_field": "+0x20",
+      "enclosing_table_fields": [
+        "+0x208",
+        "+0x218"
+      ],
+      "packed_index_bextr_control": "0x1008",
+      "targets_elf_va": [
+        "0x0CC13B0",
+        "0x0CAC030",
+        "0x02F62D60"
+      ],
+      "confidence": "high for original-byte field and call edges; class identity and bounds unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_resource_dispatch_c021.md",
+      "verifier": "tools/atlas/verify_resource_dispatch_c021.py"
+    },
+    {
+      "id": "C-022-RESOURCE-KEYED-LOOKUP",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "callee_elf_va": "0x0CAC030",
+      "key_fields": [
+        "+0x14",
+        "+0x18 low12"
+      ],
+      "table_fields": [
+        "+0x3D8",
+        "+0x410",
+        "+0x418",
+        "+0x420"
+      ],
+      "record_stride": 16,
+      "confidence": "high for original-byte field and lookup edges; semantic purpose unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_resource_keyed_lookup_c022.md",
+      "verifier": "tools/atlas/verify_resource_keyed_lookup_c022.py"
+    },
+    {
+      "id": "C-023-RESOURCE-REGISTRY-RESET",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "entry_elf_va": "0x0CB87D0",
+      "end_exclusive_elf_va": "0x0CB8895",
+      "self_file_start": "0x0CD8500",
+      "self_file_end_exclusive": "0x0CD85C5",
+      "window_sha256": "c02ccffb4bd519a3249d5dc2ddcec8518e3d2e710d12b15d7e95136fa0f1ec02",
+      "registry_offsets": [
+        "+0x3D8",
+        "+0x410",
+        "+0x418",
+        "+0x420"
+      ],
+      "confidence": "high for original-byte reset and C-022 field join; no insert, FDE, or runtime evidence",
+      "runtime_observed": false,
+      "report": "reports/atlas_registry_reset_c023.md",
+      "verifier": "tools/atlas/verify_registry_reset_c023.py"
+    },
+    {
+      "id": "C-024-CPU-REGISTRY-REMOVAL",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "block_elf_va": "0x0CB80D0..0x0CB828B",
+      "self_offset": "0x0CD7E00..0x0CD7FBB",
+      "window_sha256": "b61b2c4cc5e2461401b002b86327dc4530a530fb62e33f91549f3806aeab60e9",
+      "confidence": "high for removal/free-list mutation; enclosing FDE and exact owner unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_registry_removal_c024.md",
+      "verifier": "tools/atlas/verify_registry_removal_c024.py"
+    },
+    {
+      "id": "C-025-CPU-KEYED-REGISTRY-INSERT",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "producer_elf_va": "0x0CC8558",
+      "callsite_elf_va": "0x0CC857C",
+      "insertion_callee_elf_va": "0x0CC93D0",
+      "record_stride": 16,
+      "record_base_context_offset": "+0x3D8",
+      "free_head_context_offset": "+0x408",
+      "free_count_context_offset": "+0x40C",
+      "bucket_offsets": [
+        "+0x410",
+        "+0x418",
+        "+0x420"
+      ],
+      "confidence": "high for insertion and recycling, medium for deduplication semantics; runtime unverified",
+      "report": "reports/atlas_registry_insert_c025.md",
+      "verifier": "tools/atlas/verify_registry_insert_c025.py"
+    },
+    {
+      "id": "C-027-BUCKET-POINTER-ALLOCATOR",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "helper_elf_va": "0x0C7BD40",
+      "first_return_elf_va": "0x0C7C15B",
+      "caller_pairs_elf_va": [
+        "0x0CC9776",
+        "0x0CC978D",
+        "0x0C8F00B",
+        "0x0C8F02A"
+      ],
+      "pointer_slot_offset": "+0x08",
+      "element_size_bytes": 4,
+      "verified_interval_self_offset": "0x0C9BA70..0x0C9BE8C",
+      "confidence": "high pointer slot/count-times-four and distinct caller joins; exact FDE/allocator ownership unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_bucket_allocator_c027.md",
+      "verifier": "tools/atlas/verify_bucket_allocator_c027.py"
+    },
+    {
+      "id": "C-028-SECOND-REGISTRY-KEY-PRODUCER",
+      "status": "VERIFIED_STATIC_NEW",
+      "caller_elf_va": "0x0CC27F9",
+      "classifier_elf_va": "0x0308FE70",
+      "insertion_callsite_elf_va": "0x0CC2839",
+      "insertion_target_elf_va": "0x0CC93D0",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "confidence": "high for gated producer and distinct classifier; semantics unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_registry_second_producer_c028.md",
+      "verifier": "tools/atlas/verify_registry_second_producer_c028.py"
+    },
+    {
+      "id": "C-029-CLASSIFIER-BITCLEAR",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "entry_elf_va": "0x0308FE70",
+      "self_offset": "0x030AFBA0",
+      "consumer_elf_va": "0x0CC2821",
+      "selector_table_elf_va": "0x035AF480",
+      "result": "returns input DWORD +0x08 with conditional contiguous mask cleared; C-028 shifts result by eight before CPU registry insertion",
+      "confidence": "high for bit clearing; shader semantics unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_classifier_bitclear_c029.md",
+      "verifier": "tools/atlas/verify_classifier_bitclear_c029.py"
+    },
+    {
+      "id": "C-030-CLASSIFIER-INDEXED-TABLE-HELPERS",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "helpers_elf_va": [
+        "0x03220",
+        "0x03450"
+      ],
+      "index_source_elf_va": "0x0240",
+      "shared_table_elf_va": "0x033CA910",
+      "extract_fields": [
+        "bits 6..7",
+        "bits 12..13"
+      ],
+      "classifier_elf_va": "0x0308FE70",
+      "confidence": "high for original-byte helper and classifier dataflow; index/table ownership and shader identity unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_classifier_helpers_c030.md",
+      "verifier": "tools/atlas/verify_classifier_helpers_c030.py"
+    },
+    {
+      "id": "C-032-PAIRED-RESOURCE-VTABLE-FDE",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "method_elf_va": "0x0CB4330",
+      "fde_elf_va": "0x038F73B0",
+      "end_exclusive_elf_va": "0x0CB5130",
+      "slot_elf_va": "0x03EDFFD8",
+      "slot_self_offset": "0x03F01218",
+      "rela_self_offset": "0x044BACD0",
+      "slot_relative_to_known_table": "+0x338",
+      "confidence": "high for FDE and relative relocation; exact resource class and runtime unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_paired_resource_vtable_c032.md",
+      "verifier": "tools/atlas/verify_paired_resource_vtable_c032.py"
+    }
+  ],
+  "known_false": [],
+  "next_action": "Trace concrete resource vptr provenance at 0x0CB4397 and 0x0CB43A3; C-032 resolves enclosing FDE and context table slot",
+  "draft_pr_url": "https://github.com/s-ilent/DeracinePCVR/pull/1",
+  "draft_pr_number": 1,
+  "recheck": {
+    "result": "Previous access blocker RESOLVED by direct user attachments; earlier materialization warning is historical",
+    "source_scan": "files.list conversation did not expose either binary source",
+    "binary_materialization_warning": "This Project file does not have an authorized raw-byte materialization path",
+    "zip_materialization_warning": "This Project file does not have an authorized raw-byte materialization path",
+    "resolved_by": "direct user-uploaded SELF and ZIP, validated independently"
+  },
+  "findings": [
+    {
+      "id": "C-026-CPU-REGISTRY-BUCKET-REHASH",
+      "status": "VERIFIED_STATIC_NEW",
+      "target_sha256": "8caee78e40693b2e57c68ce87ce9507d907b824b6f6a4c481f414ac0627011a0",
+      "elf_interval": "0x0CC95B8..0x0CC99CC",
+      "self_interval": "0x0CE92E8..0x0CE96FC",
+      "confidence": "high for bucket growth, -1 initialization and active-bitset rehash; helper allocation semantics unresolved",
+      "runtime_observed": false,
+      "report": "reports/atlas_registry_rehash_c026.md"
+    }
+  ]
+}
