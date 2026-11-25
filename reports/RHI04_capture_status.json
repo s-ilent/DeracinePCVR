@@ -1,0 +1,97 @@
+{
+  "schema": 1,
+  "experiment": "RHI-04 first original capture",
+  "branch": "research/rhi04-first-original-capture-20261125",
+  "base_commit": "fbe46f9ca341984386b0d614c14f112963d14e3b",
+  "launch_permission": "granted",
+  "run_count": 1,
+  "exit_code": 0,
+  "clean_exit": true,
+  "emulator_sha256": "87A8589C06F4A4FBCB81D873C5EEE31B45B4F7EA10C44BEFC43265B22D4EE6A7",
+  "game_sha256": "8CAEE78E40693B2E57C68CE87CE9507D907B824B6F6A4C481F414AC0627011A0",
+  "game_approved": true,
+  "session_id": 2490014584045497701,
+  "execution_id": 1795572179198350300,
+  "artifacts": {
+    "index_bridge.json": {
+      "present": true,
+      "size": 129990,
+      "sha256": "2D879109A0CB02FAE7F1BF2D51340F5E58F0FCEB195F1099DAF5C8F0AC6F4D58",
+      "schema_version": 1
+    },
+    "session.json": {
+      "present": true,
+      "size": 709,
+      "sha256": "4F6435FAEF1F80AAE07F493C0736B659136CAF7AB43A6E7027CDBAD86F9BE735",
+      "schema_version": 2
+    },
+    "package.json": { "present": false },
+    "tape.json": { "present": false },
+    "resources.bin": { "present": false },
+    "textures.bin": { "present": false },
+    "stage_spv": { "present": false },
+    "reference_post.bin": { "present": false }
+  },
+  "original_command": {
+    "observed": true,
+    "records": 128,
+    "with_deferred_command": 128,
+    "recorded": 115,
+    "expired": 13,
+    "ambiguous": 0,
+    "inconsistent": 0,
+    "probe_target": "0x800cbb9c0",
+    "thread_id": 80756
+  },
+  "index_bridge": {
+    "resolved": true,
+    "records": 128,
+    "single_session": true,
+    "single_execution": true,
+    "predicate_determinable": 128,
+    "selected_address_present": 128,
+    "selected_slot": "secondary_0x40",
+    "distinct_objects": 12,
+    "distinct_addresses": 12,
+    "element_widths": [2, 4],
+    "address_evidence": "runtime_observed",
+    "allocation_size_known": false,
+    "allocation_offset_known": false,
+    "resource_generation_known": false
+  },
+  "shader_capture": {
+    "binaries_retained": 272,
+    "interfaces_retained": 272,
+    "duplicates": 0,
+    "capacity_dropped": 0,
+    "descriptors_per_interface": 2,
+    "shader_buffer_bytes_captured": 0
+  },
+  "identity_result": "RESOURCE_PACKAGE_MISSING",
+  "identity_gate_ran": false,
+  "replay_attempted": false,
+  "reference_compared": false,
+  "highest_evidence_level": 3,
+  "evidence_levels": {
+    "0_emulator_reached_capture": true,
+    "1_original_command_observed": true,
+    "2_resource_package_captured": false,
+    "3_index_bridge_resolved": true,
+    "4_same_draw_identity_accepted": false,
+    "5_shader_resources_resolved": false,
+    "6_original_draw_executed": false,
+    "7_output_comparable": false,
+    "8_reference_matched": false
+  },
+  "first_failing_invariant": "a descriptor interface declares a binding with no captured resource",
+  "first_failing_location": "shader_param_capture.cpp:1476",
+  "package_refusal": "Draw package for draw 11 refused: a descriptor interface declares a binding with no captured resource",
+  "tape_refusal": "the tape could not be built: draw_unresolved",
+  "next_experiment": "determine why the shader-buffer resource capture retained zero bytes while the descriptor interfaces were captured in full",
+  "next_experiment_needs_launch": false,
+  "private_artifacts": {
+    "capture_directory": "_build/rhi04-capture-1",
+    "lab": "_build/headless/labs/rhi04-capture-1",
+    "log_size": 13239033
+  }
+}
