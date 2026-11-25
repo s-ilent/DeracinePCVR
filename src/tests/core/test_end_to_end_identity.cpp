@@ -333,17 +333,35 @@ TEST(EndToEndIdentity, ASamplerAtTheDeclaredBindingResolves) {
 TEST(EndToEndIdentity, ASamplerFromAnotherDrawCannotSatisfyTheDeclaration) {
     // The defect: the exporter copied every retained sampler, so a sampler observed in another draw
     // could satisfy this one's declaration.
+    //
+    // The package's own provenance is 1. A sampler at the right binding but from draw 2 must not
+    // satisfy the declaration, because it is not evidence about this draw.
     auto package = MakePackage();
     AddInterface(package, Descriptor(5, 0, 0));
     AddSampler(package, 0, /*provenance=*/2);
     std::string error;
-    // The validator sees a sampler at the right binding, so the package-level check passes; the
-    // producer is what must exclude the other draw. This asserts the producer-side contract by
-    // checking that a package built without the selected draw's sampler has none at that binding.
-    auto filtered = MakePackage();
-    AddInterface(filtered, Descriptor(5, 0, 0));
-    EXPECT_FALSE(Core::DrawPackage::ValidatePackage(filtered, error));
-    EXPECT_NE(error.find("no captured sampler at that binding"), std::string::npos) << error;
+    EXPECT_FALSE(Core::DrawPackage::ValidatePackage(package, error));
+    EXPECT_NE(error.find("no captured sampler at that binding for this draw"), std::string::npos)
+        << error;
+
+    // The same sampler attributed to this draw does satisfy it, which is what proves the check is
+    // on provenance rather than on the binding alone.
+    auto matching = MakePackage();
+    AddInterface(matching, Descriptor(5, 0, 0));
+    AddSampler(matching, 0, /*provenance=*/1);
+    EXPECT_TRUE(Core::DrawPackage::ValidatePackage(matching, error)) << error;
+}
+
+TEST(EndToEndIdentity, TwoSamplersClaimingOneBindingAreAmbiguous) {
+    // Two samplers from this draw at the same binding means the evidence does not identify which
+    // one the descriptor used, so the association cannot be claimed as verified.
+    auto package = MakePackage();
+    AddInterface(package, Descriptor(5, 0, 0));
+    AddSampler(package, 0, /*provenance=*/1);
+    AddSampler(package, 0, /*provenance=*/1);
+    std::string error;
+    EXPECT_FALSE(Core::DrawPackage::ValidatePackage(package, error));
+    EXPECT_NE(error.find("ambiguous"), std::string::npos) << error;
 }
 
 TEST(EndToEndIdentity, ASamplerAtTheWrongBindingIsRefused) {

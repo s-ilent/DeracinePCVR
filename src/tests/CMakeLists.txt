@@ -2309,3 +2309,46 @@ gtest_discover_tests(shadps4_end_to_end_identity_test
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     DISCOVERY_TIMEOUT 60
 )
+
+# ===========================================================================
+# Production capture identity
+# ===========================================================================
+add_executable(shadps4_production_capture_identity_test
+    core/test_production_capture_identity.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/texture_capture.cpp
+
+    ${CMAKE_SOURCE_DIR}/src/common/assert.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/error.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/string_util.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/logging/log.cpp
+
+    stubs/common_stub.cpp
+    stubs/core_stub.cpp
+    stubs/scm_rev_stub.cpp
+    stubs/sdl_stub.cpp
+    stubs/settings_stub.cpp
+)
+
+target_include_directories(shadps4_production_capture_identity_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_compile_features(shadps4_production_capture_identity_test PRIVATE cxx_std_23)
+target_compile_definitions(shadps4_production_capture_identity_test PRIVATE NOMINMAX)
+
+target_link_libraries(shadps4_production_capture_identity_test PRIVATE
+    GTest::gtest_main
+    fmt::fmt
+    spdlog::spdlog
+    nlohmann_json::nlohmann_json
+    SDL3::SDL3
+)
+
+list(APPEND TEST_TARGETS shadps4_production_capture_identity_test)
+
+gtest_discover_tests(shadps4_production_capture_identity_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)

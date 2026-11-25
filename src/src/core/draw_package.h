@@ -1030,10 +1030,11 @@ struct Package {
                         break;
                     }
                     case 5: { // Sampler
-                        // The sampler must occupy the binding the descriptor declares. Any sampler
-                        // with a nonzero id would let an unrelated one from another stage or draw
-                        // satisfy the declaration.
-                        bool resolved = false;
+                        // The sampler must occupy the binding the descriptor declares, and it must
+                        // belong to this package's draw. A sampler from another draw may share the
+                        // binding number and even the state, and admitting it would let an
+                        // unrelated descriptor satisfy the declaration.
+                        u32 matches = 0;
                         for (const auto& sampler : package.samplers) {
                             if (!sampler.has_vk_binding) {
                                 continue;
@@ -1044,12 +1045,19 @@ struct Package {
                             if (sampler.id == 0) {
                                 continue;
                             }
-                            resolved = true;
-                            break;
+                            if (sampler.provenance_id != package.provenance_id) {
+                                continue;
+                            }
+                            ++matches;
                         }
-                        if (!resolved) {
+                        if (matches == 0) {
                             error = "a sampler descriptor declares a binding with no captured "
-                                    "sampler at that binding";
+                                    "sampler at that binding for this draw";
+                            return false;
+                        }
+                        if (matches > 1) {
+                            error = "a sampler descriptor's binding is claimed by more than one "
+                                    "captured sampler, so the association is ambiguous";
                             return false;
                         }
                         break;

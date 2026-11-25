@@ -194,7 +194,8 @@ ImageId TextureCache::GetNullImage(const vk::Format format) {
 bool TextureCache::SnapshotImageForCapture(ImageId image_id, u32 mip_first, u32 mip_count,
                                            u32 layer_first, u32 layer_count, u32 aspect,
                                            u64 provenance_id, u32 vk_binding, u64 stage_hash,
-                                           u32 shader_image_index) {
+                                           u32 shader_image_index, u32 array_element,
+                                           u32 array_count) {
     if (!Core::TextureCapture::Enabled()) {
         return false;
     }
@@ -287,6 +288,10 @@ bool TextureCache::SnapshotImageForCapture(ImageId image_id, u32 mip_first, u32 
     Core::TextureCapture::ImageRecord record{};
     record.provenance_id = provenance_id;
     record.vk_binding = vk_binding;
+    // The element identity must match the binding observation the write loop recorded, or the late
+    // content joins to the wrong element.
+    record.array_element = array_element;
+    record.array_count = array_count;
     record.stage_hash = stage_hash;
     record.shader_image_index = shader_image_index;
     record.image_id = image_id.index;

@@ -1229,13 +1229,29 @@ void WriteFirstPackage(const char* directory) noexcept {
                     // `associated_image` names that index is the one the shader samples with.
                     // Without that evidence the association stays unresolved rather than being
                     // guessed from binding order.
+                    // The association must come from the same draw. A sampler observed in another
+                    // draw may share the shader hash and the associated image index, and admitting
+                    // it would pair this image with a sampler the draw never bound.
+                    u32 matches = 0;
                     for (const auto& sampler : samplers) {
-                        if (sampler.associated_image == image.shader_image_index &&
-                            sampler.stage_hash == image.stage_hash) {
-                            out.sampler_id = sampler.id;
-                            out.sampler_verified = true;
-                            break;
+                        if (sampler.provenance_id != draw.provenance_id) {
+                            continue;
                         }
+                        if (sampler.associated_image != image.shader_image_index) {
+                            continue;
+                        }
+                        if (sampler.stage_hash != image.stage_hash) {
+                            continue;
+                        }
+                        ++matches;
+                        out.sampler_id = sampler.id;
+                        out.sampler_verified = true;
+                    }
+                    // An ambiguous association is not a verified one. Two samplers claiming the same
+                    // image index in one draw means the evidence does not identify which was used.
+                    if (matches > 1) {
+                        out.sampler_id = 0;
+                        out.sampler_verified = false;
                     }
 
                     if (!image.bytes.empty() && image.row_pitch != 0) {

@@ -1,0 +1,85 @@
+{
+  "schema": 4,
+  "experiment": "RHI-04R4.1 array observation and sampler provenance",
+  "branch": "research/rhi04r41-array-and-sampler-identity-20261125",
+  "base_commit": "de281a8f5322a7903eed94ba7cfb5d356e93d084",
+  "status": "READY_FOR_SECOND_CAPTURE_WITH_EXPLICIT_LIMITATIONS",
+  "offline_gate_passed": true,
+  "launch_permission": "not_requested",
+  "run_count": 0,
+  "game_sha256": "8CAEE78E40693B2E57C68CE87CE9507D907B824B6F6A4C481F414AC0627011A0",
+  "game_approved": true,
+  "corrected_emulator": {
+    "sha256": "D93A6B4A94624FC0FA341C9ADE0F5B918DCBE278EEEEB289E1E7B620876DB232",
+    "size": 77658112,
+    "runtime_confirmed": false
+  },
+  "tests": {
+    "cxx_total": 377,
+    "cxx_suites": 21,
+    "provenance_cases": 39,
+    "gpu_mutation_cases": 13,
+    "vulkan_validation_errors": 0,
+    "baseline_r4": 366,
+    "added_suite": "shadps4_production_capture_identity_test, 9 cases"
+  },
+  "erratum": {
+    "overclaim": "RHI-04R4 described the array and sampler identity chain as verified end to end",
+    "what_was_verified": "the package validator's contract, against hand-built packages",
+    "what_was_not": "the producer: NoteImageBinding, CommitPendingImages, NoteSnapshotTaken and the exporter's sampler filter were never called by a test",
+    "invalid_test": "ASamplerFromAnotherDrawCannotSatisfyTheDeclaration asserted a different package than the one it built and never tested its named invariant",
+    "lesson": "a validator test proves the validator, not the pipeline"
+  },
+  "defects": [
+    {
+      "id": "R4.1-1",
+      "name": "only the first array element was observed",
+      "location": "vk_rasterizer.cpp descriptor-write loop",
+      "confirmed": true,
+      "detail": "one record per descriptor write, using image_bindings[image_binding_idx] only",
+      "repaired": true
+    },
+    {
+      "id": "R4.1-2",
+      "name": "snapshots derived bindings from flattened image indices",
+      "location": "vk_rasterizer.cpp snapshot loop",
+      "confirmed": true,
+      "detail": "unified = first_image_binding + binding_index, so a two-element array at binding 4 produced snapshots at 4 and 5",
+      "repaired": true
+    },
+    {
+      "id": "R4.1-3",
+      "name": "the image-sampler association ignored provenance",
+      "location": "shader_param_capture.cpp",
+      "confirmed": true,
+      "detail": "the exported list was filtered by draw but the association searched the unfiltered collection",
+      "repaired": true
+    }
+  ],
+  "test_provenance": {
+    "calls_production_capture_code": {
+      "shadps4_production_capture_identity_test": 9,
+      "shadps4_sampler_binding_test": 10,
+      "shadps4_pipeline_binding_test": 12,
+      "shadps4_package_reader_test": 11,
+      "shadps4_texture_capture_accounting_test": 10
+    },
+    "builds_package_objects_directly": {
+      "shadps4_end_to_end_identity_test": 15,
+      "shadps4_descriptor_domain_test": 23,
+      "shadps4_draw_package_test": 49
+    }
+  },
+  "first_unresolved_invariant": "no runtime evidence exists that any draw has a complete descriptor set",
+  "next_experiment": "one bounded second capture against the corrected binary",
+  "next_experiment_needs_launch": true,
+  "next_experiment_authorized": false,
+  "next_experiment_acceptance": [
+    "no pipeline reported a layout disagreement",
+    "NoteHostUpload was called with a nonzero count",
+    "at least one draw has every declared descriptor resolved with retained bytes",
+    "a package is written, or a precise refusal names the first missing resource class",
+    "if a package is written, a tape is produced for its selected provenance",
+    "if both exist, the identity gate runs and reports its outcome"
+  ]
+}

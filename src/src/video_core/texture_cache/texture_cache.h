@@ -105,7 +105,8 @@ public:
     /// is opted in, and it never runs for an image the caller did not select.
     bool SnapshotImageForCapture(ImageId image_id, u32 mip_first, u32 mip_count, u32 layer_first,
                                  u32 layer_count, u32 aspect, u64 provenance_id, u32 vk_binding,
-                                 u64 stage_hash, u32 shader_image_index);
+                                 u64 stage_hash, u32 shader_image_index, u32 array_element,
+                                 u32 array_count);
 
     /// Retrieves the image handle of the image with the provided attributes.
     [[nodiscard]] ImageId FindImage(ImageDesc& desc, bool exact_fmt = false);

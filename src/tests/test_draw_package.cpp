@@ -714,6 +714,8 @@ TEST(DrawPackageInterface, ASamplerNeedsNoCapturedBuffer) {
     captured.id = 1;
     captured.vk_binding = 5;
     captured.has_vk_binding = true;
+    // The sampler must belong to this package's draw.
+    captured.provenance_id = package.provenance_id;
     package.samplers.push_back(captured);
     EXPECT_TRUE(ValidatePackage(package, error)) << error;
 }

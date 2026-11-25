@@ -234,6 +234,47 @@ TEST(PackageReader, TheDescriptorInterfaceIsParsed) {
     EXPECT_EQ(out.shader_interfaces[0].push_constant_size, 16u);
 }
 
+TEST(PackageReader, TheArrayAndSamplerIdentityRoundTrips) {
+    // The producer writes these fields and the reader must preserve them. A round trip that dropped
+    // the array element would make two elements of one binding indistinguishable from two bindings.
+    TempDir dir;
+    Write(dir.path() / "package.json", R"({
+  "schema_version": 4,
+  "provenance_id": 7,
+  "shader_stages": [],
+  "shader_interfaces": [],
+  "textures": [
+    { "id": 1, "vk_binding": 4, "array_element": 0, "array_count": 2,
+      "subresources": [] },
+    { "id": 2, "vk_binding": 4, "array_element": 1, "array_count": 2,
+      "subresources": [] }
+  ],
+  "samplers": [
+    { "id": 3, "vk_binding": 9, "has_vk_binding": true, "logical_stage": 0,
+      "provenance_id": 7 }
+  ],
+  "resources": [],
+  "vertex_bindings": [],
+  "readiness": { "geometry_ready": false }
+})");
+    package::Package out{};
+    std::string error;
+    package::Read(dir.path().string(), out, error);
+    ASSERT_EQ(out.textures.size(), 2u);
+    // Both elements share one binding and differ only by element.
+    EXPECT_EQ(out.textures[0].vk_binding, 4u);
+    EXPECT_EQ(out.textures[1].vk_binding, 4u);
+    EXPECT_EQ(out.textures[0].array_element, 0u);
+    EXPECT_EQ(out.textures[1].array_element, 1u);
+    EXPECT_EQ(out.textures[0].array_count, 2u);
+    EXPECT_EQ(out.textures[1].array_count, 2u);
+
+    ASSERT_EQ(out.samplers.size(), 1u);
+    EXPECT_EQ(out.samplers[0].vk_binding, 9u);
+    EXPECT_TRUE(out.samplers[0].has_vk_binding);
+    EXPECT_EQ(out.samplers[0].provenance_id, 7u);
+}
+
 TEST(PackageReader, ThePipelineStateIsParsed) {
     TempDir dir;
     Write(dir.path() / "package.json", Schema4Json("stage.spv", std::string(64, '0'), 4));

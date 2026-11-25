@@ -2116,42 +2116,57 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
         // Record the effective image binding here, where the unified binding number, the image
         // binding and the image info all belong to the same descriptor. Inferring a Vulkan
         // resource from the guest descriptor afterwards would not be the same observation.
-        if (Core::TextureCapture::Enabled() && image_id) {
-            auto& image = texture_cache.GetImage(image_id);
-            auto& image_view = texture_cache.FindTexture(image_id, desc);
-            Core::TextureCapture::ImageRecord record{};
-            record.provenance_id = Core::RhiEntryProbe::CurrentDrawProvenanceId();
-            record.stage_hash = stage.pgm_hash;
-            record.stage = static_cast<u32>(stage.stage);
-            // One binding with `array_size` elements, not `array_size` bindings. The element index
-            // is the write's own dstArrayElement plus the element's position in pImageInfo.
-            record.vk_binding = set_write.dstBinding;
-            record.array_element = set_write.dstArrayElement;
-            record.array_count = array_size;
-            record.guest_slot = image_binding_idx;
-            record.shader_image_index = image_binding_idx;
-            record.guest_address = image.info.guest_address;
-            record.image_id = image_id.index;
-            record.image_uid = image.image_uid;
-            record.vk_image = reinterpret_cast<u64>(static_cast<VkImage>(image.GetImage()));
-            record.vk_image_view =
-                reinterpret_cast<u64>(static_cast<VkImageView>(*image_view.image_view));
-            record.image_format = static_cast<u32>(image.info.pixel_format);
-            record.view_format = static_cast<u32>(image_view.info.format);
-            record.component_mapping = 0;
-            record.aspect = image.info.props.is_depth ? 2u : 1u;
-            record.mip_first = image_view.info.range.base.level;
-            record.mip_count = image_view.info.range.extent.levels;
-            record.layer_first = image_view.info.range.base.layer;
-            record.layer_count = image_view.info.range.extent.layers;
-            record.descriptor_layout = static_cast<u32>(image.backing->state.layout);
-            record.width = image.info.size.width;
-            record.height = image.info.size.height;
-            record.depth = image.info.size.depth;
-            record.samples = image.info.num_samples;
-            record.row_pitch = image.info.pitch;
-            record.status = static_cast<u8>(Core::TextureCapture::ContentStatus::BindingOnly);
-            Core::TextureCapture::NoteImageBinding(record);
+        //
+        // A descriptor with `descriptorCount = array_size` covers `array_size` elements, and each
+        // element has its own image in `pImageInfo`. Recording only the first would leave every
+        // element after it unrepresented, and the package would then claim a complete array it
+        // never observed.
+        if (Core::TextureCapture::Enabled()) {
+            for (u32 element = 0; element < array_size; ++element) {
+                const u32 slot = image_binding_idx + element;
+                if (slot >= image_bindings.size()) {
+                    break;
+                }
+                const auto& [element_image_id, element_desc] = image_bindings[slot];
+                if (!element_image_id) {
+                    continue;
+                }
+                auto& image = texture_cache.GetImage(element_image_id);
+                auto& image_view = texture_cache.FindTexture(element_image_id, element_desc);
+                Core::TextureCapture::ImageRecord record{};
+                record.provenance_id = Core::RhiEntryProbe::CurrentDrawProvenanceId();
+                record.stage_hash = stage.pgm_hash;
+                record.stage = static_cast<u32>(stage.stage);
+                // One binding with `array_size` elements, not `array_size` bindings. The element
+                // index is the write's own dstArrayElement plus this element's position.
+                record.vk_binding = set_write.dstBinding;
+                record.array_element = set_write.dstArrayElement + element;
+                record.array_count = array_size;
+                record.guest_slot = slot;
+                record.shader_image_index = slot;
+                record.guest_address = image.info.guest_address;
+                record.image_id = element_image_id.index;
+                record.image_uid = image.image_uid;
+                record.vk_image = reinterpret_cast<u64>(static_cast<VkImage>(image.GetImage()));
+                record.vk_image_view =
+                    reinterpret_cast<u64>(static_cast<VkImageView>(*image_view.image_view));
+                record.image_format = static_cast<u32>(image.info.pixel_format);
+                record.view_format = static_cast<u32>(image_view.info.format);
+                record.component_mapping = 0;
+                record.aspect = image.info.props.is_depth ? 2u : 1u;
+                record.mip_first = image_view.info.range.base.level;
+                record.mip_count = image_view.info.range.extent.levels;
+                record.layer_first = image_view.info.range.base.layer;
+                record.layer_count = image_view.info.range.extent.layers;
+                record.descriptor_layout = static_cast<u32>(image.backing->state.layout);
+                record.width = image.info.size.width;
+                record.height = image.info.size.height;
+                record.depth = image.info.size.depth;
+                record.samples = image.info.num_samples;
+                record.row_pitch = image.info.pitch;
+                record.status = static_cast<u8>(Core::TextureCapture::ContentStatus::BindingOnly);
+                Core::TextureCapture::NoteImageBinding(record);
+            }
         }
 
         image_info_idx += array_size;
@@ -2262,28 +2277,41 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
         if (!has_sampled_image) {
             return;
         }
-        // The snapshot is taken per descriptor binding, not per image, so the content record
-        // carries the same unified binding number the descriptor write used. Two bindings of the
-        // same image at the same subresource range share one download; a different range or a
-        // different image gets its own.
-        u32 binding_index = 0;
-        for (const auto& [image_id, desc] : image_bindings) {
-            const u32 unified = first_image_binding + binding_index;
-            ++binding_index;
-            if (!image_id)
-                continue;
-            if (desc.type != VideoCore::TextureCache::BindingType::Texture)
-                continue;
-            // The return value is what decides whether the snapshot budget is consumed. A draw
-            // whose image the cache refused, because of its format, size or state, must not spend
-            // the budget on a copy that never happened.
-            if (texture_cache.SnapshotImageForCapture(
-                    image_id, desc.view_info.range.base.level,
-                    desc.view_info.range.extent.levels, desc.view_info.range.base.layer,
-                    desc.view_info.range.extent.layers, desc.info.props.is_depth ? 2u : 1u,
-                    provenance, unified, stage.pgm_hash, binding_index - 1)) {
-                Core::TextureCapture::NoteSnapshotTaken(provenance);
+        // The snapshot must carry the same identity the descriptor write recorded, or the late
+        // content cannot be joined to its binding observation.
+        //
+        // A flattened image index is NOT a Vulkan binding number: a descriptor with
+        // `descriptorCount = N` occupies one binding with N elements, and the counter advances by N
+        // for the next descriptor. The mapping is therefore rebuilt here from the same array sizes
+        // the write loop used, rather than assumed from the index.
+        u32 slot = 0;
+        u32 unified = first_image_binding;
+        for (const u32 array_size : image_descriptor_array_sizes) {
+            for (u32 element = 0; element < array_size; ++element) {
+                if (slot >= image_bindings.size()) {
+                    break;
+                }
+                const auto& [image_id, desc] = image_bindings[slot];
+                const u32 element_index = element;
+                const u32 element_binding = unified;
+                ++slot;
+                if (!image_id)
+                    continue;
+                if (desc.type != VideoCore::TextureCache::BindingType::Texture)
+                    continue;
+                // The return value is what decides whether the snapshot budget is consumed. A draw
+                // whose image the cache refused, because of its format, size or state, must not
+                // spend the budget on a copy that never happened.
+                if (texture_cache.SnapshotImageForCapture(
+                        image_id, desc.view_info.range.base.level,
+                        desc.view_info.range.extent.levels, desc.view_info.range.base.layer,
+                        desc.view_info.range.extent.layers, desc.info.props.is_depth ? 2u : 1u,
+                        provenance, element_binding, stage.pgm_hash, slot - 1, element_index,
+                        array_size)) {
+                    Core::TextureCapture::NoteSnapshotTaken(provenance);
+                }
             }
+            unified += array_size;
         }
     }
 }

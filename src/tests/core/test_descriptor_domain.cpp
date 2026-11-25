@@ -221,6 +221,9 @@ void AddSampler(Package& package, u32 binding) {
     // A sampler's identity is the binding it fills, not merely that one exists.
     sampler.vk_binding = binding;
     sampler.has_vk_binding = true;
+    // And it must belong to this package's draw. A sampler from another draw is not evidence about
+    // this one, even at the same binding.
+    sampler.provenance_id = package.provenance_id;
     package.samplers.push_back(sampler);
 }
 
