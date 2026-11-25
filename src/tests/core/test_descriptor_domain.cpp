@@ -190,10 +190,13 @@ void AddBuffer(Package& package, u32 binding, bool with_bytes) {
     package.bindings.push_back(record);
 }
 
-void AddImage(Package& package, u32 binding, bool with_content) {
+void AddImage(Package& package, u32 binding, bool with_content, u32 element = 0,
+              u32 array_count = 1) {
     Texture texture{};
     texture.id = 1;
     texture.vk_binding = binding;
+    texture.array_element = element;
+    texture.array_count = array_count;
     texture.width = 4;
     texture.height = 4;
     if (with_content) {
@@ -330,27 +333,27 @@ TEST(DescriptorDomain, AZeroDescriptorCountIsRefused) {
 }
 
 TEST(DescriptorDomain, AnImageArrayNeedsEveryElementToCarryContent) {
-    // A descriptor with count N occupies N consecutive bindings, one per array element. One texture
-    // with several mip levels is not an array of several elements, and a duplicated element cannot
-    // stand in for a missing one.
+    // A descriptor with `descriptorCount = N` occupies ONE binding with N array elements. It is not
+    // N consecutive bindings. One texture with several mip levels is not an array of several
+    // elements, and a duplicated element cannot stand in for a missing one.
     auto package = MakePackage();
     AddInterface(package, Descriptor(3, 1, /*count=*/2));
-    AddImage(package, 1, /*with_content=*/true);
+    AddImage(package, 1, /*with_content=*/true, /*element=*/0, /*array_count=*/2);
     std::string error;
     EXPECT_FALSE(Core::DrawPackage::ValidatePackage(package, error));
     EXPECT_NE(error.find("array element 1"), std::string::npos) << error;
 
-    // The second element present makes it complete.
-    AddImage(package, 2, /*with_content=*/true);
+    // The second element of the same binding makes it complete.
+    AddImage(package, 1, /*with_content=*/true, /*element=*/1, /*array_count=*/2);
     EXPECT_TRUE(Core::DrawPackage::ValidatePackage(package, error)) << error;
 }
 
 TEST(DescriptorDomain, ADuplicatedArrayElementDoesNotSatisfyAMissingOne) {
-    // Two textures at the same binding are one element, not two.
+    // Two records for element 0 are one element, not two.
     auto package = MakePackage();
     AddInterface(package, Descriptor(3, 1, /*count=*/2));
-    AddImage(package, 1, /*with_content=*/true);
-    AddImage(package, 1, /*with_content=*/true);
+    AddImage(package, 1, /*with_content=*/true, /*element=*/0, /*array_count=*/2);
+    AddImage(package, 1, /*with_content=*/true, /*element=*/0, /*array_count=*/2);
     std::string error;
     EXPECT_FALSE(Core::DrawPackage::ValidatePackage(package, error));
     EXPECT_NE(error.find("array element 1"), std::string::npos) << error;
@@ -359,10 +362,44 @@ TEST(DescriptorDomain, ADuplicatedArrayElementDoesNotSatisfyAMissingOne) {
 TEST(DescriptorDomain, AnArrayElementWithNoContentIsRefused) {
     auto package = MakePackage();
     AddInterface(package, Descriptor(3, 1, /*count=*/2));
-    AddImage(package, 1, /*with_content=*/true);
-    AddImage(package, 2, /*with_content=*/false);
+    AddImage(package, 1, /*with_content=*/true, /*element=*/0, /*array_count=*/2);
+    AddImage(package, 1, /*with_content=*/false, /*element=*/1, /*array_count=*/2);
     std::string error;
     EXPECT_FALSE(Core::DrawPackage::ValidatePackage(package, error));
+}
+
+TEST(DescriptorDomain, ConsecutiveBindingsAreNotAnArray) {
+    // This is the defect in its smallest form: bindings 1 and 2 with one element each is two
+    // descriptors, not one two-element array at binding 1.
+    auto package = MakePackage();
+    AddInterface(package, Descriptor(3, 1, /*count=*/2));
+    AddImage(package, 1, /*with_content=*/true, /*element=*/0, /*array_count=*/1);
+    AddImage(package, 2, /*with_content=*/true, /*element=*/0, /*array_count=*/1);
+    std::string error;
+    EXPECT_FALSE(Core::DrawPackage::ValidatePackage(package, error));
+    EXPECT_NE(error.find("array element 1"), std::string::npos) << error;
+}
+
+TEST(DescriptorDomain, AnArrayCountThatDisagreesWithTheDeclarationIsRefused) {
+    auto package = MakePackage();
+    AddInterface(package, Descriptor(3, 1, /*count=*/2));
+    AddImage(package, 1, /*with_content=*/true, /*element=*/0, /*array_count=*/4);
+    AddImage(package, 1, /*with_content=*/true, /*element=*/1, /*array_count=*/4);
+    std::string error;
+    EXPECT_FALSE(Core::DrawPackage::ValidatePackage(package, error));
+    EXPECT_NE(error.find("array count disagrees"), std::string::npos) << error;
+}
+
+TEST(DescriptorDomain, AnArrayFollowedByAnotherBindingBothResolve) {
+    // An array at binding 1 with two elements, then a separate descriptor at binding 2.
+    auto package = MakePackage();
+    AddInterface(package, Descriptor(3, 1, /*count=*/2));
+    AddInterface(package, Descriptor(3, 2, /*count=*/1));
+    AddImage(package, 1, /*with_content=*/true, /*element=*/0, /*array_count=*/2);
+    AddImage(package, 1, /*with_content=*/true, /*element=*/1, /*array_count=*/2);
+    AddImage(package, 2, /*with_content=*/true, /*element=*/0, /*array_count=*/1);
+    std::string error;
+    EXPECT_TRUE(Core::DrawPackage::ValidatePackage(package, error)) << error;
 }
 
 TEST(DescriptorDomain, ASamplerAtTheWrongBindingIsRefused) {

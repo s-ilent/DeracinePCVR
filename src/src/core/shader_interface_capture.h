@@ -20,6 +20,11 @@ inline constexpr std::string_view EnableEnvironmentVariable = "SHADPS4_DERACINE_
 
 /// Bounded number of retained interfaces. One per (program hash, permutation index).
 inline constexpr size_t MaxRetainedInterfaces = 512;
+/// The most pipelines whose resolved mappings are retained. A pipeline is retained because a
+/// captured draw may refer to it after later pipelines have been built.
+inline constexpr size_t MaxRetainedPipelines = 512;
+/// The most stages one graphics pipeline can allocate bindings for.
+inline constexpr size_t MaxPipelineStages = 8;
 
 /// Bounded descriptors per interface. The widest observed stage declares far fewer; the bound keeps
 /// the table a fixed array.
@@ -132,21 +137,63 @@ struct Interface {
 /// Records the interface of a compiled permutation. Called from the production compilation path.
 void NoteInterface(const Interface& entry) noexcept;
 
-/// Resolves the effective Vulkan binding numbers for one pipeline layout.
+/// One stage's participation in a pipeline layout.
+struct PipelineStageBinding {
+    /// The logical stage the layout allocated bindings for.
+    u32 logical_stage{};
+    /// The program hash of the module the pipeline selected for that stage.
+    ///
+    /// The pipeline key identifies the module by hash, not by permutation index, so the declaration
+    /// is matched on the hash and the stage. A permutation whose binding count disagrees with the
+    /// layout is not the one the pipeline selected.
+    u64 program_hash{};
+    /// The global binding the layout started this stage at.
+    u32 binding_base{};
+    /// The number of bindings the layout allocated to this stage.
+    u32 binding_count{};
+};
+
+/// A pipeline's resolved descriptor mapping.
+///
+/// Shader permutations are reusable: one permutation can participate in several graphics pipelines
+/// with different stage combinations and therefore different binding bases. A mapping is therefore
+/// a property of a pipeline, not of a permutation, and it is stored as its own record rather than
+/// written back onto the shared declaration.
+struct PipelineBinding {
+    /// The pipeline this mapping belongs to, as the caller's own identity.
+    u64 pipeline_id{};
+    std::array<PipelineStageBinding, MaxPipelineStages> stages{};
+    u32 stage_count{};
+    /// Whether every stage resolved. A partially resolved pipeline is not ready.
+    bool resolved{};
+    /// Why it did not resolve, for the log and the report.
+    const char* problem{};
+};
+
+/// Resolves one pipeline's descriptor mapping and stores it under `pipeline_id`.
 ///
 /// `GraphicsPipeline::BuildDescSetLayout` walks the stages in logical-stage order with one counter,
 /// so a stage's bindings begin at the sum of the counts of the stages before it. The per-stage
-/// capture cannot know that base, because it sees one stage at a time. This is called once the full
-/// layout is known, and it rewrites each retained interface's descriptors with the global binding
-/// and the base it was allocated at.
+/// capture cannot know that base, because it sees one stage at a time.
 ///
-/// param stage_order  The logical stages in the order the layout allocates them.
-/// param stage_counts The number of bindings each stage consumes, in the same order.
+/// The result is keyed by pipeline. A later pipeline reusing the same permutations gets its own
+/// record and cannot overwrite an earlier one, which is what makes a captured draw's mapping stable.
 ///
-/// Returns false when the counts do not match what the retained interfaces recorded, which means
-/// the layout and the capture disagree and no binding number can be trusted.
-[[nodiscard]] bool ResolveGlobalBindings(std::span<const u32> stage_order,
-                                         std::span<const u32> stage_counts) noexcept;
+/// Returns false when a stage's captured declaration count disagrees with the layout, or when the
+/// pipeline selects a permutation the capture never saw. In that case nothing is stored as
+/// resolved.
+[[nodiscard]] bool ResolvePipelineBindings(u64 pipeline_id,
+                                           std::span<const PipelineStageBinding> stages) noexcept;
+
+/// Looks up a pipeline's resolved mapping.
+[[nodiscard]] bool FindPipelineBindings(u64 pipeline_id, PipelineBinding& out) noexcept;
+
+/// The effective Vulkan binding for one descriptor of one pipeline stage.
+///
+/// Returns false when the pipeline is unknown, unresolved, or did not allocate that stage, so a
+/// caller cannot mistake an absent mapping for binding zero.
+[[nodiscard]] bool ResolveDescriptorBinding(u64 pipeline_id, u32 logical_stage, u32 local_binding,
+                                            u32& binding) noexcept;
 
 /// Clears the retained interfaces and enables capture, for tests only.
 ///

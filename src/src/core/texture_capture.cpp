@@ -23,6 +23,7 @@ struct State {
     u32 snapshots_taken{};
     u64 snapshot_provenance{};
     bool capacity_exhausted{};
+    std::atomic<u32> sampler_capacity_dropped{};
 };
 
 State g_state{};
@@ -193,18 +194,43 @@ void NoteSampler(const SamplerRecord& record) noexcept {
         if (!Enabled())
             return;
         std::scoped_lock lock{g_state.mutex};
-        // Samplers are cached by the guest descriptor hash, so the same state recurs across draws.
-        // Record each distinct (state, stage) pair once: the same guest state bound in two stages
-        // is two records, because a sampler's image association is per shader program and joining
-        // on the state alone would pair a sampler with an image from a different stage.
+        // A sampler's identity is the descriptor binding it fills, not its state. One shader may
+        // bind identical sampler state at several bindings, and each of those is an independent
+        // observation the package must be able to name. Deduplicating on (state, stage) would
+        // discard the second binding while still reporting the capture as complete.
+        //
+        // Only a genuinely identical observation is dropped: same draw, same stage, same binding,
+        // same element, same state.
         for (const auto& existing : g_state.samplers) {
-            if (existing.guest_hash == record.guest_hash &&
-                existing.stage_hash == record.stage_hash) {
-                return;
+            if (existing.guest_hash != record.guest_hash) {
+                continue;
             }
-        }
-        if (g_state.samplers.size() >= MaxSamplerRecords)
+            if (existing.stage_hash != record.stage_hash) {
+                continue;
+            }
+            if (existing.provenance_id != record.provenance_id) {
+                continue;
+            }
+            if (existing.vk_binding != record.vk_binding) {
+                continue;
+            }
+            if (existing.has_vk_binding != record.has_vk_binding) {
+                continue;
+            }
+            if (existing.array_element != record.array_element) {
+                continue;
+            }
+            if (existing.associated_image != record.associated_image) {
+                continue;
+            }
             return;
+        }
+        if (g_state.samplers.size() >= MaxSamplerRecords) {
+            // Capacity exhaustion is reported rather than silently dropping a binding while
+            // claiming a complete capture.
+            g_state.sampler_capacity_dropped.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
         SamplerRecord stored = record;
         stored.id = g_state.next_sampler_id++;
         g_state.samplers.push_back(stored);
@@ -230,6 +256,15 @@ std::span<const SamplerRecord> Samplers() noexcept {
     return {g_state.samplers.data(), g_state.samplers.size()};
 }
 
+size_t SamplerCount() noexcept {
+    std::scoped_lock lock{g_state.mutex};
+    return g_state.samplers.size();
+}
+
+u32 SamplerCapacityDropped() noexcept {
+    return g_state.sampler_capacity_dropped.load(std::memory_order_relaxed);
+}
+
 void ResetForTesting() noexcept {
     std::scoped_lock lock{g_state.mutex};
     g_state.images.clear();
@@ -239,7 +274,12 @@ void ResetForTesting() noexcept {
     g_state.snapshots_taken = 0;
     g_state.snapshot_provenance = 0;
     g_state.capacity_exhausted = false;
+    g_state.sampler_capacity_dropped.store(0, std::memory_order_relaxed);
     g_pending_images.clear();
+    // The capture is opt-in through an environment variable, which a test binary does not set. The
+    // forced flag is the existing mechanism for that, so the reset uses it rather than adding a
+    // second way to enable capture.
+    g_state.forced_enabled.store(1, std::memory_order_relaxed);
 }
 
 } // namespace Core::TextureCapture

@@ -464,11 +464,15 @@ void GraphicsPipeline::BuildDescSetLayout(bool preloading) {
     boost::container::small_vector<vk::DescriptorSetLayoutBinding, 32> bindings;
     u32 binding{};
 
-    // The order and per-stage counts this layout actually allocates, recorded so the shader
-    // interface capture can resolve its shader-local bindings to the global numbers. The capture
-    // sees one stage at a time and cannot know the base, so the layout is the authority.
-    std::array<u32, MaxShaderStages> layout_stage_order{};
-    std::array<u32, MaxShaderStages> layout_stage_counts{};
+    // The order, per-stage counts and selected permutations this layout actually allocates,
+    // recorded so the shader interface capture can resolve its shader-local bindings to the global
+    // numbers. The capture sees one stage at a time and cannot know the base, so the layout is the
+    // authority.
+    //
+    // The mapping is keyed by pipeline, not by permutation: a permutation is reusable across
+    // pipelines with different stage combinations, so writing the base back onto the shared
+    // declaration would let a later pipeline corrupt an earlier draw's mapping.
+    std::array<Core::ShaderInterface::PipelineStageBinding, MaxShaderStages> layout_stages{};
     u32 layout_stage_count = 0;
 
     for (const auto* stage : stages) {
@@ -509,22 +513,35 @@ void GraphicsPipeline::BuildDescSetLayout(bool preloading) {
             });
         }
         if (layout_stage_count < MaxShaderStages) {
-            layout_stage_order[layout_stage_count] = u32(stage->l_stage);
-            layout_stage_counts[layout_stage_count] = binding - stage_start;
-            ++layout_stage_count;
+            auto& entry = layout_stages[layout_stage_count++];
+            entry.logical_stage = u32(stage->l_stage);
+            entry.program_hash = stage->pgm_hash;
+            entry.binding_base = stage_start;
+            entry.binding_count = binding - stage_start;
         }
     }
 
-    // Resolve the captured interfaces against the layout this pipeline actually built. A capture
-    // that disagrees with the layout is reported and its bindings are left unresolved, because a
-    // guessed number would be worse than an absent one.
+    // Resolve this pipeline's descriptor mapping. A capture that disagrees with the layout is
+    // reported and the pipeline is left unresolved, because a guessed number would be worse than an
+    // absent one.
+    //
+    // The identity is the pipeline key's stage hashes, which is what distinguishes two pipelines
+    // that select different permutations. It is not the permutation identity: one permutation can
+    // serve several pipelines, and each needs its own mapping.
     if (Core::ShaderInterface::IsEnabled()) {
-        if (!Core::ShaderInterface::ResolveGlobalBindings(
-                std::span<const u32>{layout_stage_order.data(), layout_stage_count},
-                std::span<const u32>{layout_stage_counts.data(), layout_stage_count})) {
+        u64 pipeline_id = 0xcbf29ce484222325ull;
+        for (const size_t stage_hash : key.stage_hashes) {
+            pipeline_id ^= static_cast<u64>(stage_hash);
+            pipeline_id *= 0x100000001b3ull;
+        }
+        if (!Core::ShaderInterface::ResolvePipelineBindings(
+                pipeline_id,
+                std::span<const Core::ShaderInterface::PipelineStageBinding>{
+                    layout_stages.data(), layout_stage_count})) {
             LOG_WARNING(Render_Vulkan,
-                        "shader interface capture disagrees with the pipeline layout; global "
-                        "bindings left unresolved");
+                        "shader interface capture disagrees with pipeline {:#x} layout; descriptor "
+                        "bindings left unresolved",
+                        pipeline_id);
         }
     }
 

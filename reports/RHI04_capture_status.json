@@ -131,18 +131,59 @@
     ]
   },
   "offline_verification": {
-    "cxx_tests": 335,
-    "suites": 18,
+    "cxx_tests": 352,
+    "suites": 19,
     "new_suites": [
-      "shadps4_descriptor_domain_test, 20 cases",
-      "shadps4_global_binding_test, 8 cases"
+      "shadps4_descriptor_domain_test, 23 cases",
+      "shadps4_pipeline_binding_test, 12 cases",
+      "shadps4_sampler_binding_test, 10 cases"
     ],
     "provenance_cases": 39,
     "gpu_mutation_cases": 13,
     "vulkan_validation_errors": 0,
-    "corrected_emulator_sha256": "831B01A24BF6D470F0B8C39C6A0970E560B2D8B74DE2A9F475322542A1984B0E",
-    "corrected_emulator_size": 77542912,
+    "corrected_emulator_sha256": "C4AA9885A6792327BE7B3EBB6B9BCC2B144A2CD2EF5016F4F09FF964ECB5031B",
+    "corrected_emulator_size": 77655040,
     "runtime_confirmed": false
+  },
+  "rhi04r3": {
+    "status": "READY_FOR_SECOND_CAPTURE_WITH_EXPLICIT_LIMITATIONS",
+    "defects": [
+      {
+        "id": 9,
+        "name": "descriptor resolution was permutation-scoped",
+        "location": "shader_interface_capture.cpp ResolveGlobalBindings",
+        "cause": "the resolution iterated every retained interface and applied the most recent pipeline's binding bases, but a permutation is reusable across pipelines with different stage combinations",
+        "effect": "a later pipeline silently corrupted an earlier draw's mapping",
+        "repaired": true
+      },
+      {
+        "id": 10,
+        "name": "image arrays were validated as consecutive bindings",
+        "location": "draw_package.h ValidatePackage",
+        "cause": "element_binding = descriptor.binding + element, but a descriptor with descriptorCount = N is one binding with N elements",
+        "effect": "binding B with elements 0 and 1 was indistinguishable from bindings B and B+1",
+        "repaired": true
+      },
+      {
+        "id": 11,
+        "name": "sampler deduplication discarded binding identity",
+        "location": "texture_capture.cpp NoteSampler",
+        "cause": "deduplicated on (guest_hash, stage_hash), which describes state reuse rather than descriptor-binding identity",
+        "effect": "identical state at a second binding was dropped while the capture reported itself complete",
+        "repaired": true
+      }
+    ],
+    "descriptor_model": {
+      "declaration": "immutable: program hash, permutation, logical stage, local declarations, push constants",
+      "pipeline_mapping": "per pipeline: stage base and count, resolved flag, problem",
+      "pipeline_identity": "derived from the pipeline key's stage hashes",
+      "array_semantics": "one binding with descriptorCount elements, addressed by array_element",
+      "sampler_identity": "state plus draw provenance, stage, binding, element and associated image"
+    },
+    "serialization": "schema 4 unchanged; new fields are additive and default to not-established",
+    "own_bugs_found_by_tests": [
+      "the pipeline table was searched in full rather than over live entries, so a stale slot with a colliding id was overwritten outside the live range"
+    ]
   },
   "rhi04r2": {
     "status": "READY_FOR_SECOND_CAPTURE_WITH_EXPLICIT_LIMITATIONS",

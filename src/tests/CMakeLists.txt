@@ -2198,19 +2198,17 @@ gtest_discover_tests(shadps4_descriptor_domain_test
 )
 
 # ===========================================================================
-# Global Vulkan binding resolution
+# Pipeline-scoped descriptor resolution
 # ===========================================================================
-add_executable(shadps4_global_binding_test
-    core/test_global_binding.cpp
+add_executable(shadps4_pipeline_binding_test
+    core/test_pipeline_binding.cpp
     ${CMAKE_SOURCE_DIR}/src/core/shader_interface_capture.cpp
 
-    # Minimal common support, following the settings test's pattern.
     ${CMAKE_SOURCE_DIR}/src/common/assert.cpp
     ${CMAKE_SOURCE_DIR}/src/common/error.cpp
     ${CMAKE_SOURCE_DIR}/src/common/string_util.cpp
     ${CMAKE_SOURCE_DIR}/src/common/logging/log.cpp
 
-    # Stubs that replace dependencies
     stubs/common_stub.cpp
     stubs/core_stub.cpp
     stubs/scm_rev_stub.cpp
@@ -2218,16 +2216,16 @@ add_executable(shadps4_global_binding_test
     stubs/settings_stub.cpp
 )
 
-target_include_directories(shadps4_global_binding_test PRIVATE
+target_include_directories(shadps4_pipeline_binding_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/tests
 )
 
-target_compile_features(shadps4_global_binding_test PRIVATE cxx_std_23)
-target_compile_definitions(shadps4_global_binding_test PRIVATE NOMINMAX)
+target_compile_features(shadps4_pipeline_binding_test PRIVATE cxx_std_23)
+target_compile_definitions(shadps4_pipeline_binding_test PRIVATE NOMINMAX)
 
-target_link_libraries(shadps4_global_binding_test PRIVATE
+target_link_libraries(shadps4_pipeline_binding_test PRIVATE
     GTest::gtest_main
     fmt::fmt
     spdlog::spdlog
@@ -2235,9 +2233,52 @@ target_link_libraries(shadps4_global_binding_test PRIVATE
     SDL3::SDL3
 )
 
-list(APPEND TEST_TARGETS shadps4_global_binding_test)
+list(APPEND TEST_TARGETS shadps4_pipeline_binding_test)
 
-gtest_discover_tests(shadps4_global_binding_test
+gtest_discover_tests(shadps4_pipeline_binding_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+)
+
+# ===========================================================================
+# Sampler binding identity
+# ===========================================================================
+add_executable(shadps4_sampler_binding_test
+    core/test_sampler_binding.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/texture_capture.cpp
+
+    ${CMAKE_SOURCE_DIR}/src/common/assert.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/error.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/string_util.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/logging/log.cpp
+
+    stubs/common_stub.cpp
+    stubs/core_stub.cpp
+    stubs/scm_rev_stub.cpp
+    stubs/sdl_stub.cpp
+    stubs/settings_stub.cpp
+)
+
+target_include_directories(shadps4_sampler_binding_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_compile_features(shadps4_sampler_binding_test PRIVATE cxx_std_23)
+target_compile_definitions(shadps4_sampler_binding_test PRIVATE NOMINMAX)
+
+target_link_libraries(shadps4_sampler_binding_test PRIVATE
+    GTest::gtest_main
+    fmt::fmt
+    spdlog::spdlog
+    nlohmann_json::nlohmann_json
+    SDL3::SDL3
+)
+
+list(APPEND TEST_TARGETS shadps4_sampler_binding_test)
+
+gtest_discover_tests(shadps4_sampler_binding_test
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     DISCOVERY_TIMEOUT 60
 )

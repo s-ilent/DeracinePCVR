@@ -78,6 +78,11 @@ struct SamplerRecord {
     /// can only check that some sampler exists, which an unrelated one would satisfy.
     u32 vk_binding{};
     bool has_vk_binding{};
+    /// The element index within the descriptor binding, if the write declared an array.
+    u32 array_element{};
+    /// The draw this observation belongs to. Two draws binding the same state at the same binding
+    /// are still two observations, because each draw's package must name its own.
+    u64 provenance_id{};
     /// The logical stage the descriptor belongs to.
     u32 logical_stage{};
     /// The guest S# descriptor hash the cache keyed the sampler on.
@@ -115,7 +120,14 @@ struct ImageRecord {
     u64 stage_hash{};
     u32 stage{};
     /// The unified Vulkan descriptor binding number the descriptor write used.
+    ///
+    /// A descriptor with `descriptorCount = N` occupies ONE binding with N array elements, not N
+    /// consecutive bindings. `array_element` says which element of that binding this record is.
     u32 vk_binding{};
+    /// The element index within the descriptor binding, from the write's own `dstArrayElement`.
+    u32 array_element{};
+    /// The number of elements the descriptor write declared.
+    u32 array_count{};
     /// The guest T# descriptor's logical slot and address, for correlation only.
     u32 guest_slot{};
     u64 guest_address{};
@@ -241,6 +253,15 @@ void EndDraw() noexcept;
 
 /// Test seam: clears the collector. Not called by the emulator.
 void ResetForTesting() noexcept;
+
+/// The number of retained sampler observations, for tests.
+[[nodiscard]] size_t SamplerCount() noexcept;
+
+/// How many sampler observations were dropped because the record budget was exhausted.
+///
+/// A dropped binding is reported rather than hidden, so a capture cannot claim completeness it does
+/// not have.
+[[nodiscard]] u32 SamplerCapacityDropped() noexcept;
 
 /// Test seam: forces the observation on or off, so a test does not depend on the environment.
 /// Passing a negative value restores the environment-derived answer.

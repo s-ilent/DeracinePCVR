@@ -27,6 +27,9 @@ struct CaptureState {
     std::atomic<u32> capacity_dropped{};
     std::mutex mutex;
     std::array<Interface, MaxRetainedInterfaces> interfaces{};
+    std::array<PipelineBinding, MaxRetainedPipelines> pipelines{};
+    u32 pipeline_count{};
+    std::atomic<u32> pipeline_capacity_dropped{};
 };
 
 CaptureState g_state{};
@@ -64,59 +67,137 @@ void ResetForTesting() noexcept {
     g_state.count.store(0, std::memory_order_relaxed);
     g_state.duplicate_count.store(0, std::memory_order_relaxed);
     g_state.capacity_dropped.store(0, std::memory_order_relaxed);
+    g_state.pipeline_count = 0;
+    g_state.pipeline_capacity_dropped.store(0, std::memory_order_relaxed);
     g_state.enabled.store(true, std::memory_order_relaxed);
 }
 
-bool ResolveGlobalBindings(std::span<const u32> stage_order,
-                           std::span<const u32> stage_counts) noexcept {
+/// Finds the retained declaration for one stage's module.
+///
+/// Matched on program hash, logical stage and binding count. The count is part of the identity
+/// because a program can have several permutations with different interfaces, and only the one the
+/// layout allocated can be the module the pipeline selected.
+[[nodiscard]] bool FindDeclaration(u64 program_hash, u32 logical_stage, u32 binding_count,
+                                   Interface& out) noexcept {
+    const u32 count = g_state.count.load(std::memory_order_relaxed);
+    for (u32 i = 0; i < count; ++i) {
+        const auto& entry = g_state.interfaces[i];
+        if (entry.program_hash != program_hash) {
+            continue;
+        }
+        if (entry.logical_stage != logical_stage) {
+            continue;
+        }
+        if (entry.unified_binding_count != binding_count) {
+            continue;
+        }
+        out = entry;
+        return true;
+    }
+    return false;
+}
+
+bool ResolvePipelineBindings(u64 pipeline_id,
+                              std::span<const PipelineStageBinding> stages) noexcept {
     try {
         if (!g_state.enabled.load(std::memory_order_relaxed)) {
             return true;
         }
-        if (stage_order.size() != stage_counts.size()) {
+        if (pipeline_id == 0 || stages.empty() || stages.size() > MaxPipelineStages) {
             return false;
         }
 
-        // The base and count each stage is allocated at, keyed by logical stage. The layout's
-        // arrays are positional, so they are indexed by position here and by stage afterwards.
-        std::array<u32, MaxLogicalStages> base{};
-        std::array<u32, MaxLogicalStages> count_by_stage{};
-        std::array<bool, MaxLogicalStages> known{};
-        u32 running = 0;
-        for (size_t i = 0; i < stage_order.size(); ++i) {
-            if (stage_order[i] >= MaxLogicalStages) {
+        PipelineBinding resolved{};
+        resolved.pipeline_id = pipeline_id;
+
+        for (size_t i = 0; i < stages.size(); ++i) {
+            const auto& stage = stages[i];
+            if (stage.logical_stage >= MaxLogicalStages) {
+                resolved.problem = "a pipeline stage has an unknown logical stage";
                 return false;
             }
-            base[stage_order[i]] = running;
-            count_by_stage[stage_order[i]] = stage_counts[i];
-            known[stage_order[i]] = true;
-            running += stage_counts[i];
+            // The pipeline must select a module the capture actually saw. A module the capture
+            // never observed has no declaration to compare against, so its bindings cannot be
+            // shown to match the layout.
+            //
+            // The match is on program hash and stage, and the declaration's own binding count must
+            // agree with what the layout allocated. A permutation of the same program with a
+            // different count is not the one this pipeline selected.
+            Interface declaration{};
+            if (!FindDeclaration(stage.program_hash, stage.logical_stage, stage.binding_count,
+                                 declaration)) {
+                resolved.problem =
+                    "a pipeline stage selects a module the capture never saw, or its layout "
+                    "disagrees with the declaration";
+                return false;
+            }
+            resolved.stages[resolved.stage_count++] = stage;
         }
+        resolved.resolved = true;
 
         std::scoped_lock lock{g_state.mutex};
-        const u32 count = g_state.count.load(std::memory_order_relaxed);
-        for (u32 i = 0; i < count; ++i) {
-            auto& interface = g_state.interfaces[i];
-            if (interface.logical_stage >= MaxLogicalStages ||
-                !known[interface.logical_stage]) {
-                // A stage the layout did not allocate has no binding number. Leaving it unresolved
-                // is correct: a guessed number would be worse than an absent one.
-                continue;
-            }
-            // The capture's own count must agree with the layout's for this stage, or the two
-            // describe different interfaces and no binding number can be trusted.
-            if (interface.unified_binding_count != count_by_stage[interface.logical_stage]) {
-                return false;
-            }
-            interface.stage_binding_base = base[interface.logical_stage];
-            interface.stage_binding_base_known = true;
-            for (u32 d = 0; d < interface.descriptor_count; ++d) {
-                auto& descriptor = interface.descriptors[d];
-                descriptor.binding = interface.stage_binding_base + descriptor.local_binding;
-                descriptor.binding_resolved = true;
+        // Keyed by pipeline. A later pipeline reusing the same permutations gets its own record and
+        // cannot overwrite an earlier one, which is what keeps a captured draw's mapping stable.
+        //
+        // Only the live entries are searched. Scanning the whole array would match a slot left over
+        // from a previous lifetime whose id happens to collide, and overwriting it would leave the
+        // record outside the live range where no lookup can find it.
+        for (u32 i = 0; i < g_state.pipeline_count; ++i) {
+            if (g_state.pipelines[i].pipeline_id == pipeline_id) {
+                g_state.pipelines[i] = resolved;
+                return true;
             }
         }
+        if (g_state.pipeline_count >= MaxRetainedPipelines) {
+            g_state.pipeline_capacity_dropped.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+        g_state.pipelines[g_state.pipeline_count++] = resolved;
         return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool FindPipelineBindings(u64 pipeline_id, PipelineBinding& out) noexcept {
+    try {
+        if (!g_state.enabled.load(std::memory_order_relaxed)) {
+            return false;
+        }
+        std::scoped_lock lock{g_state.mutex};
+        for (u32 i = 0; i < g_state.pipeline_count; ++i) {
+            if (g_state.pipelines[i].pipeline_id == pipeline_id) {
+                out = g_state.pipelines[i];
+                return out.resolved;
+            }
+        }
+        return false;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool ResolveDescriptorBinding(u64 pipeline_id, u32 logical_stage, u32 local_binding,
+                              u32& binding) noexcept {
+    try {
+        PipelineBinding pipeline{};
+        if (!FindPipelineBindings(pipeline_id, pipeline)) {
+            return false;
+        }
+        for (u32 i = 0; i < pipeline.stage_count; ++i) {
+            const auto& stage = pipeline.stages[i];
+            if (stage.logical_stage != logical_stage) {
+                continue;
+            }
+            // The local binding must fall inside what this stage was allocated. A local binding
+            // beyond the count would otherwise resolve to a number belonging to the next stage.
+            if (local_binding >= stage.binding_count) {
+                return false;
+            }
+            binding = stage.binding_base + local_binding;
+            return true;
+        }
+        return false;
     } catch (...) {
         return false;
     }

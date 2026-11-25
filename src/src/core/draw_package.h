@@ -369,6 +369,14 @@ struct Texture {
     u32 id{};
     /// The unified Vulkan descriptor binding number the descriptor write used.
     u32 vk_binding{};
+    /// The element index within the descriptor binding.
+    ///
+    /// A descriptor with `descriptorCount = N` occupies one binding with N array elements. The
+    /// element is not a separate binding, and treating it as one would accept a package whose
+    /// elements are actually different bindings.
+    u32 array_element{};
+    /// The number of elements the descriptor write declared.
+    u32 array_count{};
     /// The shader stage and program the binding belongs to.
     u32 stage{};
     u64 stage_hash{};
@@ -937,15 +945,20 @@ struct Package {
                     }
                     case 3: // SampledImage
                     case 4: { // StorageImage
-                        // A descriptor with count N occupies N consecutive bindings, one per array
-                        // element. Every element must carry content: one texture with several mip
-                        // levels is not an array of several elements, and a duplicated element
-                        // cannot stand in for a missing one.
+                        // A descriptor with `descriptorCount = N` occupies ONE binding with N array
+                        // elements. It is not N consecutive bindings, so the element is matched
+                        // within the declared binding rather than by adding to its number.
+                        //
+                        // Every element must carry content: one texture with several mip levels is
+                        // not an array of several elements, and a duplicated element cannot stand
+                        // in for a missing one.
                         for (u32 element = 0; element < descriptor.count; ++element) {
-                            const u32 element_binding = descriptor.binding + element;
                             bool element_resolved = false;
                             for (const auto& texture : package.textures) {
-                                if (texture.vk_binding != element_binding) {
+                                if (texture.vk_binding != descriptor.binding) {
+                                    continue;
+                                }
+                                if (texture.array_element != element) {
                                     continue;
                                 }
                                 if (texture.subresources.empty()) {
@@ -956,9 +969,22 @@ struct Package {
                             }
                             if (!element_resolved) {
                                 error = "an image descriptor array element " +
-                                        std::to_string(element) + " at binding " +
-                                        std::to_string(element_binding) +
+                                        std::to_string(element) + " of binding " +
+                                        std::to_string(descriptor.binding) +
                                         " has no captured image content";
+                                return false;
+                            }
+                        }
+                        // A record claiming more elements than the descriptor declares is a
+                        // disagreement between the capture and the layout, not a superset.
+                        for (const auto& texture : package.textures) {
+                            if (texture.vk_binding != descriptor.binding) {
+                                continue;
+                            }
+                            if (texture.array_count != 0 &&
+                                texture.array_count != descriptor.count) {
+                                error = "an image descriptor's captured array count disagrees with "
+                                        "its declaration";
                                 return false;
                             }
                         }

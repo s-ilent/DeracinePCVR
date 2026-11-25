@@ -2123,7 +2123,11 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
             record.provenance_id = Core::RhiEntryProbe::CurrentDrawProvenanceId();
             record.stage_hash = stage.pgm_hash;
             record.stage = static_cast<u32>(stage.stage);
-            record.vk_binding = binding.unified;
+            // One binding with `array_size` elements, not `array_size` bindings. The element index
+            // is the write's own dstArrayElement plus the element's position in pImageInfo.
+            record.vk_binding = set_write.dstBinding;
+            record.array_element = set_write.dstArrayElement;
+            record.array_count = array_size;
             record.guest_slot = image_binding_idx;
             record.shader_image_index = image_binding_idx;
             record.guest_address = image.info.guest_address;
@@ -2205,6 +2209,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
             record.associated_image = sampler.associated_image;
             record.stage_hash = stage.pgm_hash;
             record.logical_stage = static_cast<u32>(stage.l_stage);
+            record.provenance_id = Core::RhiEntryProbe::CurrentDrawProvenanceId();
 
             image_infos.emplace_back(vk_sampler, VK_NULL_HANDLE, vk::ImageLayout::eGeneral);
             auto& set_write = set_writes[set_write_index++];
